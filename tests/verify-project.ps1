@@ -13,7 +13,7 @@ $docsPath = Join-Path $projectRoot 'docs'
 Assert-Check (Test-Path -LiteralPath $agentsPath -PathType Leaf) 'Missing AGENTS.md.'
 Assert-Check (Test-Path -LiteralPath $docsPath -PathType Container) 'Missing docs directory.'
 
-$documentFiles = @(Get-Item -LiteralPath $agentsPath)
+$documentFiles = @(Get-ChildItem -LiteralPath $projectRoot -Filter '*.md' -File)
 $ruleDocuments = @(Get-ChildItem -LiteralPath $docsPath -Filter '*.md' -File -Recurse)
 Assert-Check ($ruleDocuments.Count -ge 2) 'Expected the rules and map documents.'
 $documentFiles += $ruleDocuments
