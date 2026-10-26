@@ -34,6 +34,12 @@ test('room and corner lookups return the catalog room and reject unknown ids wit
 });
 
 test('aligned external doors work both ways and touching a one-sided doorway does not connect', () => {
+  // User's marked opening on the hall's east edge connects; its boarded south gate does not.
+  for (const [x, y, expected] of [[1, 0, ['living_room']], [0, 1, []]]) {
+    const pair = [hall(), placed('living', 1, x, y)];
+    assert.deepEqual(getMoveTargets(pair, 'hall_room'), expected);
+    assert.deepEqual(getMoveTargets(pair, 'living_room'), expected.length ? ['hall_room'] : []);
+  }
   // All four boards connect through the L-shaped route; dining touches the hall's east door with a wall.
   const placements = [
     hall(), placed('living', 1, 0, -1),
