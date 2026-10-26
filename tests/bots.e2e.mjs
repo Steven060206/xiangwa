@@ -97,7 +97,7 @@ async function expectMobile(page) {
 
 function assertVisitorPrivacy(value) {
   const privateKeys = new Set(['password', 'weakness', 'passwordOptions', 'weaknessOptions', 'remainsCornerId',
-    'hidingCornerId', 'hidingUnderToken', 'hidingTargets', 'hidingRooms', 'inspectedRoom', 'cornerTokens',
+    'hidingCornerId', 'hidingUnderToken', 'hidingTargets', 'hidingRooms', 'inspectedRoom', 'cornerTokens', 'lastInspectedRoom',
     'initialPowerOptions', 'powerDeck', 'hand', 'truth', 'canLie', 'answerOptions']);
   function visit(child) {
     if (!child || typeof child !== 'object') return;
@@ -239,8 +239,10 @@ test('a polling human visitor plays with a bot Hako and recovers the same seat a
   state = await waitState(page, () => window.__hakoTestState?.phase === 'item_draft'
     && window.__hakoTestState.draft.turnPlayerId === window.__hakoTestState.you);
   await expectStable(session, 'Bots stop the item draft when the human must choose');
-  assert.ok(state.draft.availableItems.some(item => item.id === 'spirit_pen'));
-  await act(page, 'choose_item', () => page.locator('[data-testid="item-choice"][data-item-id="spirit_pen"]').click());
+  // Other bots may leave the hall before the person acts. This question item
+  // remains usable without a companion, unlike the spirit pen.
+  assert.ok(state.draft.availableItems.some(item => item.id === 'dowsing_rod'));
+  await act(page, 'choose_item', () => page.locator('[data-testid="item-choice"][data-item-id="dowsing_rod"]').click());
   let humanPlacements = 0;
   while (humanPlacements < deck.length) {
     state = await waitState(page, () => {
@@ -272,12 +274,11 @@ test('a polling human visitor plays with a bot Hako and recovers the same seat a
 
   state = await awaitHumanAction(session, page);
   assertVisitorPrivacy(state);
-  assert.ok(state.round.inventory.items.some(item => item.id === 'spirit_pen'));
-  await page.getByTestId('active-item-select').selectOption('spirit_pen');
-  await page.getByTestId('active-item-room').selectOption(state.round.items.roomOptions[0].id);
+  assert.ok(state.round.inventory.items.some(item => item.id === 'dowsing_rod'));
+  await page.getByTestId('active-item-select').selectOption('dowsing_rod');
   await act(page, 'use_item', () => page.getByTestId('use-item').click());
   state = await waitState(page, playerId => window.__hakoTestState?.round?.items.events.some(event =>
-    event.kind === 'item_answer' && event.userId === playerId && event.itemId === 'spirit_pen'), identity.playerId);
+    event.kind === 'item_answer' && event.userId === playerId && event.itemId === 'dowsing_rod'), identity.playerId);
   assertVisitorPrivacy(state);
   assert.equal(await page.getByTestId('answer-item').count(), 0, 'The bot Hako confirms and answers the human’s question');
 

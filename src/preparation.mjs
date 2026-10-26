@@ -224,6 +224,17 @@ export function chooseInitialHiding(opening, playerId, cornerId) {
   return getOpeningView(opening, playerId);
 }
 
+// The opening board is an immutable record once play begins. Reconstruct only
+// the room Hako actually inspected, including the piece moved to the direction area.
+export function getInitialRoomMemory(opening) {
+  if (!opening?.hidingCornerId || !opening.inspectedRoomId) return null;
+  const room = getRooms(opening).find(candidate => candidate.id === opening.inspectedRoomId);
+  if (!room) return null;
+  return { id: room.id, cycle: 0, corners: room.corners.map(corner => ({ id: corner.id,
+    token: copyToken(corner.id === opening.hidingCornerId ? opening.hidingUnderToken : opening.cornerTokens[corner.id]),
+  })) };
+}
+
 export function chooseInitialPower(opening, playerId, powerId) {
   assertHakoPhase(opening, playerId, 'power');
   if (!Number.isInteger(powerId) || !INITIAL_POWER_IDS.includes(powerId)) {
@@ -279,6 +290,7 @@ export function getOpeningView(opening, playerId) {
     view.inspectedRoom = { id: room.id, corners: room.corners.map(corner => ({ id: corner.id, token: copyToken(opening.cornerTokens[corner.id]) })) };
     view.hidingTargets = room.corners.map(corner => corner.id);
   } else if (opening.phase === 'power') {
+    view.lastInspectedRoom = getInitialRoomMemory(opening);
     view.initialPowerOptions = INITIAL_POWER_IDS.map(id => ({ id, name: POWER_NAMES[id] }));
   }
   return view;

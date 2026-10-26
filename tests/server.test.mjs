@@ -732,7 +732,7 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
       assert.equal(view.version, current.version);
       const text = JSON.stringify(view);
       for (const field of ['password', 'weakness', 'remainsCornerId', 'hidingCornerId', 'hidingUnderToken',
-        'inspectedRoom', 'cornerTokens', 'powerDeck', 'hidingTargets', 'hidingRooms', 'cornerId']) {
+        'inspectedRoom', 'lastInspectedRoom', 'cornerTokens', 'powerDeck', 'hidingTargets', 'hidingRooms', 'cornerId']) {
         assert.equal(text.includes(`"${field}":`), false, `visitor HTTP must omit ${field}`);
       }
       const pushed = await streams[index].state(update => update.version >= current.version);
@@ -754,12 +754,16 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   assert.equal((await action(request, hako, 'inspect_initial_room', { roomId: 'dark_room' })).status, 409);
   assert.equal((await action(request, hako, 'choose_initial_hiding', { cornerId: 'dark_bed' })).status, 409);
   state = (await action(request, hako, 'choose_initial_hiding', { cornerId: state.opening.hidingTargets[0] })).body;
+  assert.equal(state.opening.lastInspectedRoom.id, 'children_room');
+  assert.equal(state.opening.lastInspectedRoom.cycle, 0);
+  assert.deepEqual(underlyingTokens(state.opening.lastInspectedRoom.corners), initialContents);
   await assertPrivateViews();
   assert.equal((await action(request, hako, 'choose_initial_power', { powerId: 4 })).status, 409);
   state = (await action(request, hako, 'choose_initial_power', { powerId: 1 })).body;
   await assertPrivateViews();
   assert.equal(state.phase, 'practice');
   assert.equal(state.initialPower.id, 1);
+  assert.deepEqual(underlyingTokens(state.round.hako.lastInspectedRoom.corners), initialContents);
   assert.equal(state.round.visitors.every(visitor => visitor.roomId === 'hall_room'), true);
   assert.equal((await action(request, hako, 'prepare_opening')).status, 409);
   assert.equal((await action(request, hako, 'silent_reveal', { index: 0 })).status, 409);
@@ -801,6 +805,8 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   const nextHiding = state.round.hako.hidingTargets.find(id => id !== initialCorner);
   state = (await action(request, hako, 'hako_hide', { cornerId: nextHiding })).body;
   assert.equal(state.round.silent.cycle, 2);
+  assert.equal(state.round.hako.lastInspectedRoom.cycle, 1);
+  assert.deepEqual(underlyingTokens(state.round.hako.lastInspectedRoom.corners), initialContents);
   assert.equal(state.round.silent.turnPlayerId, interrupted);
   assert.equal(state.round.silent.cards.every(card => card.status === 'down' && !Object.hasOwn(card, 'number')), true);
   await assertPrivateViews();
@@ -1113,6 +1119,66 @@ test('draft, a drawn map, secret opening and original shuffled decks survive res
   await action(request, people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
   assert.equal((await action(request, people[0], 'choose_initial_power', { powerId: 1 })).status, 200);
   await checkRestart(saved, people);
+});
+
+test('confirmed hiding history survives HTTP refresh and restart without revealing later marker changes or visitor secrets', async t => {
+  const rememberedId = 'remembered-http-password';
+  const saved = await persistentServer(t, { createPlayState(setup, opening, options) {
+    const play = createPlay(setup, opening, options);
+    play.tokens.children_cabinet = { id: rememberedId, type: 'password', number: 4 };
+    play.round.visitors.forEach(visitor => { visitor.roomId = 'children_room'; });
+    play.opening.emptyBoxTokens = [];
+    return play;
+  } });
+  const { request } = saved;
+  const people = await createFour(request);
+  const [hako, first] = people;
+  let state = await preparePlay(request, people);
+  for (let index = 0; index < 5; index++) {
+    const current = people.find(person => person.playerId === state.round.silent.turnPlayerId);
+    const response = await action(request, current, 'silent_skip', { index });
+    assert.equal(response.status, 200);
+    state = response.body;
+  }
+  assert.equal((await action(request, hako, 'begin_hako_action')).status, 200);
+  const hakoEvents = await stream(t, saved.base, hako);
+  const visitorEvents = await stream(t, saved.base, first);
+  const inspected = await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' });
+  assert.equal(inspected.status, 200);
+  const memory = inspected.body.round.hako.lastInspectedRoom;
+  assert.deepEqual(memory.corners, inspected.body.round.hako.inspectedRoom.corners);
+  assert.equal(memory.cycle, 1);
+  assert.equal(memory.corners.find(corner => corner.id === 'children_cabinet').token.id, rememberedId);
+  const confirmed = await action(request, hako, 'hako_hide', { cornerId: 'children_bed' });
+  assert.equal(confirmed.status, 200);
+  assert.equal(Object.hasOwn(confirmed.body.round.hako, 'inspectedRoom'), false);
+  assert.deepEqual(confirmed.body.round.hako.lastInspectedRoom, memory);
+  const ownerPush = await hakoEvents.state(update => update.version >= confirmed.body.version);
+  assert.deepEqual(ownerPush.round.hako.lastInspectedRoom, memory);
+  const visitorPush = await visitorEvents.state(update => update.version >= confirmed.body.version);
+  assert.equal(JSON.stringify(visitorPush).includes('lastInspectedRoom'), false);
+  assert.equal(JSON.stringify(visitorPush).includes(rememberedId), false);
+  await hakoEvents.close();
+  await visitorEvents.close();
+  await checkRestart(saved, people);
+  assert.deepEqual((await snapshot(request, hako)).body.round.hako.lastInspectedRoom, memory);
+
+  state = (await snapshot(request, hako)).body;
+  const current = people.find(person => person.playerId === state.round.silent.turnPlayerId);
+  assert.equal((await action(request, current, 'silent_reveal', { index: 0 })).status, 200);
+  assert.equal((await action(request, current, 'peek', { cornerId: 'children_cabinet' })).status, 200);
+  assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
+  assert.equal((await action(request, current, 'resolve_peek', { take: true, replacement: 'none' })).status, 200);
+  assert.equal((await snapshot(request, current)).body.round.inventory.tokens.some(token => token.id === rememberedId), true);
+  assert.deepEqual((await snapshot(request, hako)).body.round.hako.lastInspectedRoom, memory,
+    'A visitor taking the remembered marker cannot turn the history into a live room view');
+  await checkRestart(saved, people);
+  assert.deepEqual((await snapshot(request, hako)).body.round.hako.lastInspectedRoom, memory);
+  for (const person of people.slice(1)) {
+    const view = (await snapshot(request, person, { poll: true })).body;
+    assert.equal(JSON.stringify(view).includes('lastInspectedRoom'), false);
+    assert.equal(JSON.stringify(view).includes('hidingMemories'), false);
+  }
 });
 
 test('pending peeks, private results, inventory, exchanges and the final result recover without leaks', async t => {

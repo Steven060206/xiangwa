@@ -30,7 +30,7 @@ const preparationSteps = [
 const tokenNames = {
   safe: '转轮式保险箱', notebook: '手记', password: '密码', weakness_clue: '讨伐情况',
   weapon: '讨伐道具', doll: '玛丽小姐的人偶', hidden_exit: '隐藏出口', amulet: '古怪护符',
-  extinguisher: '灭火器', remains: '亡骸', hako: '箱娃',
+  extinguisher: '灭火器', remains: '亡骸', hako: '箱娃', box_person: '箱人', empty_box: '空箱', key: '钥匙',
 };
 const toolNames = { white_stick: '白木棒', gasoline: '汽油', rusty_chain: '锈锁链' };
 
@@ -64,7 +64,7 @@ function button(label, testid, disabled, onClick, secondary = false) {
   return result;
 }
 
-function hidingControls(container, targets, initial, locked, action) {
+function hidingControls(container, targets, initial, locked, action, inspectedRoom) {
   const selectId = initial ? 'initial-hiding-select' : 'hiding-select';
   const label = node('label', '', initial ? '初始潜伏角落' : '本次潜伏角落');
   label.htmlFor = selectId;
@@ -73,7 +73,8 @@ function hidingControls(container, targets, initial, locked, action) {
   select.dataset.testid = selectId;
   select.disabled = locked;
   for (const id of targets) {
-    const option = node('option', '', cornerName(id));
+    const corner = inspectedRoom?.corners.find(corner => corner.id === id);
+    const option = node('option', '', `${cornerName(id)}${corner ? ` — ${tokenDescription(corner.token)}` : ''}`);
     option.value = id;
     select.append(option);
   }
@@ -132,7 +133,7 @@ export function renderPractice({ state, pending, online, action }) {
   panel.hidden = !round;
   if (!round) { panel.replaceChildren(); return; }
   if (round.mode === 'exploration') {
-    renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens });
+    renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens, renderRoomMemory });
     return;
   }
   panel.dataset.phase = round.phase;
@@ -200,7 +201,7 @@ export function renderPractice({ state, pending, online, action }) {
     if (isHako) {
       if (round.hako.inspectedRoom) {
         inspectedRoomTokens(controls, round.hako.inspectedRoom);
-        hidingControls(controls, round.hako.hidingTargets || [], false, locked, action);
+        hidingControls(controls, round.hako.hidingTargets || [], false, locked, action, round.hako.inspectedRoom);
       } else {
         const select = choiceSelect(controls, {
           id: 'hiding-room-select', label: '选择潜伏房间，查看全部角落标志', options: round.hako.hidingRooms || [],
@@ -343,14 +344,34 @@ function tokenDescription(token) {
 }
 
 function inspectedRoomTokens(container, inspectedRoom) {
-  container.append(node('h3', '', `${roomName(inspectedRoom.id)} · 角落标志`));
+  container.append(node('h3', '', `${roomName(inspectedRoom.id)} · 全部角落标志（仅你可见）`),
+    node('p', 'small-note', '先查看全部角落，再选择潜伏位置；确认后，所选角落的原物会被暂存。'));
   const tokens = node('dl', 'inspected-tokens');
   for (const corner of inspectedRoom.corners) {
     const row = node('div');
+    row.dataset.cornerId = corner.id;
     row.append(node('dt', '', cornerName(corner.id)), node('dd', '', tokenDescription(corner.token)));
     tokens.append(row);
   }
   container.append(tokens);
+}
+
+export function renderRoomMemory(container, memory) {
+  if (!memory) return;
+  const section = node('section', 'exploration-section');
+  section.dataset.testid = 'hiding-room-memory';
+  const when = memory.cycle === 0 ? '开局' : `第${memory.cycle}轮`;
+  section.append(node('h3', '', `潜伏查看记录 · ${roomName(memory.id)}（仅你可见）`),
+    node('p', 'small-note', `${when}查看时的记录，之后的取放变化不会自动更新。`));
+  const list = node('dl', 'inspected-tokens');
+  for (const corner of memory.corners) {
+    const row = node('div');
+    row.dataset.cornerId = corner.id;
+    row.append(node('dt', '', cornerName(corner.id)), node('dd', '', tokenDescription(corner.token)));
+    list.append(row);
+  }
+  section.append(list);
+  container.append(section);
 }
 
 export function renderOpening({ state, pending, online, action }) {
@@ -399,7 +420,7 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'hiding_corner': {
         if (opening.inspectedRoom) inspectedRoomTokens(controls, opening.inspectedRoom);
-        hidingControls(controls, opening.hidingTargets, true, locked, action);
+        hidingControls(controls, opening.hidingTargets, true, locked, action, opening.inspectedRoom);
         break;
       }
       case 'power': {
@@ -409,6 +430,7 @@ export function renderOpening({ state, pending, online, action }) {
         });
         controls.append(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked || !select.value, () => action('choose_initial_power', { powerId: Number(select.value) })));
         controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
+        renderRoomMemory(controls, opening.lastInspectedRoom);
         break;
       }
     }

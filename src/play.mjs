@@ -1,4 +1,4 @@
-import { INITIAL_ITEMS } from './preparation.mjs';
+import { INITIAL_ITEMS, getInitialRoomMemory } from './preparation.mjs';
 import { createRound, applyRoundAction, getRoundView } from './round.mjs';
 import { finishVisitorAction, finishHakoPhase, removeSilentVisitor } from './silent.mjs';
 import { getRoom, getCornerRoom, getHidingTargets, getMoveTargets } from './movement.mjs';
@@ -150,7 +150,7 @@ export function createPlay(setup, opening, { numbers } = {}) {
     sharedTokens: {}, ringAllies: [], hakoStage: null, result: null,
     powers: createPowers(opening), extraCorners: {}, placedItems: [], itemResults: {}, itemEvents: [],
     interruption: null, inheritanceQueue: [],
-    lastBlockedWait: null,
+    lastBlockedWait: null, hidingMemories: { [opening.hakoId]: getInitialRoomMemory(opening) },
   };
 }
 
@@ -423,6 +423,8 @@ function inspectHidingRoom(play, id, roomId) {
     : ordinaryHidingTargets(play, actorHiding(play, id).cornerId);
   if (!targetIds.some(cornerId => roomOf(cornerId) === roomId)) throw new Error('只能查看当前或相邻房间的角落。');
   play.hakoStage.inspections[id] = roomId;
+  play.hidingMemories ??= {};
+  play.hidingMemories[id] = { ...inspectedRoomView(play, roomId), cycle: play.round.silent.cycle };
 }
 function hide(play, id, action) {
   assertHiding(play, id);
@@ -433,6 +435,11 @@ function hide(play, id, action) {
   const targets = id === play.round.hakoId ? powerHidingTargets(play, actorHiding(play, id).cornerId)
     : ordinaryHidingTargets(play, actorHiding(play, id).cornerId);
   if (!targets.includes(action.cornerId)) throw new Error('只能潜伏到当前或相邻房间的角落。');
+  // An older save may already be waiting for its hiding confirmation.
+  if (play.hidingMemories?.[id]?.id !== inspected || play.hidingMemories?.[id]?.cycle !== play.round.silent.cycle) {
+    play.hidingMemories ??= {};
+    play.hidingMemories[id] = { ...inspectedRoomView(play, inspected), cycle: play.round.silent.cycle };
+  }
   const faceDown = action.faceDownCornerIds ?? [];
   if (!Array.isArray(faceDown) || new Set(faceDown).size !== faceDown.length
       || faceDown.some(cornerId => roomOf(cornerId) !== inspected || play.tokens[cornerId]?.type !== 'empty_box')) {
@@ -635,6 +642,12 @@ function publicCorners(play) {
     ...(play.tokens[id]?.type === 'empty_box' && play.tokens[id].faceUp && !actorsAt(play, id).length
       ? { faceUp: true, token: tokenView(play.tokens[id]) } : {}) }));
 }
+function inspectedRoomView(play, roomId) {
+  return { id: roomId, corners: corners(play, roomId).map(({ id: cornerId }) => ({
+    id: cornerId, token: tokenView(play.tokens[cornerId]),
+    actors: actorsAt(play, cornerId).map(actor => ({ playerId: actor.playerId, type: actor.type })),
+  })) };
+}
 function hidingView(play, id) {
   const actor = actorHiding(play, id);
   const canHide = play.round.silent.phase === 'hako_phase' && play.powers.step === 'action' && !play.powers.rearrangement
@@ -643,15 +656,14 @@ function hidingView(play, id) {
   const finished = play.hakoStage?.done.includes(id) ?? false;
   const targets = canHide && !finished ? id === play.round.hakoId ? powerHidingTargets(play, actor.cornerId)
     : ordinaryHidingTargets(play, actor.cornerId) : [];
-  const inspected = canHide ? play.hakoStage?.inspections[id] : null;
+  const inspected = canHide && !finished ? play.hakoStage?.inspections[id] : null;
+  const memory = play.hidingMemories?.[id] ?? (id === play.round.hakoId ? getInitialRoomMemory(play.opening) : null);
   return {
     cornerId: actor.cornerId, roomId: roomOf(actor.cornerId), finished,
     hidingRooms: [...new Set(targets.map(roomOf))].map(roomId => ({ id: roomId, name: getRoom(roomId).name })),
     hidingTargets: inspected ? targets.filter(cornerId => roomOf(cornerId) === inspected) : [],
-    ...(inspected ? { inspectedRoom: { id: inspected, corners: corners(play, inspected).map(({ id: cornerId }) => ({
-      id: cornerId, token: tokenView(play.tokens[cornerId]),
-      actors: actorsAt(play, cornerId).map(actor => ({ playerId: actor.playerId, type: actor.type })),
-    })) } } : {}),
+    ...(inspected ? { inspectedRoom: inspectedRoomView(play, inspected) } : {}),
+    ...(memory ? { lastInspectedRoom: clone(memory) } : {}),
   };
 }
 function resolutionView(play, id) {

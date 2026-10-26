@@ -325,7 +325,10 @@ function hidingControls(container, state, locked, action, inspectedRoomTokens) {
       input.dataset.cornerId = corner.id;
       faceDownChoices.push(input);
     });
-    const choice = select(container, `${prefix}hiding-select`, isHako ? '本次潜伏角落' : '箱人潜伏角落', (actor.hidingTargets || []).map(id => ({ id, name: cornerName(id) })), locked);
+    const choice = select(container, `${prefix}hiding-select`, isHako ? '本次潜伏角落' : '箱人潜伏角落', (actor.hidingTargets || []).map(id => {
+      const corner = actor.inspectedRoom.corners.find(corner => corner.id === id);
+      return { id, name: `${cornerName(id)} — ${tokenName(corner?.token)}` };
+    }), locked);
     container.append(button('确认潜伏', isHako ? 'confirm-hiding' : 'confirm-ghost-hiding', locked || !choice.value, () => action(isHako ? 'hako_hide' : 'ghost_hide', { cornerId: choice.value, faceDownCornerIds: faceDownChoices.filter(input => input.checked).map(input => input.dataset.cornerId) })));
   } else {
     const choice = select(container, `${prefix}hiding-room-select`, '选择房间，查看全部角落标志', (actor.hidingRooms || []).map(value => typeof value === 'string' ? { id: value, name: roomName(value) } : value), locked);
@@ -492,7 +495,7 @@ function noiseControls(container, state, locked, action, silentCards) {
   container.append(section);
 }
 
-export function renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens }) {
+export function renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens, renderRoomMemory }) {
   const round = state.round;
   const locked = pending || !online || Boolean(round.result);
   panel.dataset.phase = round.phase;
@@ -556,6 +559,10 @@ export function renderExploration({ panel, state, pending, online, action, silen
     renderActiveItems({ container: controls, state, locked, action });
   }
   fragment.append(controls);
+  const actor = round.hako.playerId === state.you ? round.hako : round.ghost;
+  if (actor && (!actor.inspectedRoom || actor.finished || round.interruption || round.resolution || round.powers?.rearrangement)) {
+    renderRoomMemory(fragment, actor.lastInspectedRoom);
+  }
   if (round.silent) noiseControls(fragment, state, locked, action, silentCards);
   inventory(fragment, state, locked, action);
   exchanges(fragment, state, locked, action);
