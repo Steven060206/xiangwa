@@ -688,6 +688,110 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.deepEqual(browserErrors, []);
 });
 
+for (const mode of ['sse', 'poll']) test(`closed pages recover the original seat and hosts clear abandoned seats over ${mode}`, { timeout: 60000 }, async t => {
+  const server = createGameServer();
+  let browser;
+  t.after(async () => {
+    await browser?.close();
+    if (server.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
+  const hostContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const visitorContext = await browser.newContext();
+  const errors = [];
+  let joins = 0;
+  for (const context of [hostContext, visitorContext]) context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+  visitorContext.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/join')) joins++; });
+  const url = code => `${base}/?${new URLSearchParams({ ...(mode === 'poll' ? { sync: 'poll' } : {}), ...(code ? { room: code } : {}) })}`;
+  const identity = page => page.evaluate(() => JSON.parse(sessionStorage.getItem('hako.room.session.v1')));
+  const connected = page => page.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
+  async function open(context, code) {
+    const page = await context.newPage();
+    await page.goto(url(code));
+    return page;
+  }
+  async function enter(page, create) {
+    await page.getByTestId('nickname').fill('同名玩家');
+    const response = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === (create ? '/api/rooms' : `/api/rooms/${new URL(page.url()).searchParams.get('room')}/join`));
+    await page.getByTestId(create ? 'create-room' : 'join-room').click();
+    const joined = await response;
+    assert.equal(joined.status(), 201);
+    await connected(page);
+    return identity(page);
+  }
+  const hostPage = await open(hostContext);
+  const host = await enter(hostPage, true);
+  const originalPage = await open(visitorContext, host.roomCode);
+  // This tab was already on the entry form before the browser acquired a seat.
+  const waitingTab = await open(visitorContext, host.roomCode);
+  const visitor = await enter(originalPage, false);
+  await waitingTab.getByTestId('nickname').fill('不会新增的玩家');
+  await waitingTab.getByTestId('join-room').click();
+  await connected(waitingTab);
+  assert.equal((await identity(waitingTab)).playerId, visitor.playerId);
+  assert.equal(joins, 1, 'An already open tab rechecks saved credentials before joining');
+  await waitingTab.close();
+  // Migrate a legacy tab-only session on reload, then really close the tab.
+  await originalPage.evaluate(() => localStorage.removeItem('hako.room.saved.v1'));
+  await originalPage.reload();
+  await connected(originalPage);
+  assert.equal(await originalPage.evaluate(code => JSON.parse(localStorage.getItem('hako.room.saved.v1')).rooms[code].playerId,
+    host.roomCode), visitor.playerId);
+  await originalPage.close();
+  const reopened = await open(visitorContext, host.roomCode);
+  await connected(reopened);
+  assert.equal((await identity(reopened)).playerId, visitor.playerId);
+  const rootPage = await open(visitorContext);
+  await connected(rootPage);
+  assert.equal(new URL(rootPage.url()).searchParams.get('room'), host.roomCode);
+  assert.equal((await identity(rootPage)).playerId, visitor.playerId);
+  await hostPage.waitForFunction(() => document.querySelectorAll('#lobby-seats .seat:not(.empty)').length === 2
+    && document.querySelectorAll('#lobby-seats .disconnected').length === 0);
+  assert.equal(joins, 1, 'Closing and reopening pages never creates a second seat');
+  const leaving = rootPage.waitForResponse(response => response.request().postDataJSON()?.type === 'leave');
+  await rootPage.locator('#leave-room').click();
+  assert.equal((await leaving).status(), 200);
+  await rootPage.locator('#entry-view').waitFor({ state: 'visible' });
+  await Promise.all([rootPage.close(), reopened.close()]);
+  const freshPage = await open(visitorContext, host.roomCode);
+  await freshPage.locator('#entry-view').waitFor({ state: 'visible' });
+  assert.equal(await identity(freshPage), null, 'Explicit departure clears the browser recovery identity');
+  const newVisitor = await enter(freshPage, false);
+  assert.notEqual(newVisitor.playerId, visitor.playerId);
+  await freshPage.close();
+  const remove = hostPage.locator(`[data-testid="remove-offline-player"][data-player-id="${newVisitor.playerId}"]`);
+  await remove.waitFor({ state: 'visible', timeout: 20000 });
+  await mkdir('test-results', { recursive: true });
+  await hostPage.screenshot({ path: `test-results/offline-seat-${mode}-mobile.png`, fullPage: true });
+  const removal = hostPage.waitForResponse(response => response.request().postDataJSON()?.type === 'remove_player');
+  await remove.click();
+  assert.equal((await removal).status(), 200);
+  await hostPage.waitForFunction(() => document.querySelectorAll('#lobby-seats .seat:not(.empty)').length === 1);
+  const removedPage = await open(visitorContext, host.roomCode);
+  await removedPage.locator('#error-banner').waitFor({ state: 'visible' });
+  assert.match(await removedPage.locator('#error-text').textContent(), /无法恢复上次入席/);
+  assert.equal(await identity(removedPage), null);
+  const replacement = await enter(removedPage, false);
+  assert.notEqual(replacement.playerId, newVisitor.playerId);
+  await hostPage.waitForFunction(() => document.querySelectorAll('#lobby-seats .seat:not(.empty)').length === 2);
+  // Another room's invite must not silently restore the previous room.
+  const otherCode = host.roomCode === 'AAAAAA' ? 'BBBBBB' : 'AAAAAA';
+  const otherPage = await open(visitorContext, otherCode);
+  await otherPage.locator('#entry-view').waitFor({ state: 'visible' });
+  const otherRoom = await enter(otherPage, true);
+  assert.notEqual(otherRoom.roomCode, host.roomCode);
+  await otherPage.close();
+  const originalRoomPage = await open(visitorContext, host.roomCode);
+  await connected(originalRoomPage);
+  assert.equal((await identity(originalRoomPage)).playerId, replacement.playerId, 'Room-specific credentials survive visits to another room');
+  assert.equal(joins, 3, 'Only explicit joins after leaving or being removed allocate a new seat');
+  assert.deepEqual(errors, []);
+});
+
 test('four polling browsers retain identity, recover connections and complete first-come role selection', { timeout: 60000 }, async t => {
   const server = createGameServer({ deck });
   let browser;

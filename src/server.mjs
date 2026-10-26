@@ -361,6 +361,18 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         }[input.type];
         break;
       }
+      case 'remove_player': {
+        hostOnly();
+        inLobby();
+        const target = room.players.find(candidate => candidate.id === input.targetId);
+        if (!target) fail(404, '该玩家已不在房间。');
+        if (target.id === player.id) fail(409, '请使用离开房间退出自己的座位。');
+        if (target.connections.size || polling.has(target.id)) fail(409, '该玩家已经在线，不能移除。');
+        room.players = room.players.filter(candidate => candidate.id !== target.id);
+        for (const candidate of room.players) candidate.ready = false;
+        message = `${player.name} 移除了暂离玩家 ${target.name} 的座位。`;
+        break;
+      }
       case 'leave': {
         inLobby();
         room.players = room.players.filter(candidate => candidate.id !== player.id);

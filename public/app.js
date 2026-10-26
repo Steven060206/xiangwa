@@ -4,6 +4,7 @@ import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderO
 
 const $ = id => document.getElementById(id);
 const SESSION_KEY = 'hako.room.session.v1';
+const SAVED_SESSIONS_KEY = 'hako.room.saved.v1';
 const floorName = floor => ({ 1: '一楼', 2: '二楼', '-1': '地下室' })[floor];
 let identity = null;
 let state = null;
@@ -60,7 +61,21 @@ function sessionQuery() {
   return new URLSearchParams({ playerId: identity.playerId, token: identity.token });
 }
 
+function savedSessions() {
+  try { return JSON.parse(localStorage.getItem(SAVED_SESSIONS_KEY)) || {}; }
+  catch { return {}; }
+}
+
+function storedSession(roomCode) {
+  let tabSession;
+  try { tabSession = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { /* Try persistent storage. */ }
+  const saved = savedSessions();
+  return [tabSession, saved.rooms?.[roomCode || saved.lastRoomCode]].find(value =>
+    value?.roomCode && value.playerId && value.token && (!roomCode || value.roomCode === roomCode));
+}
+
 function saveSession(value) {
+  const previous = identity;
   identity = value;
   try {
     if (value) sessionStorage.setItem(SESSION_KEY, JSON.stringify(value));
@@ -68,6 +83,18 @@ function saveSession(value) {
   } catch {
     // A restricted browser can still play for the current page lifetime.
   }
+  try {
+    const saved = savedSessions();
+    saved.rooms ??= {};
+    if (value) {
+      saved.rooms[value.roomCode] = value;
+      saved.lastRoomCode = value.roomCode;
+    } else if (previous) {
+      if (saved.rooms[previous.roomCode]?.playerId === previous.playerId) delete saved.rooms[previous.roomCode];
+      if (saved.lastRoomCode === previous.roomCode) delete saved.lastRoomCode;
+    }
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(saved));
+  } catch { /* Tab recovery still works when persistent storage is unavailable. */ }
 }
 
 function disconnect() {
@@ -141,6 +168,8 @@ async function enterRoom(join) {
   if (!name) { showError('请先填写昵称。'); $('nickname').focus(); return; }
   const code = $('room-code').value.trim().toUpperCase();
   if (join && !code) { showError('请填写朋友发来的房间码。'); $('room-code').focus(); return; }
+  const existing = join && storedSession(code);
+  if (existing) { await resume(existing); return; }
   pending = true;
   $('create-room').disabled = true;
   $('join-room').disabled = true;
@@ -212,6 +241,16 @@ function renderSeats(container, compact = false) {
       const preparationStatus = state.draft ? state.draft.choices.some(choice => choice.playerId === player.id) ? '已领道具' : active ? '选择道具' : '等待' : state.opening ? player.role === 'hako' ? '配置中' : '正门等候' : null;
       const status = !player.connected ? '暂离' : compact ? roundSeatStatus(state, player) || preparationStatus || (active ? state.setup?.drawnTileId ? '摆放中' : '当前轮次' : player.role === 'hako' ? '观图' : '等待') : player.ready ? '已准备' : '未准备';
       item.append(node('span', `seat-status${!player.connected ? ' disconnected' : player.ready ? ' ready' : ''}`, status));
+      if (!compact && state.phase === 'lobby' && state.hostId === state.you && player.id !== state.you && !player.connected) {
+        const remove = node('button', 'text-button', '移除');
+        remove.type = 'button';
+        remove.dataset.testid = 'remove-offline-player';
+        remove.dataset.playerId = player.id;
+        remove.setAttribute('aria-label', `移除暂离玩家 ${player.name}`);
+        remove.disabled = pending || !online;
+        remove.addEventListener('click', () => action('remove_player', { targetId: player.id }));
+        item.append(remove);
+      }
     }
     fragment.append(item);
   }
@@ -461,9 +500,7 @@ for (const tab of $('floor-tabs').querySelectorAll('button')) tab.dataset.testid
 const requestedRoom = new URL(location.href).searchParams.get('room');
 if (requestedRoom) $('room-code').value = requestedRoom.toUpperCase();
 
-async function resume() {
-  let stored;
-  try { stored = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { return; }
+async function resume(stored = storedSession(requestedRoom?.toUpperCase())) {
   if (!stored?.roomCode || !stored.playerId || !stored.token) return;
   identity = stored;
   pending = true;
@@ -471,7 +508,11 @@ async function resume() {
   $('join-room').disabled = true;
   try {
     const result = await api(`/api/rooms/${encodeURIComponent(stored.roomCode)}?${sessionQuery()}`);
+    saveSession(stored);
     receiveState(result.state || result);
+    const url = new URL(location.href);
+    url.searchParams.set('room', stored.roomCode);
+    history.replaceState(null, '', url);
     connect();
   } catch (error) {
     if (error.status === 403 || error.status === 404) {

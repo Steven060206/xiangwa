@@ -309,6 +309,74 @@ test('leaving the lobby frees a seat and transfers host authority', async t => {
   assert.equal(replacement.body.state.players.find(player => player.id === replacement.body.playerId).seat, 0);
 });
 
+test('only the lobby host can remove an offline seat, and the server rechecks live connections', async t => {
+  const { base, request } = await startServer(t);
+  const people = await createFour(request);
+  const [host, liveVisitor, pollingVisitor, offlineVisitor] = people;
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  const observer = await stream(t, base, host);
+  await observer.state();
+  const live = await stream(t, base, liveVisitor);
+  await live.state();
+  await observer.state(state => state.players.find(player => player.id === liveVisitor.playerId).connected);
+  await snapshot(request, pollingVisitor, { poll: true });
+  const before = (await snapshot(request, host)).body;
+  for (const [actor, targetId, status] of [
+    [liveVisitor, offlineVisitor.playerId, 403],
+    [host, host.playerId, 409],
+    [host, 'missing-player', 404],
+    [host, liveVisitor.playerId, 409],
+    [host, pollingVisitor.playerId, 409],
+  ]) {
+    assert.equal((await action(request, actor, 'remove_player', { targetId })).status, status);
+    assert.deepEqual((await snapshot(request, host)).body, before);
+  }
+  const removed = await action(request, host, 'remove_player', { targetId: offlineVisitor.playerId });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.players.length, 3);
+  assert.equal(removed.body.hostId, host.playerId);
+  assert.ok(removed.body.players.every(player => !player.ready));
+  assert.deepEqual(await observer.state(state => state.version >= removed.body.version), removed.body);
+  assert.equal((await snapshot(request, offlineVisitor)).status, 403);
+  const replacement = await request(`/api/rooms/${host.roomCode}/join`, { name: '新访问者' });
+  assert.equal(replacement.status, 201);
+  assert.equal(replacement.body.state.players.find(player => player.id === replacement.body.playerId).seat, 3);
+  for (const person of [host, liveVisitor, pollingVisitor, replacement.body]) await action(request, person, 'ready', { ready: true });
+  const started = await action(request, host, 'start');
+  assert.equal(started.status, 200);
+  assert.equal((await action(request, host, 'remove_player', { targetId: replacement.body.playerId })).status, 409);
+  assert.deepEqual((await snapshot(request, host)).body, started.body);
+  const claimed = await action(request, host, 'claim_hako');
+  assert.equal(claimed.status, 200);
+  assert.equal((await action(request, host, 'remove_player', { targetId: replacement.body.playerId })).status, 409);
+  assert.deepEqual((await snapshot(request, host)).body, claimed.body);
+});
+
+test('offline seat removal saves atomically and remains removed after restarting', async t => {
+  const saved = await persistentServer(t);
+  const host = (await saved.request('/api/rooms', { name: '房主' })).body;
+  const visitor = (await saved.request(`/api/rooms/${host.roomCode}/join`, { name: '暂离玩家' })).body;
+  await action(saved.request, host, 'ready', { ready: true });
+  const before = (await snapshot(saved.request, host)).body;
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(saved.request, host, 'remove_player', { targetId: visitor.playerId })).status, 503);
+    assert.deepEqual((await snapshot(saved.request, host)).body, before);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const removed = await action(saved.request, host, 'remove_player', { targetId: visitor.playerId });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.players.length, 1);
+  assert.equal(removed.body.players[0].ready, false);
+  await checkRestart(saved, [host]);
+  assert.equal((await snapshot(saved.request, visitor)).status, 403);
+  const replacement = await saved.request(`/api/rooms/${host.roomCode}/join`, { name: '接替玩家' });
+  assert.equal(replacement.status, 201);
+  assert.equal(replacement.body.state.players.length, 2);
+  assert.equal(replacement.body.state.players.find(player => player.id === replacement.body.playerId).seat, 1);
+});
+
 test('authenticated polling expires despite ordinary GETs and shares transient presence with SSE', { timeout: 25000 }, async t => {
   const saved = await persistentServer(t);
   const { request } = saved;
