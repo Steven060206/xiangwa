@@ -8,6 +8,7 @@ export function getRoom(roomId) {
 }
 
 export function getCornerRoom(cornerId) {
+  if (typeof cornerId === 'string' && cornerId.startsWith('suitcase:')) return getRoom(cornerId.slice(9));
   return ROOMS.find(room => room.corners.some(corner => corner.id === cornerId));
 }
 

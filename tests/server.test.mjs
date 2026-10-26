@@ -306,6 +306,8 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   state = (await action(request, hako, 'pass_noise_reaction')).body;
   assert.equal(state.round.phase, 'hako_phase');
   await assertPrivateViews();
+  assert.equal(state.round.powers.step, 'preparation');
+  state = (await action(request, hako, 'begin_hako_action')).body;
   assert.equal((await action(request, hako, 'hako_hide', { cornerId: initialCorner })).status, 409);
   assert.equal((await action(request, firstVisitor, 'inspect_hiding_room', { roomId: 'children_room' })).status, 409);
   state = (await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).body;
@@ -327,6 +329,7 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   assert.equal(state.round.phase, 'hako_phase');
   assert.equal(state.round.silent.trigger, 'one_hidden');
   assert.equal(state.round.silent.cards.filter(card => card.status === 'held').length, 5);
+  state = (await action(request, hako, 'begin_hako_action')).body;
   state = (await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).body;
   assert.deepEqual(underlyingTokens(state.round.hako.inspectedRoom.corners), initialContents,
     'Moving hiding markers restores the old corner and preserves the marker held beneath the new one');
@@ -442,6 +445,123 @@ test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a de
   assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
   state = (await snapshot(request, visitors[2])).body;
   assert.deepEqual(state, voted.body);
+});
+
+test('HTTP and SSE keep phone results and false answers private while allowing a forced-peek interruption', async t => {
+  const { base, request } = await startServer(t, {
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      const phoneIndex = play.availableItems.findIndex(item => item.id === 'smartphone');
+      play.inventories[setup.visitorIds[0]].items.push(play.availableItems.splice(phoneIndex, 1)[0]);
+      for (const id of [4, 6, 9]) play.powers.deck.splice(play.powers.deck.indexOf(id), 1);
+      play.powers.hand.push({ id: 4, ignoreThreshold: false });
+      play.powers.slots = [{ id: 6, ignoreThreshold: true, faceUp: false }, { id: 9, ignoreThreshold: false, faceUp: false }];
+      const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_4');
+      [play.tokens.hall_clock, play.tokens[source]] = [play.tokens[source], play.tokens.hall_clock];
+      return play;
+    },
+  });
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const [hako, first, second, third] = people;
+  const streams = await Promise.all(people.map(person => stream(t, base, person)));
+  const initial = (await snapshot(request, first)).body;
+  assert.deepEqual(initial.round.powers.slots.map(slot => slot.card), [undefined, undefined]);
+  assert.equal(initial.round.powers.hand, undefined);
+  assert.equal((await action(request, first, 'activate_power', { slot: 0 })).status, 409);
+  assert.deepEqual((await snapshot(request, first)).body, initial);
+  await action(request, first, 'silent_reveal', { index: 0 });
+  assert.equal((await action(request, first, 'use_item', { itemId: 'smartphone', targetZone: 'hand', index: 1 })).status, 200);
+  const photo = await action(request, hako, 'resolve_visitor_action');
+  assert.equal(photo.status, 200);
+  for (let index = 0; index < people.length; index++) {
+    const state = (await snapshot(request, people[index])).body;
+    assert.deepEqual(await streams[index].state(update => update.version >= photo.body.version), state);
+    assert.equal(state.round.items.result?.card?.id, index === 1 ? 4 : undefined);
+    if (index > 1) assert.equal(JSON.stringify(state).includes('动来动去'), false);
+  }
+  await action(request, second, 'silent_reveal', { index: 1 });
+  await action(request, second, 'use_item', { itemId: 'spirit_pen', roomId: 'children_room' });
+  const question = await action(request, hako, 'resolve_visitor_action');
+  assert.equal(question.body.round.resolution.truth, true);
+  for (const person of people.slice(1)) {
+    const waiting = (await snapshot(request, person)).body.round.resolution;
+    assert.deepEqual(waiting, { kind: 'waiting', playerId: hako.playerId });
+  }
+  const beforeAnswer = (await snapshot(request, second)).body;
+  assert.equal((await action(request, second, 'answer_item', { answer: true })).status, 409);
+  assert.deepEqual((await snapshot(request, second)).body, beforeAnswer);
+  const answer = await action(request, hako, 'answer_item', { answer: false });
+  assert.equal(answer.status, 200);
+  for (let index = 1; index < people.length; index++) {
+    const state = await streams[index].state(update => update.version >= answer.body.version);
+    assert.equal(state.round.items.events.at(-1).answer, false);
+    assert.equal(Object.hasOwn(state.round.items.events.at(-1), 'truth'), false);
+    assert.equal(state.round.powers.slots[1].card, undefined, 'A false response must not reveal the hidden NO.9 card');
+  }
+  await action(request, third, 'silent_reveal', { index: 2 });
+  await action(request, third, 'use_item', { itemId: 'ventriloquist_doll', roomId: 'study_room' });
+  assert.equal((await action(request, hako, 'activate_power', { slot: 0 })).status, 200);
+  const forced = (await snapshot(request, third)).body;
+  assert.equal(forced.round.resolution.kind, 'forced_peek');
+  assert.ok(forced.round.resolution.cornerIds.includes('hall_clock'));
+  assert.equal(forced.round.pendingAction, null);
+  assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 409);
+  const picked = await action(request, third, 'choose_forced_peek', { cornerId: 'hall_clock' });
+  assert.equal(picked.status, 200);
+  assert.equal(picked.body.round.resolution.token.number, 4);
+  assert.equal((await action(request, third, 'resolve_peek', { take: false })).status, 200);
+  const logs = (await snapshot(request, hako)).body.log.join('\n');
+  assert.equal(logs.includes('动来动去'), false);
+  assert.equal(logs.includes('password_4'), false);
+});
+
+test('HTTP extinguisher windows block progression and cancel NO.5 without exposing hidden victims', async t => {
+  const { request } = await startServer(t, {
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'extinguisher');
+      play.inventories[setup.visitorIds[0]].tokens.push(play.tokens[source]);
+      play.tokens[source] = null;
+      play.powers.deck.splice(play.powers.deck.indexOf(5), 1);
+      play.powers.slots[0] = { id: 5, ignoreThreshold: true, faceUp: false };
+      return play;
+    },
+  });
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const [hako, first, second] = people;
+  let state;
+  for (let index = 0; index < 3; index++) {
+    const person = people[index + 1];
+    state = (await action(request, person, 'silent_reveal', { index })).body;
+    await action(request, person, 'move', { roomId: state.round.moveTargets[0] });
+    assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
+  }
+  state = (await action(request, first, 'silent_reveal', { index: 3 })).body;
+  assert.deepEqual(state.round.interruption, { kind: 'noise', canRespond: true });
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
+  assert.equal((await action(request, second, 'extinguisher_response', { use: true })).status, 409);
+  assert.equal((await action(request, first, 'extinguisher_response', { use: false })).status, 200);
+  await action(request, hako, 'pass_noise_reaction');
+  await action(request, hako, 'begin_hako_action');
+  const activation = await action(request, hako, 'activate_power', { slot: 0 });
+  assert.equal(activation.status, 200);
+  state = (await snapshot(request, first)).body;
+  assert.deepEqual(state.round.interruption, { kind: 'power', canRespond: true });
+  assert.equal(JSON.stringify(state).includes('killerCornerId'), false);
+  assert.equal(JSON.stringify(state).includes('restorePowers'), false);
+  assert.equal((await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).status, 409);
+  state = (await action(request, first, 'extinguisher_response', { use: true })).body;
+  assert.equal(state.round.silent.cycle, 2);
+  assert.equal(state.round.phase, 'visitor_reveal');
+  assert.equal(state.round.silent.turnPlayerId, first.playerId);
+  assert.equal(state.round.inventory.tokens.some(token => token.type === 'extinguisher'), false);
+  assert.ok(state.round.visitors.every(visitor => visitor.status === 'alive'));
+  const owner = (await snapshot(request, hako)).body;
+  assert.equal(owner.round.powers.slots[0].card.id, 5);
+  assert.equal(owner.round.powers.slots[0].faceUp, false);
+  assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
 });
 
 test('HTTP boundary rejects malformed requests and only exposes intended static resources', async t => {

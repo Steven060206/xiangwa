@@ -39,7 +39,7 @@ function roomLabelLayout(room, rotation) {
   return { x, y, lines };
 }
 
-export function createTileSvg(tileId, rotation = 0) {
+export function createTileSvg(tileId, rotation = 0, extraCorners = []) {
   const tile = getTile(tileId);
   const svg = el('svg', { viewBox: '0 0 100 100', class: 'tile-svg', role: 'img', 'aria-label': `${tile.name}，旋转${rotation * 90}度` });
   svg.append(el('title', {}, tile.name));
@@ -51,6 +51,12 @@ export function createTileSvg(tileId, rotation = 0) {
     for (const corner of room.corners) {
       const mark = el('rect', { x: corner.x - 2.6, y: corner.y - 2.6, width: 5.2, height: 5.2, rx: .5, class: 'corner-mark' });
       mark.append(el('title', {}, corner.name));
+      group.append(mark);
+    }
+    for (const corner of extraCorners.filter(corner => corner.roomId === room.id)) {
+      const mark = el('rect', { x: room.label.x - 3, y: room.label.y - 16, width: 6, height: 6, rx: .5,
+        class: 'corner-mark', 'data-testid': 'suitcase-corner', 'data-corner-id': corner.id });
+      mark.append(el('title', {}, `${room.name} · 行李箱中`));
       group.append(mark);
     }
   }

@@ -18,6 +18,7 @@ const staticFiles = new Map([
   ['/tile.js', ['../public/tile.js', 'text/javascript; charset=utf-8']],
   ['/practice.js', ['../public/practice.js', 'text/javascript; charset=utf-8']],
   ['/exploration.js', ['../public/exploration.js', 'text/javascript; charset=utf-8']],
+  ['/abilities.js', ['../public/abilities.js', 'text/javascript; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
@@ -291,6 +292,17 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'drop_token':
       case 'ghost_hide':
       case 'bequeath':
+      case 'use_item':
+      case 'answer_item':
+      case 'choose_forced_peek':
+      case 'hako_cry':
+      case 'set_power':
+      case 'recall_power':
+      case 'begin_hako_action':
+      case 'activate_power':
+      case 'power_rearrange':
+      case 'inspect_path_room':
+      case 'extinguisher_response':
       case 'surrender': {
         if (!room.play) fail(409, '请先完成开局配置。');
         try {
@@ -315,6 +327,17 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           drop_token: `${player.name} 在空角落留下了一枚标志。`,
           ghost_hide: '一名箱人完成了潜伏。',
           bequeath: `${player.name} 完成了遗物处理。`,
+          use_item: `${player.name} 声明了使用道具，等待箱娃确认。`,
+          answer_item: '箱娃完成了道具询问的回答。',
+          choose_forced_peek: `${player.name} 选择了强制窥探的角落。`,
+          hako_cry: '箱娃声明了哭喊。',
+          set_power: '箱娃盖放了一张可用能力。',
+          recall_power: '箱娃回收了可用能力。',
+          begin_hako_action: '访问者闭眼，箱娃开始行动。',
+          activate_power: '箱娃发动了能力。',
+          power_rearrange: '箱娃完成了标志调整。',
+          inspect_path_room: '箱娃正在移动。',
+          extinguisher_response: input.use ? `${player.name} 使用灭火器，跳过本次箱娃行动。` : '灭火器响应已完成。',
           surrender: `${player.name}${input.agree === false ? ' 撤回了投降提议。' : ' 提出了投降。'}`,
         }[input.type];
         break;

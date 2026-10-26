@@ -231,7 +231,8 @@ function renderBoard() {
   const showTargets = canPlace() && Boolean(setup.drawnTileId);
   const targets = showTargets ? legalForRotation().filter(p => p.floor === activeFloor) : [];
   const placements = setup.placements.filter(p => p.floor === activeFloor);
-  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation]);
+  const extraCorners = state.round?.extraCorners || [];
+  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners]);
   if (key === boardKey) return;
   boardKey = key;
   const board = $('tile-board');
@@ -259,7 +260,7 @@ function renderBoard() {
       cell.dataset.rotation = placement.rotation;
       cell.style.gridColumn = placement.x - minX + 1;
       cell.style.gridRow = placement.y - minY + 1;
-      cell.append(createTileSvg(placement.tileId, placement.rotation));
+      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners));
       fragment.append(cell);
     }
     for (const position of targets) {

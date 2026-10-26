@@ -1,7 +1,10 @@
 import { INITIAL_ITEMS } from './preparation.mjs';
 import { createRound, applyRoundAction, getRoundView } from './round.mjs';
 import { finishVisitorAction, finishHakoPhase, removeSilentVisitor } from './silent.mjs';
-import { getRoom, getCornerRoom, getHidingTargets } from './movement.mjs';
+import { getRoom, getCornerRoom, getHidingTargets, getMoveTargets } from './movement.mjs';
+import { createPowers, startPowerStage, applyPowerAction, getPowersView, powerCard,
+  powerHidingTargets, restrictPowerMoves, afterPowerMove, hasActivePower, isPowerMoveForced } from './powers.mjs';
+import { declareItem, resolveItem, answerItem, getItemView, itemResolutionView } from './items.mjs';
 
 const TAKEABLE = new Set(['key', 'password', 'doll', 'weakness_clue', 'weapon', 'amulet', 'extinguisher']);
 const NAMES = { hako: '箱娃', box_person: '箱人', notebook: '手记', empty_box: '空箱', safe: '转轮式保险箱',
@@ -20,6 +23,9 @@ function inventory(play, id) { return play.inventories[id]; }
 function hasItem(play, id, itemId) { return inventory(play, id)?.items.some(item => item.id === itemId); }
 function hasToken(play, id, type) { return inventory(play, id)?.tokens.some(token => token.type === type); }
 function roomOf(cornerId) { return getCornerRoom(cornerId)?.id; }
+function corners(play, roomId) {
+  return [...getRoom(roomId).corners, ...Object.values(play.extraCorners).filter(corner => corner.roomId === roomId)];
+}
 function ghostOf(play, id) { return play.ghosts.find(ghost => ghost.playerId === id); }
 function actorsAt(play, cornerId) {
   return [
@@ -96,6 +102,7 @@ function beginHakoStage(play) {
   if (play.hakoStage?.cycle === play.round.silent.cycle) return;
   play.ringAllies = [];
   play.hakoStage = { cycle: play.round.silent.cycle, done: [], inspections: {} };
+  startPowerStage(play);
 }
 function endStandardAction(play, id) {
   play.resolution = null;
@@ -139,7 +146,112 @@ export function createPlay(setup, opening, { numbers } = {}) {
     notebooks: [], ghosts: [], discarded: [], removedTokens: [], publicNumbers: [],
     safeOpened: false, resolution: null, exchangeOffers: [], nextOfferId: 1, surrenderVotes: [],
     sharedTokens: {}, ringAllies: [], hakoStage: null, result: null,
+    powers: createPowers(opening), extraCorners: {}, placedItems: [], itemResults: {}, itemEvents: [],
+    interruption: null, inheritanceQueue: [],
+    lastBlockedWait: null,
   };
+}
+
+function context(play) {
+  return {
+    assertTurn: id => assertTurn(play, id), hasItem: (id, itemId) => hasItem(play, id, itemId),
+    inventory: id => inventory(play, id), visitor: id => visitor(play, id), roomOf,
+    corners: roomId => corners(play, roomId), actorsAt: cornerId => actorsAt(play, cornerId), tokenView,
+    die: (id, cornerId) => die(play, id, cornerId), finishAction: id => finishAction(play, id), powerCard,
+    canLie: () => hasActivePower(play, 9), forcePeek: id => forcePeek(play, id),
+    queueDeaths: deaths => queueDeaths(play, deaths), finishHakoStage: () => skipHakoStage(play),
+  };
+}
+
+function forcePeek(play, id) {
+  if (!corners(play, visitor(play, id).roomId).some(corner => occupied(play, corner.id))) throw new Error('该访问者所在房间没有可供强制窥探的标志。');
+  play.round.pendingAction = null;
+  play.resolution = { kind: 'forced_peek', playerId: id };
+}
+function chooseForcedPeek(play, id, action) {
+  if (play.resolution?.kind !== 'forced_peek' || play.resolution.playerId !== id) throw new Error('当前没有等待你选择的强制窥探。');
+  play.resolution = null;
+  declarePeek(play, id, action);
+  const pending = play.round.pendingAction;
+  play.round.pendingAction = null;
+  beginPeek(play, pending);
+}
+
+function processDeaths(play, deaths) {
+  const heirs = [];
+  for (const death of deaths) {
+    if (!alive(play, death.playerId)) continue;
+    die(play, death.playerId, death.killerCornerId);
+    if (play.resolution?.kind === 'inheritance') {
+      heirs.push(play.resolution.playerId);
+      play.resolution = null;
+    }
+  }
+  if (play.result || !play.round.visitors.some(player => player.status === 'alive')) {
+    for (const id of heirs) revealDiscard(play, id);
+  } else if (heirs.length) {
+    play.resolution = { kind: 'inheritance', playerId: heirs.shift() };
+    play.inheritanceQueue.push(...heirs);
+  }
+}
+function extinguisherOwners(play) {
+  return play.round.visitors.filter(player => player.status === 'alive' && hasToken(play, player.id, 'extinguisher')).map(player => player.id);
+}
+function queueDeaths(play, deaths) {
+  const responders = extinguisherOwners(play);
+  if (responders.length) play.interruption = { kind: 'power', responders, passed: [], deaths: clone(deaths) };
+  else processDeaths(play, deaths);
+}
+function syncNoiseInterruption(play) {
+  if (play.result || play.interruption || play.round.silent.phase !== 'hako_reaction'
+      || play.round.silent.trigger !== 'overflow' || play.powers.noiseRespondedCycle === play.round.silent.cycle) return;
+  const responders = extinguisherOwners(play);
+  if (responders.length) play.interruption = { kind: 'noise', responders, passed: [] };
+}
+function finishBlockedMove(play) {
+  const id = play.round.silent.turnPlayerId;
+  if (play.result || play.round.silent.phase !== 'visitor_action' || play.round.pendingAction || play.resolution
+      || play.interruption || !isPowerMoveForced(play, id)) return;
+  const roomId = visitor(play, id).roomId;
+  const targets = getMoveTargets(play.round.placements, roomId, { blockedDoors: play.round.blockedDoors });
+  if (restrictPowerMoves(play, id, targets).length) return;
+  // User-confirmed resolution for NO.3 + NO.10: reveal noise normally, then wait
+  // out an unreachable route rather than trapping the game before doors reopen.
+  play.lastBlockedWait = { playerId: id, roomId, cycle: play.round.silent.cycle };
+  finishAction(play, id);
+}
+function skipHakoStage(play) {
+  if (play.round.silent.phase === 'hako_reaction') {
+    applyRoundAction(play.round, play.round.hakoId, { type: 'pass_noise_reaction' });
+    beginHakoStage(play);
+  }
+  play.ringAllies = [];
+  finishHakoPhase(play.round.silent);
+  play.hakoStage = null;
+  play.powers.step = null;
+  play.interruption = null;
+}
+function respondExtinguisher(play, id, action) {
+  const window = play.interruption;
+  if (!window || !window.responders.includes(id) || window.passed.includes(id) || !alive(play, id)) {
+    throw new Error('当前没有等待你的灭火器响应。');
+  }
+  if (typeof action.use !== 'boolean') throw new Error('请选择使用灭火器或放弃。');
+  if (action.use) {
+    const held = inventory(play, id);
+    const index = held.tokens.findIndex(token => token.type === 'extinguisher');
+    if (index < 0) throw new Error('你没有携带灭火器。');
+    play.removedTokens.push(held.tokens.splice(index, 1)[0]);
+    if (window.restorePowers) play.powers = window.restorePowers;
+    skipHakoStage(play);
+    return;
+  }
+  window.passed.push(id);
+  if (window.responders.every(responder => window.passed.includes(responder))) {
+    play.interruption = null;
+    if (window.kind === 'noise') play.powers.noiseRespondedCycle = play.round.silent.cycle;
+    else processDeaths(play, window.deaths);
+  }
 }
 
 function declarePeek(play, id, action) {
@@ -275,10 +387,15 @@ function confirmAction(play, id) {
   if (id !== play.round.hakoId) throw new Error('只有箱娃可以确认访问者的行动。');
   const pending = play.round.pendingAction;
   if (!pending) throw new Error('当前没有等待结算的访问者行动。');
-  if (pending.type === 'move') { applyRoundAction(play.round, id, { type: 'resolve_visitor_action' }); return; }
+  if (pending.type === 'move') {
+    applyRoundAction(play.round, id, { type: 'resolve_visitor_action' });
+    afterPowerMove(play, pending.playerId);
+    return;
+  }
   play.round.pendingAction = null;
   if (pending.type === 'peek') beginPeek(play, pending);
   else if (pending.type === 'weapon') resolveWeapon(play, pending);
+  else if (pending.type === 'item') resolveItem(play, pending, context(play));
   else throw new Error('等待结算的访问者行动无效。');
 }
 
@@ -290,13 +407,16 @@ function actorHiding(play, id) {
 }
 function assertHiding(play, id) {
   if (play.round.silent.phase !== 'hako_phase' || !play.hakoStage) throw new Error('尚未进入箱娃阶段。');
+  if (play.powers.step !== 'action' || play.powers.rearrangement) throw new Error('请先完成哭喊与能力设置，并进入箱娃行动。');
   actorHiding(play, id);
   if (play.hakoStage.done.includes(id)) throw new Error('你已经完成本次潜伏。');
+  if (id !== play.round.hakoId && !play.hakoStage.inspections[play.round.hakoId]) throw new Error('请等待箱娃先结束阶段能力并开始潜伏。');
 }
 function inspectHidingRoom(play, id, roomId) {
   assertHiding(play, id);
   if (play.hakoStage.inspections[id]) throw new Error('请在已查看的房间选择角落，不能再次查看其他房间。');
-  const targetIds = getHidingTargets(play.round.placements, actorHiding(play, id).cornerId);
+  const targetIds = id === play.round.hakoId ? powerHidingTargets(play, actorHiding(play, id).cornerId)
+    : ordinaryHidingTargets(play, actorHiding(play, id).cornerId);
   if (!targetIds.some(cornerId => roomOf(cornerId) === roomId)) throw new Error('只能查看当前或相邻房间的角落。');
   play.hakoStage.inspections[id] = roomId;
 }
@@ -306,7 +426,8 @@ function hide(play, id, action) {
   if (action.type === 'ghost_hide' && id === play.round.hakoId) throw new Error('只有箱人可以进行此操作。');
   const inspected = play.hakoStage.inspections[id];
   if (!inspected || roomOf(action.cornerId) !== inspected) throw new Error('请先查看目标房间，再选择该房间内的潜伏角落。');
-  const targets = getHidingTargets(play.round.placements, actorHiding(play, id).cornerId);
+  const targets = id === play.round.hakoId ? powerHidingTargets(play, actorHiding(play, id).cornerId)
+    : ordinaryHidingTargets(play, actorHiding(play, id).cornerId);
   if (!targets.includes(action.cornerId)) throw new Error('只能潜伏到当前或相邻房间的角落。');
   const faceDown = action.faceDownCornerIds ?? [];
   if (!Array.isArray(faceDown) || new Set(faceDown).size !== faceDown.length
@@ -321,6 +442,7 @@ function hide(play, id, action) {
   if (participants.every(playerId => play.hakoStage.done.includes(playerId))) {
     finishHakoPhase(play.round.silent);
     play.hakoStage = null;
+    play.powers.step = null;
   }
 }
 
@@ -396,7 +518,7 @@ function bequeath(play, id, action) {
     target.tokens.push(...held.tokens); target.items.push(...held.items);
     held.tokens = []; held.items = [];
   } else revealDiscard(play, id);
-  play.resolution = null;
+  play.resolution = play.inheritanceQueue.length ? { kind: 'inheritance', playerId: play.inheritanceQueue.shift() } : null;
 }
 function surrender(play, id, action) {
   assertAlive(play, id);
@@ -414,11 +536,15 @@ export function applyPlayAction(previous, playerId, action) {
   if (previous.result) throw new Error('本局已经结束。');
   if (!action || typeof action.type !== 'string') throw new Error('请选择回合操作。');
   const play = clone(previous);
-  if (play.resolution && !['resolve_peek', 'safe_guess', 'bequeath'].includes(action.type)) {
+  if (play.interruption && action.type !== 'extinguisher_response') throw new Error('请先等待灭火器持有者回应。');
+  if (play.resolution && !['resolve_peek', 'safe_guess', 'bequeath', 'answer_item', 'choose_forced_peek'].includes(action.type)) {
     throw new Error('请先等待当前窥探或遗物继承结算完成。');
   }
-  if (play.round.pendingAction && action.type !== 'resolve_visitor_action') {
+  if (play.round.pendingAction && !['resolve_visitor_action', 'activate_power'].includes(action.type)) {
     throw new Error('访问者已声明行动，请先等待箱娃确认。');
+  }
+  if (isPowerMoveForced(play, playerId) && ['peek', 'use_weapon', 'use_item', 'silent_skip'].includes(action.type)) {
+    throw new Error('鬼来电生效中，只能沿最短路径移动至客厅。');
   }
   switch (action.type) {
     case 'peek': declarePeek(play, playerId, action); break;
@@ -434,28 +560,56 @@ export function applyPlayAction(previous, playerId, action) {
     case 'drop_token': dropToken(play, playerId, action); break;
     case 'bequeath': bequeath(play, playerId, action); break;
     case 'surrender': surrender(play, playerId, action); break;
+    case 'use_item': declareItem(play, playerId, action, context(play)); break;
+    case 'answer_item': answerItem(play, playerId, action, context(play)); break;
+    case 'choose_forced_peek': chooseForcedPeek(play, playerId, action); break;
+    case 'extinguisher_response': respondExtinguisher(play, playerId, action); break;
     case 'silent_reveal': case 'silent_skip': case 'move':
       assertAlive(play, playerId);
+      if (action.type === 'move') {
+        const targets = getRoundView(play.round, playerId).moveTargets;
+        if (!restrictPowerMoves(play, playerId, targets).includes(action.roomId)) throw new Error('鬼来电生效中，只能沿最短路径移动至客厅。');
+      }
       applyRoundAction(play.round, playerId, action); break;
     case 'pass_noise_reaction': applyRoundAction(play.round, playerId, action); break;
-    default: throw new Error('该回合操作尚未实现。');
+    default: {
+      const beforePowers = clone(play.powers);
+      if (action.type === 'begin_hako_action' && play.hakoStage) play.hakoStage.publicCorners = publicCorners(play);
+      if (!applyPowerAction(play, playerId, action, context(play))) throw new Error('该回合操作尚未实现。');
+      if (play.interruption?.kind === 'power') play.interruption.restorePowers = beforePowers;
+    }
   }
+  finishBlockedMove(play);
   checkVictory(play);
   beginHakoStage(play);
+  syncNoiseInterruption(play);
   return play;
 }
 
+function ordinaryHidingTargets(play, cornerId) {
+  const base = getHidingTargets(play.round.placements, cornerId);
+  const roomIds = new Set(base.map(roomOf));
+  return [...base, ...Object.values(play.extraCorners).filter(corner => roomIds.has(corner.roomId)).map(corner => corner.id)].sort();
+}
+function publicCorners(play) {
+  return Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id),
+    ...(play.tokens[id]?.type === 'empty_box' && play.tokens[id].faceUp && !actorsAt(play, id).length
+      ? { faceUp: true, token: tokenView(play.tokens[id]) } : {}) }));
+}
 function hidingView(play, id) {
   const actor = actorHiding(play, id);
-  const canHide = play.round.silent.phase === 'hako_phase' && !play.result && !play.resolution;
+  const canHide = play.round.silent.phase === 'hako_phase' && play.powers.step === 'action' && !play.powers.rearrangement
+    && !play.result && !play.resolution && !play.interruption
+    && (id === play.round.hakoId || !!play.hakoStage?.inspections[play.round.hakoId]);
   const finished = play.hakoStage?.done.includes(id) ?? false;
-  const targets = canHide && !finished ? getHidingTargets(play.round.placements, actor.cornerId) : [];
+  const targets = canHide && !finished ? id === play.round.hakoId ? powerHidingTargets(play, actor.cornerId)
+    : ordinaryHidingTargets(play, actor.cornerId) : [];
   const inspected = canHide ? play.hakoStage?.inspections[id] : null;
   return {
     cornerId: actor.cornerId, roomId: roomOf(actor.cornerId), finished,
     hidingRooms: [...new Set(targets.map(roomOf))].map(roomId => ({ id: roomId, name: getRoom(roomId).name })),
     hidingTargets: inspected ? targets.filter(cornerId => roomOf(cornerId) === inspected) : [],
-    ...(inspected ? { inspectedRoom: { id: inspected, corners: getRoom(inspected).corners.map(({ id: cornerId }) => ({
+    ...(inspected ? { inspectedRoom: { id: inspected, corners: corners(play, inspected).map(({ id: cornerId }) => ({
       id: cornerId, token: tokenView(play.tokens[cornerId]),
       actors: actorsAt(play, cornerId).map(actor => ({ playerId: actor.playerId, type: actor.type })),
     })) } } : {}),
@@ -464,7 +618,10 @@ function hidingView(play, id) {
 function resolutionView(play, id) {
   const resolution = play.resolution;
   if (!resolution) return null;
+  if (resolution.kind === 'item_answer') return itemResolutionView(play, id, context(play));
   if (resolution.playerId !== id) return { kind: 'waiting', playerId: resolution.playerId };
+  if (resolution.kind === 'forced_peek') return { kind: 'forced_peek', playerId: id,
+    cornerIds: corners(play, visitor(play, id).roomId).filter(corner => occupied(play, corner.id)).map(corner => corner.id) };
   if (resolution.kind === 'inheritance') return { kind: 'inheritance', playerId: id,
     targets: play.round.visitors.filter(player => player.status === 'alive').map(player => player.id) };
   const token = resolution.token;
@@ -489,25 +646,28 @@ export function getPlayView(play, playerId) {
   view.mode = 'exploration';
   const player = visitor(play, playerId);
   const canAct = alive(play, playerId) && play.round.silent.phase === 'visitor_action'
-    && play.round.silent.turnPlayerId === playerId && !play.round.pendingAction && !play.resolution && !play.result;
+    && play.round.silent.turnPlayerId === playerId && !play.round.pendingAction && !play.resolution && !play.result && !play.interruption;
   const canFree = alive(play, playerId) && ['visitor_reveal', 'visitor_action'].includes(play.round.silent.phase)
-    && !play.round.pendingAction && !play.resolution && !play.result;
+    && !play.round.pendingAction && !play.resolution && !play.result && !play.interruption;
   view.phase = play.result ? 'game_over' : play.resolution ? 'visitor_resolution' : view.phase;
   view.visitors = play.round.visitors.map(player => ({ id: player.id, status: player.status,
     ...(player.status === 'alive' ? { roomId: player.roomId } : {}) }));
   // getRoundView may calculate movement for a dead seat; never retain its public position.
-  view.moveTargets = canAct ? view.moveTargets : [];
+  view.moveTargets = canAct ? restrictPowerMoves(play, playerId, view.moveTargets) : [];
   if (view.pendingAction) {
     const pending = play.round.pendingAction;
     view.pendingAction = { type: pending.type, playerId: pending.playerId,
-      ...(pending.type === 'move' ? { fromRoomId: pending.fromRoomId, toRoomId: pending.toRoomId } : { cornerId: pending.cornerId }) };
+      ...(pending.type === 'move' ? { fromRoomId: pending.fromRoomId, toRoomId: pending.toRoomId }
+        : pending.type === 'item' ? { itemId: pending.itemId, ...(pending.roomId ? { roomId: pending.roomId } : {}) }
+          : { cornerId: pending.cornerId }) };
   }
   view.inventory = player ? { tokens: inventory(play, playerId).tokens.map(tokenView), items: clone(inventory(play, playerId).items) }
     : { tokens: [], items: [] };
-  view.peekTargets = canAct ? getRoom(player.roomId).corners.filter(corner => occupied(play, corner.id)).map(corner => corner.id) : [];
-  view.weapons = canAct ? inventory(play, playerId).tokens.filter(token => token.type === 'weapon').map(tokenView) : [];
-  view.weaponTargets = canAct ? getRoom(player.roomId).corners.map(corner => corner.id) : [];
-  view.dropTargets = canFree ? getRoom(player.roomId).corners.filter(corner => !occupied(play, corner.id)).map(corner => corner.id) : [];
+  const canChoose = canAct && !isPowerMoveForced(play, playerId);
+  view.peekTargets = canChoose ? corners(play, player.roomId).filter(corner => occupied(play, corner.id)).map(corner => corner.id) : [];
+  view.weapons = canChoose ? inventory(play, playerId).tokens.filter(token => token.type === 'weapon').map(tokenView) : [];
+  view.weaponTargets = canChoose ? corners(play, player.roomId).map(corner => corner.id) : [];
+  view.dropTargets = canFree ? corners(play, player.roomId).filter(corner => !occupied(play, corner.id)).map(corner => corner.id) : [];
   view.exchangePartners = canFree ? play.round.visitors.filter(target => target.id !== playerId && target.status === 'alive'
     && target.roomId === player.roomId).map(target => ({ id: target.id, roomId: target.roomId,
     tokenCount: inventory(play, target.id).tokens.length, itemCount: inventory(play, target.id).items.length })) : [];
@@ -520,9 +680,16 @@ export function getPlayView(play, playerId) {
   if (view.sharedTokens?.token) view.sharedTokens.token = tokenView(view.sharedTokens.token);
   view.resolution = resolutionView(play, playerId);
   view.notebooks = play.notebooks.map(tokenView);
-  view.cornerState = Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id),
-    ...(play.tokens[id]?.type === 'empty_box' && play.tokens[id].faceUp && !actorsAt(play, id).length
-      ? { faceUp: true, token: tokenView(play.tokens[id]) } : {}) }));
+  view.cornerState = alive(play, playerId) && play.powers.step === 'action' && play.hakoStage?.publicCorners
+    ? clone(play.hakoStage.publicCorners) : publicCorners(play);
+  view.extraCorners = clone(Object.values(play.extraCorners));
+  view.blockedDoors = clone(play.round.blockedDoors);
+  view.blockedWait = play.lastBlockedWait?.cycle === play.round.silent.cycle ? clone(play.lastBlockedWait) : null;
+  view.powers = getPowersView(play, playerId);
+  view.items = getItemView(play, playerId, context(play));
+  if (!canChoose) view.items.usableItems = [];
+  view.interruption = play.interruption ? { kind: play.interruption.kind,
+    canRespond: play.interruption.responders.includes(playerId) && !play.interruption.passed.includes(playerId) } : null;
   view.safe = { opened: play.safeOpened, publicNumbers: [...play.publicNumbers], numberOptions: [1, 2, 3, 4, 5, 6] };
   view.discarded = play.discarded.map(entry => ({ playerId: entry.playerId,
     tokens: entry.tokens.map(tokenView), items: clone(entry.items) }));

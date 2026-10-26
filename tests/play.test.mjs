@@ -74,7 +74,8 @@ function enterHakoStage(play, resumePlayerId = third) {
     card.status = [2, 4, 5].includes(card.number) ? 'up' : 'down';
     delete card.holderId;
   });
-  return act(play, hakoId, { type: 'pass_noise_reaction' });
+  play = act(play, hakoId, { type: 'pass_noise_reaction' });
+  return act(play, hakoId, { type: 'begin_hako_action' });
 }
 
 function addGhost(play, playerId, cornerId, carriedTokens = []) {

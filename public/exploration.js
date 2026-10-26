@@ -1,8 +1,10 @@
 import { MAP_TILES } from '/shared/maps.mjs';
+import { renderAbilities, renderActiveItems } from './abilities.js';
 
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
 const cornerName = id => {
+  if (id?.startsWith('suitcase:')) return `${roomName(id.slice(9))} · 行李箱中`;
   for (const room of rooms) {
     const corner = room.corners.find(candidate => candidate.id === id);
     if (corner) return `${room.name} · ${corner.name}`;
@@ -87,11 +89,14 @@ function checkbox(container, id, caption, locked, checked = false) {
 export function explorationDescription(state) {
   const round = state.round;
   if (round.result) return `${round.result.winner === 'visitors' ? '访问者' : '箱娃'}胜利，本局已结束。`;
+  if (round.interruption) return round.interruption.canRespond ? '你可以使用灭火器打断，或选择放弃。' : '等待灭火器持有者选择是否打断。';
   const resolution = round.resolution;
   if (resolution) {
     if (resolution.kind === 'waiting') return `等待${playerName(state, resolution.playerId)}完成结算。`;
     if (resolution.kind === 'inheritance') return '遗物戒指生效。选择将随身物品留给谁，然后成为箱人。';
     if (resolution.kind === 'safe') return '你窥探到了保险箱。选择数字并尝试开锁。';
+    if (resolution.kind === 'item_answer') return '选择对道具询问的回答。';
+    if (resolution.kind === 'forced_peek') return '行动被能力打断。请选择本房间的一个角落窥探。';
     return resolution.kind === 'notebook' ? '你发现了手记。公开手记，并选择补位方式。' : '你已看到角落内容。决定是否获取标志。';
   }
   const mine = round.silent?.turnPlayerId === state.you;
@@ -99,10 +104,11 @@ export function explorationDescription(state) {
   const ghost = round.ghost;
   switch (round.phase) {
     case 'visitor_reveal': return mine ? '轮到你了。翻开一枚无声标志，或持牌跳过本回合。' : `等待${playerName(state, round.silent?.turnPlayerId)}翻牌或持牌跳过。`;
-    case 'visitor_action': return mine ? '选择移动、窥探或使用讨伐道具。' : `等待${playerName(state, round.silent?.turnPlayerId)}行动。`;
+    case 'visitor_action': return mine ? '选择移动、窥探或使用道具。' : `等待${playerName(state, round.silent?.turnPlayerId)}行动。`;
     case 'visitor_reaction': return isHako ? '访问者已声明行动。确认后结算。' : '行动已经声明，等待箱娃确认结算。';
     case 'hako_reaction': return isHako ? '累计数字已超过10。结束反应窗口，进入箱娃阶段。' : '累计数字已超过10，等待箱娃结束反应窗口。';
     case 'hako_phase': {
+      if (round.powers?.step === 'preparation') return isHako ? '可以先哭喊，再设置或回收能力；准备好后开始箱娃行动。' : '等待箱娃决定是否哭喊并设置能力。';
       const actor = isHako ? round.hako : ghost;
       if (actor?.finished) return '你已完成潜伏，等待其他箱人或箱娃行动。';
       if (actor && actor.status !== 'banished') return actor.inspectedRoom ? '已查看房间。选择一个角落潜伏。' : '先选择合法房间查看角落，再选择潜伏位置。';
@@ -124,10 +130,12 @@ export function explorationSeatStatus(state, player) {
   return roomName(visitor?.roomId);
 }
 
-function publicProgress(container, round) {
+function publicProgress(container, state) {
+  const round = state.round;
   const section = node('section', 'exploration-section');
   const notebooks = round.notebooks || [];
   section.append(node('h3', '', `公开手记 · ${notebooks.length} 片`));
+  if (round.blockedWait) section.append(node('p', 'small-note', `${playerName(state, round.blockedWait.playerId)}因没有通往客厅的路线，已结束本次行动，等待通路恢复。`));
   const text = notebooks.length ? notebooks.map(value => typeof value === 'object' ? tokenName(value) : `手记${value}`).join('、') : '尚未公开手记。';
   const notebookText = node('p', 'small-note', text);
   notebookText.dataset.testid = 'public-notebooks';
@@ -154,7 +162,7 @@ function gameResult(container, state) {
 
 function visitorControls(container, state, locked, action) {
   const round = state.round;
-  if (round.phase !== 'visitor_action' || round.silent?.turnPlayerId !== state.you || round.resolution) return;
+  if (round.phase !== 'visitor_action' || round.silent?.turnPlayerId !== state.you || round.resolution || round.interruption) return;
   const moves = node('div', 'action-group');
   moves.append(node('h3', '', '移动'));
   for (const id of round.moveTargets || []) {
@@ -194,7 +202,8 @@ function pendingControls(container, state, locked, action) {
   const kind = pending.kind || pending.type;
   const text = kind === 'move' || pending.toRoomId
     ? `${playerName(state, pending.playerId)}：${roomName(pending.fromRoomId)} → ${roomName(pending.toRoomId)}`
-    : `${playerName(state, pending.playerId)}声明${kind === 'weapon' || kind === 'use_weapon' ? '使用讨伐道具' : '窥探'}：${cornerName(pending.cornerId)}`;
+    : kind === 'item' ? `${playerName(state, pending.playerId)}声明使用道具。`
+      : `${playerName(state, pending.playerId)}声明${kind === 'weapon' || kind === 'use_weapon' ? '使用讨伐道具' : '窥探'}：${cornerName(pending.cornerId)}`;
   container.append(node('p', 'pending-move', text));
   if (round.hako.playerId === state.you) container.append(button('确认行动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
 }
@@ -237,7 +246,7 @@ function safeControls(container, resolution, locked, action) {
 
 function resolutionControls(container, state, locked, action) {
   const resolution = state.round.resolution;
-  if (!resolution || resolution.kind === 'waiting') return;
+  if (!resolution || ['waiting', 'item_answer', 'forced_peek'].includes(resolution.kind)) return;
   const section = node('section', 'private-resolution practice-controls');
   section.dataset.testid = 'private-resolution';
   section.dataset.kind = resolution.kind;
@@ -288,11 +297,15 @@ function resolutionControls(container, state, locked, action) {
 
 function hidingControls(container, state, locked, action, inspectedRoomTokens) {
   const round = state.round;
-  if (round.phase !== 'hako_phase') return;
+  if (round.phase !== 'hako_phase' || round.powers?.step !== 'action' || round.powers?.rearrangement || round.interruption || round.resolution) return;
   const isHako = round.hako.playerId === state.you;
   const actor = isHako ? round.hako : round.ghost;
   if (!actor || actor.status === 'banished') return;
   if (actor.finished) { container.append(node('p', 'small-note', '已完成本次潜伏，等待其他行动者。')); return; }
+  if (!isHako && !actor.inspectedRoom && !actor.hidingRooms?.length) {
+    container.append(node('p', 'small-note', '等待箱娃完成阶段能力并开始潜伏。'));
+    return;
+  }
   const prefix = isHako ? '' : 'ghost-';
   if (actor.inspectedRoom) {
     inspectedRoomTokens(container, actor.inspectedRoom);
@@ -338,7 +351,7 @@ function inventory(container, state, locked, action) {
     section.append(details);
   }
   const alive = round.visitors.find(visitor => visitor.id === state.you)?.status === 'alive';
-  if (alive && ['visitor_reveal', 'visitor_action'].includes(round.phase) && !round.result && !round.resolution && !round.pendingAction) {
+  if (alive && ['visitor_reveal', 'visitor_action'].includes(round.phase) && !round.result && !round.resolution && !round.pendingAction && !round.interruption) {
     const free = node('details', 'free-actions');
     free.append(node('summary', '', '展示、赠送与放置（自由行动）'));
     const controls = node('div', 'practice-controls free-action-controls');
@@ -421,7 +434,7 @@ function exchanges(container, state, locked, action) {
     if (requestedNames.length) section.append(node('p', 'small-note', `${mine ? '希望对方交出' : '需要交出'}：${requestedNames.join('、')}`));
     if (!mine && !round.result) {
       const actions = node('div', 'decision-actions');
-      const blocked = locked || Boolean(round.resolution || round.pendingAction) || !['visitor_reveal', 'visitor_action'].includes(round.phase);
+      const blocked = locked || Boolean(round.resolution || round.pendingAction || round.interruption) || !['visitor_reveal', 'visitor_action'].includes(round.phase);
       actions.append(button('接受', 'exchange-accept', blocked, () => action('respond_exchange', { offerId: offer.id, accept: true })), button('拒绝', 'exchange-reject', blocked, () => action('respond_exchange', { offerId: offer.id, accept: false }), true));
       section.append(actions);
     }
@@ -439,7 +452,7 @@ function surrenderControls(container, state, locked, action) {
   details.append(node('p', 'small-note', `全部存活访问者同意后，箱娃获胜。已同意 ${votes.length} / ${round.visitors.filter(visitor => visitor.status === 'alive').length} 人。`));
   if (votes.length) details.append(node('p', 'small-note', votes.map(id => playerName(state, id)).join('、')));
   const controls = node('div', 'practice-controls free-action-controls');
-  controls.append(button(mine ? '撤回投降' : '同意投降', mine ? 'withdraw-surrender' : 'surrender', locked || Boolean(round.resolution || round.pendingAction), () => action('surrender', { agree: !mine }), true));
+  controls.append(button(mine ? '撤回投降' : '同意投降', mine ? 'withdraw-surrender' : 'surrender', locked || Boolean(round.resolution || round.pendingAction || round.interruption), () => action('surrender', { agree: !mine }), true));
   details.append(controls);
   container.append(details);
 }
@@ -452,7 +465,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
   const fragment = document.createDocumentFragment();
   if (round.result) gameResult(fragment, state);
   else fragment.append(node('h2', '', '旧宅探索'));
-  fragment.append(node('p', 'practice-scope small-note', '支持窥探、标志获取与补位、同房交换、死亡转箱人及三条胜利路线。主动道具、哭喊与箱娃之力仍在开发。'));
+  fragment.append(node('p', 'practice-scope small-note', '支持探索、主动道具、哭喊、能力设置与打断、死亡转箱人及三条胜利路线。深菱神社之铃、NO.7和NO.8仍未开放。'));
   if (state.initialPower) {
     const power = node('p', 'initial-power-public', `初始箱娃之力：${state.initialPower.name}`);
     power.dataset.testid = 'initial-power';
@@ -502,14 +515,16 @@ export function renderExploration({ panel, state, pending, online, action, silen
     resolutionControls(controls, state, locked, action);
     visitorControls(controls, state, locked, action);
     pendingControls(controls, state, locked, action);
-    if (round.phase === 'hako_reaction' && round.hako.playerId === state.you) controls.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked, () => action('pass_noise_reaction')));
+    if (round.phase === 'hako_reaction' && round.hako.playerId === state.you) controls.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked || Boolean(round.interruption), () => action('pass_noise_reaction')));
     hidingControls(controls, state, locked, action, inspectedRoomTokens);
+    renderAbilities({ container: controls, state, locked, action });
+    renderActiveItems({ container: controls, state, locked, action });
   }
   fragment.append(controls);
   if (round.silent) fragment.append(silentCards(state, locked, action));
   inventory(fragment, state, locked, action);
   exchanges(fragment, state, locked, action);
-  publicProgress(fragment, round);
+  publicProgress(fragment, state);
   surrenderControls(fragment, state, locked, action);
   panel.replaceChildren(fragment);
 }

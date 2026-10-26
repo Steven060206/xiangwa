@@ -4,6 +4,7 @@ import { renderExploration, explorationDescription, explorationSeatStatus } from
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
 const cornerName = id => {
+  if (id?.startsWith('suitcase:')) return `${roomName(id.slice(9))} · 行李箱中`;
   for (const room of rooms) {
     const corner = room.corners.find(item => item.id === id);
     if (corner) return `${room.name} · ${corner.name}`;
@@ -94,6 +95,7 @@ function silentCards(state, locked, action) {
   section.append(heading);
   const mine = round.phase === 'visitor_reveal' && silent.turnPlayerId === state.you;
   const zeroRevealed = silent.cards.some(card => card.status === 'up' && card.number === 0);
+  const ghostCall = round.powers?.ghostCall.active === true;
   const grid = node('div', 'silent-cards');
   for (const card of silent.cards) {
     const cell = node('div', `silent-card-cell ${card.status}`);
@@ -112,14 +114,15 @@ function silentCards(state, locked, action) {
     face.append(node('span', 'silent-card-caption', held ? playerName(state, card.holderId) : revealed ? '已翻开' : `第 ${card.index + 1} 枚`));
     cell.append(face);
     if (mine && !revealed && !held) {
-      const skip = button('持牌跳过', `skip-card-${card.index}`, locked || zeroRevealed, () => action('silent_skip', { index: card.index }), true);
+      const skip = button('持牌跳过', `skip-card-${card.index}`, locked || zeroRevealed || ghostCall, () => action('silent_skip', { index: card.index }), true);
       skip.classList.add('silent-skip');
       if (zeroRevealed) skip.title = '数字0已翻开，本轮不能跳过。';
+      if (ghostCall) skip.title = '鬼来电生效中，必须翻牌并沿最短路线移动。';
       cell.append(skip);
     }
     grid.append(cell);
   }
-  section.append(grid, node('p', 'small-note', zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
+  section.append(grid, node('p', 'small-note', ghostCall ? '鬼来电生效中，不能持牌跳过。照常翻牌；无路可走时自动结束本次行动，等待解封。' : zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
   return section;
 }
 
@@ -281,9 +284,11 @@ function choiceSelect(container, { id, label, options, selected, locked, onChang
   for (const choice of options) {
     const option = node('option', '', choice.name);
     option.value = choice.id;
+    option.disabled = choice.disabled === true;
     select.append(option);
   }
-  select.value = options.some(option => String(option.id) === String(selected)) ? String(selected) : String(options[0]?.id ?? '');
+  select.value = options.some(option => !option.disabled && String(option.id) === String(selected)) ? String(selected)
+    : String(options.find(option => !option.disabled)?.id ?? '');
   select.addEventListener('change', () => onChange(select.value));
   onChange(select.value);
   container.append(caption, select);
@@ -399,11 +404,12 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'power': {
         const select = choiceSelect(controls, {
-          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions,
+          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(option => ({ ...option,
+            disabled: [7, 8].includes(option.id), name: `${option.name}${[7, 8].includes(option.id) ? '（未开放）' : ''}` })),
           selected: selectedPower, locked, onChange: value => { selectedPower = value; },
         });
         controls.append(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked || !select.value, () => action('choose_initial_power', { powerId: Number(select.value) })));
-        controls.append(node('p', 'small-note', '本阶段记录初始能力选择；能力发动将在后续开放。'));
+        controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。NO.7和NO.8尚未开放。'));
         break;
       }
     }

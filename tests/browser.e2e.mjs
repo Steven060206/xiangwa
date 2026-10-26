@@ -10,7 +10,7 @@ import { createPlay } from '../src/play.mjs';
 const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
-test('four browser sessions complete private opening, exploration, exchanges and surrender', { timeout: 180000 }, async t => {
+test('four browser sessions complete private opening, powers, exploration, item answers, exchanges and surrender', { timeout: 180000 }, async t => {
   const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
     const play = createPlay(setup, opening, options);
     const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_2');
@@ -24,6 +24,12 @@ test('four browser sessions complete private opening, exploration, exchanges and
     assert.notEqual(play.round.hidingCornerId, 'children_toys');
     play.removedTokens.push(play.tokens.children_toys);
     play.tokens.children_toys = { ...play.opening.emptyBoxTokens.shift(), faceUp: true };
+    const powersBefore = [...play.powers.deck].sort();
+    const cryCardIndex = play.powers.deck.indexOf(10);
+    assert.notEqual(cryCardIndex, -1, 'The unused power 10 must be in the real deck');
+    [play.powers.deck[0], play.powers.deck[cryCardIndex]] = [play.powers.deck[cryCardIndex], play.powers.deck[0]];
+    assert.deepEqual([...play.powers.deck].sort(), powersBefore,
+      'The cry fixture reorders the real deck without introducing or removing cards');
     return play;
   } });
   server.listen(0, '127.0.0.1');
@@ -66,7 +72,9 @@ test('four browser sessions complete private opening, exploration, exchanges and
 
   const privateKeys = new Set(['password', 'weakness', 'passwordOptions', 'weaknessOptions',
     'remainsCornerId', 'remainsTargets', 'inspectedRoom', 'hidingRooms', 'hidingTargets',
-    'hidingCornerId', 'hidingUnderToken', 'initialPowerOptions', 'cornerTokens', 'powerDeck']);
+    'hidingCornerId', 'hidingUnderToken', 'initialPowerOptions', 'cornerTokens', 'powerDeck',
+    'hand', 'activationOptions', 'rearrangement', 'pathInspection', 'cryRooms', 'lastDraw',
+    'truth', 'canLie', 'answerOptions']);
   // A declared target's cornerId is public. Hako/ghost locations and unrevealed contents
   // remain private; rejecting every cornerId would also reject a valid peek declaration.
   function assertNoPrivateKeys(value) {
@@ -264,6 +272,8 @@ test('four browser sessions complete private opening, exploration, exchanges and
   await assertVisitorPrivacy('power');
   await hakoPage.reload();
   await hakoPage.getByTestId('initial-power-select').waitFor();
+  for (const id of [7, 8]) assert.equal(await hakoPage.locator(`#initial-power-select option[value="${id}"]`).isDisabled(), true,
+    'Unavailable powers must not be offered as usable opening choices');
   const restoredHako = await getState(identities[0]);
   await waitForSSE(restoredHako.version);
   assert.equal(restoredHako.you, identities[0].playerId);
@@ -329,6 +339,43 @@ test('four browser sessions complete private opening, exploration, exchanges and
   for (const page of pages.slice(1)) assert.equal(await page.getByTestId('pass-noise-reaction').count(), 0);
   state = await performAction(hakoPage, 'pass_noise_reaction', () => hakoPage.getByTestId('pass-noise-reaction').click());
   assert.equal(state.round.phase, 'hako_phase');
+  assert.equal(state.round.powers.step, 'preparation');
+  assert.equal(await hakoPage.getByTestId('inspect-hiding-room').count(), 0,
+    'Hiding starts after the public preparation step');
+  state = await performAction(hakoPage, 'hako_cry', () => hakoPage.getByTestId('hako-cry').click());
+  assert.deepEqual(state.round.powers.announcement, { roomId: 'children_room', cycle: 1 });
+  assert.deepEqual(state.round.powers.lastDraw, { kind: 'returned', cards: [10] });
+  assert.equal(state.round.powers.handCount, 1, 'An unqualified cry card returns to the real deck');
+  for (const page of pages) assert.match(await page.getByTestId('cry-announcement').innerText(), /儿童房/);
+  await assertVisitorPrivacy();
+  await hakoPage.getByTestId('set-power-select').selectOption('1');
+  await hakoPage.getByTestId('set-power-slot').selectOption('0');
+  state = await performAction(hakoPage, 'set_power', () => hakoPage.getByTestId('set-power').click());
+  assert.equal(state.round.powers.slots[0].card.id, 1);
+  assert.equal(state.round.powers.slots[0].faceUp, false);
+  const preparedSnapshots = await assertVisitorPrivacy();
+  for (let index = 1; index < pages.length; index++) {
+    assert.deepEqual(preparedSnapshots[index].round.powers.slots[0], { slot: 0, occupied: true, faceUp: false });
+    assert.equal(Object.hasOwn(preparedSnapshots[index].round.powers, 'hand'), false);
+    assert.equal(Object.hasOwn(preparedSnapshots[index].round.powers.announcement, 'cornerId'), false);
+    assert.equal(await pages[index].getByTestId('power-hand-card').count(), 0);
+    assert.match(await pages[index].locator('[data-testid="power-slot"][data-slot="0"]').innerText(), /背面能力/);
+    assert.equal(await pages[index].getByTestId('set-power').count(), 0);
+    assert.equal(await pages[index].getByTestId('activate-power').count(), 0);
+  }
+  state = await performAction(hakoPage, 'begin_hako_action', () => hakoPage.getByTestId('begin-hako-action').click());
+  assert.equal(state.round.powers.step, 'action');
+  state = await performAction(hakoPage, 'activate_power', () => hakoPage.locator('[data-testid="activate-power"][data-power-id="1"]').click());
+  assert.equal(state.round.powers.slots[0].occupied, false);
+  assert.equal(state.round.powers.handCount, 1, 'A used ordinary ability returns to hako hand');
+  assert.deepEqual(state.round.powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
+  for (const page of pages) {
+    assert.match(await page.getByTestId('power-last-activation').innerText(), /发动了就在你身旁/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'Power preparation and activation controls fit desktop and mobile viewports');
+  }
+  await hakoPage.screenshot({ path: 'test-results/powers-desktop.png', fullPage: true });
+  await pages[1].screenshot({ path: 'test-results/powers-mobile.png', fullPage: true });
   assert.deepEqual(state.round.hako.hidingTargets, [], 'Hako must inspect a room before selecting its corner');
   const hidingRoom = 'children_room';
   assert.ok(state.round.hako.hidingRooms.some(room => room.id === hidingRoom));
@@ -347,6 +394,7 @@ test('four browser sessions complete private opening, exploration, exchanges and
   state = await performAction(hakoPage, 'hako_hide', () => hakoPage.getByTestId('confirm-hiding').click());
   assert.equal(state.round.hako.cornerId, nextHiding);
   assert.equal(state.round.silent.cycle, 2);
+  assert.equal(state.round.powers.step, null, 'Ending the hako stage clears its action step');
   assert.equal(state.round.silent.total, 0);
   assert.equal(state.round.phase, 'visitor_reveal');
   assert.equal(state.round.silent.turnPlayerId, interruptedVisitorId, 'The visitor interrupted by overflow resumes after hako');
@@ -362,6 +410,8 @@ test('four browser sessions complete private opening, exploration, exchanges and
       'Opening and round controls must fit desktop and mobile viewports');
   }
   await hakoPage.screenshot({ path: 'test-results/round-desktop.png', fullPage: true });
+  assert.ok(await hakoPage.locator('#board-section').evaluate(element => element.getBoundingClientRect().height < 800),
+    'Lengthy ability controls must not stretch the map into a column of empty space');
   await pages[1].screenshot({ path: 'test-results/round-mobile.png', fullPage: true });
 
   const explorerPage = pages[interruptedIndex];
@@ -450,6 +500,64 @@ test('four browser sessions complete private opening, exploration, exchanges and
   }
   await recipientPage.screenshot({ path: 'test-results/exploration-desktop.png', fullPage: true });
   await assertVisitorPrivacy();
+
+  const penIndex = 2;
+  const penPerson = identities[penIndex];
+  const penPage = pages[penIndex];
+  state = await getState(penPerson);
+  assert.ok(state.round.inventory.items.some(item => item.id === 'spirit_pen'));
+  assert.equal(state.round.silent.turnPlayerId, penPerson.playerId,
+    'The visitor after the completed peek owns the spirit pen in the real draft order');
+  const penCard = state.round.silent.cards.find(card => card.status === 'down');
+  assert.ok(penCard);
+  state = await performAction(penPage, 'silent_reveal', () => penPage.getByTestId(`silent-card-${penCard.index}`).click());
+  assert.equal(state.round.phase, 'visitor_action');
+  await penPage.getByTestId('active-item-select').selectOption('spirit_pen');
+  await penPage.getByTestId('active-item-room').selectOption('children_room');
+  state = await performAction(penPage, 'use_item', () => penPage.getByTestId('use-item').click());
+  assert.deepEqual(state.round.pendingAction, { type: 'item', playerId: penPerson.playerId,
+    itemId: 'spirit_pen', roomId: 'children_room' });
+  assert.equal(state.round.resolution, null, 'Active items use the declaration and hako confirmation window');
+  state = await performAction(hakoPage, 'resolve_visitor_action', () => hakoPage.getByTestId('resolve-action').click());
+  assert.equal(state.round.resolution.kind, 'item_answer');
+  assert.equal(state.round.resolution.playerId, identities[0].playerId);
+  assert.equal(state.round.resolution.truth, true, 'The hako remained in the original children room');
+  assert.equal(state.round.resolution.canLie, false, 'No false-response ability has been set');
+  snapshots = await assertVisitorPrivacy();
+  for (let index = 1; index < pages.length; index++) {
+    assert.deepEqual(snapshots[index].round.resolution, { kind: 'waiting', playerId: identities[0].playerId });
+    assertNoPrivateKeys(snapshots[index]);
+    assertNoPrivateKeys(await pages[index].evaluate(() => window.__hakoLastState));
+    assert.equal(await pages[index].getByTestId('item-answer').count(), 0);
+    assert.equal(await pages[index].getByTestId('item-answer-select').count(), 0);
+    assert.equal(await pages[index].getByTestId('answer-item').count(), 0);
+  }
+  for (const page of pages) {
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'Item question and private answer controls fit desktop and mobile viewports');
+  }
+  await hakoPage.screenshot({ path: 'test-results/item-answer-desktop.png', fullPage: true });
+  await pages[1].screenshot({ path: 'test-results/item-answer-mobile.png', fullPage: true });
+  await hakoPage.getByTestId('item-answer-select').selectOption('true');
+  state = await performAction(hakoPage, 'answer_item', () => hakoPage.getByTestId('answer-item').click());
+  assert.equal(state.round.resolution, null);
+  snapshots = await assertVisitorPrivacy();
+  const publicAnswer = { kind: 'item_answer', itemId: 'spirit_pen', userId: penPerson.playerId,
+    answer: true, roomId: 'children_room' };
+  for (let index = 0; index < pages.length; index++) {
+    assert.deepEqual(snapshots[index].round.items.events.at(-1), publicAnswer);
+    assert.equal(Object.hasOwn(snapshots[index].round.items.events.at(-1), 'cornerId'), false,
+      'The public reply identifies a room and never a hiding corner');
+    assert.equal(JSON.stringify(snapshots[index].round.items.events).includes(nextHiding), false);
+    assert.equal(await pages[index].getByTestId('item-answer').count(), 0);
+    const events = pages[index].getByTestId('item-events');
+    await events.locator('summary').click();
+    assert.match(await events.innerText(), /小满使用笔仙.*儿童房.*箱娃回答：是/);
+  }
+  assert.ok(snapshots[penIndex].round.inventory.items.some(item => item.id === 'spirit_pen'),
+    'Using the spirit pen does not consume its card');
+  assert.equal(snapshots[penIndex].round.silent.turnPlayerId, identities[3].playerId,
+    'The item answer completes the pen owner’s standard action');
 
   for (let index = 1; index < pages.length; index++) {
     const page = pages[index];
