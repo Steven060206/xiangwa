@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { createGameServer } from '../src/server.mjs';
 import { createPlay } from '../src/play.mjs';
@@ -11,7 +13,19 @@ const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children',
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
 test('four browser sessions complete private opening, powers, exploration, item answers, exchanges and surrender', { timeout: 180000 }, async t => {
-  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
+  const directory = await mkdtemp(join(tmpdir(), 'hako-browser-'));
+  let server;
+  let browser;
+  t.after(async () => {
+    try {
+      await browser?.close();
+      if (server?.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    } finally {
+      assert.equal(dirname(resolve(directory)), resolve(tmpdir()), 'Only remove the test directory under the system temporary directory');
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  const serverOptions = { dataFile: join(directory, 'rooms.json'), deck, silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
     const play = createPlay(setup, opening, options);
     const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_2');
     assert.ok(source, 'The unused password 2 must be in the initial token pool');
@@ -31,19 +45,16 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.deepEqual([...play.powers.deck].sort(), powersBefore,
       'The cry fixture reorders the real deck without introducing or removing cards');
     return play;
-  } });
+  } };
+  server = createGameServer(serverOptions);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
+  browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
   const contexts = [];
   const pages = [];
   const identities = [];
   const browserErrors = [];
-  t.after(async () => {
-    await browser.close();
-    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  });
 
   async function getState(person) {
     const query = new URLSearchParams({ playerId: person.playerId, token: person.token });
@@ -430,6 +441,32 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(await pages[i].getByTestId('peek-result').count(), 0);
     assertNoPasswordTwo(await pages[i].evaluate(() => window.__hakoLastState));
   }
+  const beforeRestart = await Promise.all(identities.map(getState));
+  const restartPort = server.address().port;
+  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await Promise.all(pages.map(page => page.locator('#connection-banner').waitFor({ state: 'visible' })));
+  server = createGameServer(serverOptions);
+  server.listen(restartPort, '127.0.0.1');
+  await once(server, 'listening');
+  await Promise.all(pages.map(page => page.waitForFunction(previousVersion =>
+    window.__hakoLastState?.version >= previousVersion
+      && window.__hakoLastState.players.every(player => player.connected)
+      && document.getElementById('connection-state').textContent === '已连接', beforeRestart[0].version)));
+  const afterRestart = await Promise.all(identities.map(getState));
+  for (let index = 0; index < pages.length; index++) {
+    assert.deepEqual(afterRestart[index].round, beforeRestart[index].round,
+      'Restarting preserves the pending peek, private state and all game progress');
+    assert.deepEqual(afterRestart[index].players, beforeRestart[index].players);
+    assert.equal(afterRestart[index].you, identities[index].playerId);
+    assert.equal(afterRestart[index].code, identities[index].roomCode);
+  }
+  await explorerPage.reload();
+  await explorerPage.getByTestId('practice-panel').waitFor();
+  const resumedIdentity = await explorerPage.evaluate(() => JSON.parse(sessionStorage.getItem('hako.room.session.v1')));
+  assert.equal(resumedIdentity.playerId, interruptedVisitorId);
+  assert.equal(resumedIdentity.token, identities[interruptedIndex].token);
+  await waitForSSE((await getState(identities[interruptedIndex])).version);
+  await assertVisitorPrivacy();
   state = await performAction(hakoPage, 'resolve_visitor_action', () => hakoPage.getByTestId('resolve-action').click());
   let snapshots = await Promise.all(identities.map(getState));
   assert.equal(snapshots[interruptedIndex].round.resolution.token.id, 'password_2');

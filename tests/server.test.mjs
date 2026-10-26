@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createGameServer } from '../src/server.mjs';
 import { createPlay } from '../src/play.mjs';
 
@@ -14,7 +19,7 @@ async function startServer(t, options = {}) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  t.after(() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  t.after(() => server.listening && new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   async function request(path, data, method = data === undefined ? 'GET' : 'POST') {
     const response = await fetch(`${base}${path}`, {
       method,
@@ -23,7 +28,34 @@ async function startServer(t, options = {}) {
     });
     return { status: response.status, body: await response.json() };
   }
-  return { base, request };
+  return { base, request, server };
+}
+
+async function persistentServer(t, options = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'hako-persistence-'));
+  assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+  const dataFile = join(directory, 'rooms.json');
+  let running;
+  async function restart() {
+    if (running) await new Promise((resolve, reject) => running.server.close(error => error ? reject(error) : resolve()));
+    running = await startServer(t, { ...options, dataFile });
+  }
+  await restart();
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return { dataFile, restart, request: (...args) => running.request(...args),
+    get base() { return running.base; } };
+}
+
+async function checkRestart(saved, people) {
+  const before = await Promise.all(people.map(async person => (await snapshot(saved.request, person)).body));
+  await saved.restart();
+  for (let i = 0; i < people.length; i++) {
+    const recovered = await snapshot(saved.request, people[i]);
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(recovered.body, { ...before[i],
+      players: before[i].players.map(player => ({ ...player, connected: false })),
+    });
+  }
 }
 
 async function createFour(request) {
@@ -562,6 +594,224 @@ test('HTTP extinguisher windows block progression and cancel NO.5 without exposi
   assert.equal(owner.round.powers.slots[0].card.id, 5);
   assert.equal(owner.round.powers.slots[0].faceUp, false);
   assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
+});
+
+test('stored lobbies recover identities, roles, presence and multiple rooms; leaving stays final', async t => {
+  const saved = await persistentServer(t);
+  const people = await createFour(saved.request);
+  const other = (await saved.request('/api/rooms', { name: '另一房间' })).body;
+  await action(saved.request, people[0], 'set_hako', { targetId: people[2].playerId });
+  await action(saved.request, people[1], 'ready', { ready: true });
+  const live = await stream(t, saved.base, people[0]);
+  assert.equal((await live.state()).players[0].connected, true);
+  const disk = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  assert.equal(disk.rooms.length, 2);
+  assert.ok(disk.rooms.every(room => room.players.every(player => !Object.hasOwn(player, 'connections'))));
+  await checkRestart(saved, [...people, other]);
+  assert.equal((await snapshot(saved.request, { ...people[0], token: people[1].token })).status, 403);
+  await action(saved.request, people[0], 'leave');
+  await action(saved.request, other, 'leave');
+  await saved.restart();
+  assert.equal((await snapshot(saved.request, people[0])).status, 403);
+  assert.equal((await snapshot(saved.request, other)).status, 404);
+  const remaining = (await snapshot(saved.request, people[1])).body;
+  assert.equal(remaining.hostId, people[1].playerId);
+  assert.equal(remaining.players.length, 3);
+  assert.equal((await saved.request(`/api/rooms/${people[0].roomCode}/join`, { name: '替补' })).body.state.players.length, 4);
+});
+
+test('draft, a drawn map, secret opening and original shuffled decks survive restarts', async t => {
+  const saved = await persistentServer(t);
+  const { request } = saved;
+  const people = await createFour(request);
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  let state = (await action(request, people[0], 'start')).body;
+  const first = people.find(person => person.playerId === state.draft.turnPlayerId);
+  await action(request, first, 'choose_item', { itemId: 'spirit_pen' });
+  await checkRestart(saved, people);
+  for (let i = 0; i < 2; i++) {
+    state = (await snapshot(request, people[0])).body;
+    const current = people.find(person => person.playerId === state.draft.turnPlayerId);
+    await action(request, current, 'choose_item', { itemId: state.draft.availableItems[0].id });
+  }
+  state = (await snapshot(request, people[0])).body;
+  while (state.phase === 'map_setup') {
+    const current = people.find(person => person.playerId === state.setup.turnPlayerId);
+    state = (await action(request, current, 'draw')).body;
+    if (state.setup.placements.length === 1) {
+      const before = await readFile(saved.dataFile, 'utf8');
+      await checkRestart(saved, people);
+      assert.equal(await readFile(saved.dataFile, 'utf8'), before, 'Loading must not reshuffle the remaining maps');
+    }
+    state = (await action(request, current, 'place', state.setup.legalPlacements[0])).body;
+  }
+  await action(request, people[0], 'prepare_opening');
+  await action(request, people[0], 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
+  const before = await readFile(saved.dataFile, 'utf8');
+  await checkRestart(saved, people);
+  assert.equal(await readFile(saved.dataFile, 'utf8'), before, 'Loading must preserve randomly assigned corner tokens');
+  await action(request, people[0], 'place_remains', { cornerId: 'living_sofa' });
+  await action(request, people[0], 'inspect_initial_room', { roomId: 'children_room' });
+  await checkRestart(saved, people);
+  await action(request, people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
+  assert.equal((await action(request, people[0], 'choose_initial_power', { powerId: 1 })).status, 200);
+  await checkRestart(saved, people);
+});
+
+test('pending peeks, private results, inventory, exchanges and the final result recover without leaks', async t => {
+  let created = 0;
+  const saved = await persistentServer(t, { createPlayState(setup, opening, options) {
+    created++;
+    const play = createPlay(setup, opening, options);
+    const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_4');
+    [play.tokens.hall_clock, play.tokens[source]] = [play.tokens[source], play.tokens.hall_clock];
+    return play;
+  } });
+  const { request } = saved;
+  const people = await createFour(request);
+  const [hako, first, second, third] = people;
+  await preparePlay(request, people);
+  await action(request, first, 'silent_reveal', { index: 0 });
+  await action(request, first, 'peek', { cornerId: 'hall_clock' });
+  await checkRestart(saved, people);
+  assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
+  await checkRestart(saved, people);
+  assert.equal((await snapshot(request, first)).body.round.resolution.token.id, 'password_4');
+  for (const person of [hako, second, third]) {
+    const live = await stream(t, saved.base, person);
+    const view = await live.state();
+    assert.deepEqual(view.round.resolution, { kind: 'waiting', playerId: first.playerId });
+    assert.equal(JSON.stringify(view).includes('password_4'), false);
+    await live.close();
+  }
+  await action(request, first, 'resolve_peek', { take: true, replacement: 'empty_box' });
+  await action(request, first, 'offer_exchange', { targetId: second.playerId, giveTokenIds: ['password_4'] });
+  await checkRestart(saved, people);
+  const offer = (await snapshot(request, second)).body.round.exchangeOffers[0];
+  assert.equal((await action(request, second, 'respond_exchange', { offerId: offer.id, accept: true })).status, 200);
+  await checkRestart(saved, people);
+  assert.equal((await snapshot(request, second)).body.round.inventory.tokens[0].id, 'password_4');
+  for (const person of people.slice(1)) await action(request, person, 'surrender');
+  await checkRestart(saved, people);
+  assert.equal((await snapshot(request, hako)).body.phase, 'game_over');
+  assert.equal((await action(request, second, 'silent_reveal', { index: 1 })).status, 409);
+  assert.equal(created, 1, 'Restoring must not recreate opening state or redraw decks');
+  for (const path of ['/data/rooms.json', '/data/rooms.json.tmp', '/src/storage.mjs']) {
+    assert.equal((await fetch(`${saved.base}${path}`)).status, 404);
+  }
+});
+
+test('failed disk writes leave actions, joins, departures and SSE unchanged and allow retry', async t => {
+  const saved = await persistentServer(t);
+  const { request } = saved;
+  const host = (await request('/api/rooms', { name: '房主' })).body;
+  const live = await stream(t, saved.base, host);
+  const before = await live.state();
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  // An occupied temporary path makes replacement fail consistently on Windows and Unix.
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    for (const attempt of [
+      () => action(request, host, 'ready', { ready: true }),
+      () => request(`/api/rooms/${host.roomCode}/join`, { name: '未入席' }),
+      () => action(request, host, 'leave'),
+      () => request('/api/rooms', { name: '未创建' }),
+    ]) {
+      const failed = await attempt();
+      assert.equal(failed.status, 503);
+      assert.match(failed.body.error, /本次操作未生效/);
+      assert.deepEqual((await snapshot(request, host)).body, before);
+      assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+    }
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const retry = await action(request, host, 'ready', { ready: true });
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.version, before.version + 1);
+  assert.deepEqual(await live.state(), retry.body, 'No uncommitted state may have entered the SSE stream');
+  await checkRestart(saved, [host]);
+});
+
+test('invalid actions and presence changes do not rewrite stored game state', async t => {
+  const saved = await persistentServer(t);
+  const people = await createFour(saved.request);
+  const before = await readFile(saved.dataFile, 'utf8');
+  const live = await stream(t, saved.base, people[0]);
+  await live.state();
+  await live.close();
+  assert.equal((await action(saved.request, people[1], 'start')).status, 403);
+  assert.equal((await action(saved.request, people[0], 'ready', { ready: 'yes' })).status, 400);
+  await snapshot(saved.request, people[0]);
+  assert.equal(await readFile(saved.dataFile, 'utf8'), before);
+});
+
+test('corrupt or unsupported storage refuses startup and preserves the original file', async t => {
+  const saved = await persistentServer(t);
+  const host = (await saved.request('/api/rooms', { name: '房主' })).body;
+  const valid = await readFile(saved.dataFile, 'utf8');
+  const invalidRoom = JSON.parse(valid);
+  invalidRoom.rooms[0].players[0].seat = 8;
+  const invalidGame = JSON.parse(valid);
+  invalidGame.rooms[0].game = { phase: 'map_setup', placements: null };
+  for (const content of ['{', JSON.stringify({ format: 2, rooms: [] }),
+    JSON.stringify(invalidRoom), JSON.stringify(invalidGame)]) {
+    await writeFile(saved.dataFile, content);
+    assert.throws(() => createGameServer({ dataFile: saved.dataFile }), /存档/);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), content);
+  }
+  await writeFile(saved.dataFile, valid);
+  await checkRestart(saved, [host]);
+});
+
+test('the real entry point saves to DATA_DIR before an abrupt process restart', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'hako-process-'));
+  assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+  const children = [];
+  async function stop(child) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, 'exit');
+    child.kill('SIGKILL');
+    await exited;
+  }
+  t.after(async () => {
+    for (const child of children) await stop(child);
+    await rm(directory, { recursive: true, force: true });
+  });
+  async function boot() {
+    const child = spawn(process.execPath, ['server.mjs'], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      env: { ...process.env, HOST: '127.0.0.1', PORT: '0', DATA_DIR: directory },
+      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.push(child);
+    let output = '';
+    let timer;
+    const base = await new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Entry point did not start: ${output}`)), 5000);
+      child.stdout.on('data', chunk => {
+        output += chunk;
+        const match = /http:\/\/localhost:(\d+)/.exec(output);
+        if (match) resolve(`http://127.0.0.1:${match[1]}`);
+      });
+      child.stderr.on('data', chunk => { output += chunk; });
+      child.once('error', reject);
+      child.once('exit', () => reject(new Error(`Entry point exited: ${output}`)));
+    }).finally(() => clearTimeout(timer));
+    return { child, base };
+  }
+  const first = await boot();
+  const response = await fetch(`${first.base}/api/rooms`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '重启测试' }),
+  });
+  assert.equal(response.status, 201);
+  const person = await response.json();
+  assert.equal(JSON.parse(await readFile(join(directory, 'rooms.json'), 'utf8')).rooms[0].code, person.roomCode);
+  await stop(first.child);
+  const second = await boot();
+  const recovered = await fetch(`${second.base}/api/rooms/${person.roomCode}?${new URLSearchParams({
+    playerId: person.playerId, token: person.token,
+  })}`);
+  assert.equal(recovered.status, 200);
+  assert.deepEqual(await recovered.json(), person.state);
 });
 
 test('HTTP boundary rejects malformed requests and only exposes intended static resources', async t => {

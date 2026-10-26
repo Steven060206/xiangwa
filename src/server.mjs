@@ -7,6 +7,7 @@ import {
   chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding, chooseInitialPower,
 } from './preparation.mjs';
 import { createPlay, applyPlayAction, getPlayView } from './play.mjs';
+import { copyRoom, createRoomStore } from './storage.mjs';
 
 const BODY_LIMIT = 64 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -83,11 +84,19 @@ function sameToken(candidate, token) {
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-/** In-memory rooms. Each successful action is synchronous after its JSON body arrives. */
-export function createGameServer({ deck, silentNumbers, createPlayState = createPlay } = {}) {
-  const rooms = new Map();
+/** Each action saves its detached state before publishing it to HTTP/SSE clients. */
+export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile } = {}) {
+  const store = createRoomStore(dataFile);
+  const rooms = store.load();
   const streams = new Set();
   let closing = false;
+  try {
+    for (const room of rooms.values()) {
+      for (const player of room.players) snapshot(room, player.id);
+    }
+  } catch (error) {
+    throw new Error(`房间存档无法恢复，已停止启动以保留原文件 ${dataFile}：${error.message}`, { cause: error });
+  }
 
   function roomFor(code) {
     const room = rooms.get(code.toUpperCase());
@@ -126,12 +135,24 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     };
   }
 
-  function publish(room, message) {
-    if (message) {
-      room.log.push(message);
-      if (room.log.length > 64) room.log.shift();
+  function publish(room, message, persist = true) {
+    if (persist) {
+      if (message) {
+        room.log.push(message);
+        if (room.log.length > 64) room.log.shift();
+      }
+      room.version += 1;
+      const next = new Map(rooms);
+      if (room.players.length) next.set(room.code, room);
+      else next.delete(room.code);
+      try { store.save(next); }
+      catch (error) {
+        console.error(error.message);
+        fail(503, '房间保存失败，本次操作未生效。请检查服务端存档目录后重试。');
+      }
+      if (room.players.length) rooms.set(room.code, room);
+      else rooms.delete(room.code);
     }
-    room.version += 1;
     for (const player of room.players) {
       const event = `event: state\ndata: ${JSON.stringify(snapshot(room, player.id))}\n\n`;
       for (const response of player.connections) response.write(event);
@@ -346,12 +367,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         inLobby();
         const wasHako = player.role === 'hako';
         room.players = room.players.filter(candidate => candidate.id !== player.id);
-        for (const response of player.connections) response.end();
-        player.connections.clear();
         if (room.hostId === player.id) room.hostId = room.players[0]?.id ?? null;
         if (wasHako && room.players.length) room.players[0].role = 'hako';
         for (const candidate of room.players) candidate.ready = false;
-        if (!room.players.length) rooms.delete(room.code);
         message = `${player.name} 离开了房间。`;
         break;
       }
@@ -359,6 +377,10 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         fail(400, '未知操作。');
     }
     publish(room, message);
+    if (input.type === 'leave') {
+      for (const response of player.connections) response.end();
+      player.connections.clear();
+    }
     return snapshot(room, player.id);
   }
 
@@ -380,7 +402,6 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const code = newRoomCode();
         const room = { code, hostId: null, players: [], draft: null, game: null,
           opening: null, play: null, log: [], version: 0 };
-        rooms.set(code, room);
         sendJson(response, 201, addPlayer(room, name));
         return;
       }
@@ -389,21 +410,24 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const [, code, endpoint] = match;
         const expectedMethod = endpoint === 'join' || endpoint === 'actions' ? 'POST' : 'GET';
         if (request.method !== expectedMethod) fail(405, `此接口仅支持 ${expectedMethod}。`);
-        const room = roomFor(code);
         if (endpoint === 'join') {
           const input = await readJson(request);
+          const room = roomFor(code);
           const name = nickname(input.name);
           if (room.draft) fail(409, '游戏准备已开始，无法加入新玩家。');
           if (room.players.length >= 4) fail(409, '房间已满，最多四名玩家。');
-          sendJson(response, 201, addPlayer(room, name));
+          sendJson(response, 201, addPlayer(copyRoom(room), name));
           return;
         }
         if (endpoint === 'actions') {
           const input = await readJson(request);
-          const player = authorize(room, input);
-          sendJson(response, 200, runAction(room, player, input));
+          const room = roomFor(code);
+          const next = copyRoom(room);
+          const player = authorize(next, input);
+          sendJson(response, 200, runAction(next, player, input));
           return;
         }
+        const room = roomFor(code);
         const player = authorize(room, Object.fromEntries(url.searchParams));
         if (endpoint !== 'events') {
           sendJson(response, 200, snapshot(room, player.id));
@@ -419,7 +443,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const wasConnected = player.connections.size > 0;
         player.connections.add(response);
         streams.add(response);
-        if (!wasConnected) publish(room);
+        if (!wasConnected) publish(room, undefined, false);
         else response.write(`event: state\ndata: ${JSON.stringify(snapshot(room, player.id))}\n\n`);
         const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 20000);
         heartbeat.unref();
@@ -427,7 +451,10 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           clearInterval(heartbeat);
           streams.delete(response);
           player.connections.delete(response);
-          if (!closing && !player.connections.size && room.players.includes(player)) publish(room);
+          const current = rooms.get(room.code);
+          if (!closing && !player.connections.size && current?.players.some(candidate => candidate.id === player.id)) {
+            publish(current, undefined, false);
+          }
         });
         return;
       }
