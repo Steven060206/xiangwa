@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/game.test.mjs tests/server.test.mjs",
+    "test": "node --test tests/game.test.mjs tests/silent.test.mjs tests/movement.test.mjs tests/round.test.mjs tests/server.test.mjs",
     "test:browser": "node --test tests/browser.e2e.mjs",
     "verify:references": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/verify-project.ps1"
   },
