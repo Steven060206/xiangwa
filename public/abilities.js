@@ -1,4 +1,5 @@
 import { MAP_TILES } from '/shared/maps.mjs';
+import { cornerName } from './tile.js';
 
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const selections = new Map();
@@ -23,15 +24,6 @@ function node(tag, className, text) {
   if (className) element.className = className;
   if (text !== undefined) element.textContent = text;
   return element;
-}
-
-function cornerName(state, id) {
-  for (const room of rooms) {
-    const corner = room.corners.find(candidate => candidate.id === id);
-    if (corner) return `${room.name} · ${corner.name}`;
-  }
-  const corner = state.round.cornerState?.find(candidate => candidate.id === id);
-  return corner ? `${roomName(corner.roomId)} · ${id.startsWith('suitcase') ? '行李箱中' : '额外角落'}` : '未知角落';
 }
 
 function cardName(card) {
@@ -97,7 +89,7 @@ function forcedPeek(container, state, locked, action) {
   const controls = node('section', 'exploration-section practice-controls');
   controls.dataset.testid = 'forced-peek';
   controls.append(node('h3', '', '好想打开它 · 强制窥探'), node('p', 'small-note', '你的原行动被打断。选择当前房间中一个有标志的角落进行窥探。'));
-  const target = select(controls, 'forced-peek-target', '选择窥探角落', (resolution.cornerIds || []).map(id => ({ id, name: cornerName(state, id) })), locked);
+  const target = select(controls, 'forced-peek-target', '选择窥探角落', (resolution.cornerIds || []).map(id => ({ id, name: cornerName(id) })), locked);
   const nightVision = state.round.inventory?.items?.some(item => item.id === 'night_vision')
     ? checkbox(controls, 'forced-peek-use-night-vision', '使用夜视仪：发现手记时领取未选道具', locked) : null;
   if (nightVision) nightVision.dataset.testid = 'forced-peek-use-night-vision';
@@ -341,14 +333,14 @@ function rearrangePowers(container, state, powers, locked, action) {
   const corners = rearrangement.corners;
   const sourceNames = corners.map(corner => {
     const actors = (corner.actors || []).map(actor => actor.type === 'hako' ? '箱娃' : `${playerName(state, actor.playerId)}（箱人）`);
-    return { id: corner.id, name: `${cornerName(state, corner.id)}：${[tokenName(corner.token), ...actors].join('、')}` };
+    return { id: corner.id, name: `${cornerName(corner.id)}：${[tokenName(corner.token), ...actors].join('、')}` };
   });
   const choices = [];
   const faceDownChoices = [];
   corners.forEach(corner => {
     const id = `power-rearrange-${corner.id}`;
     if (!selections.has(id)) selections.set(id, corner.id);
-    const target = select(controls, id, `放入${cornerName(state, corner.id)}`, sourceNames, locked);
+    const target = select(controls, id, `放入${cornerName(corner.id)}`, sourceNames, locked);
     target.dataset.testid = 'power-rearrange-source';
     target.dataset.cornerId = corner.id;
     choices.push(target);
@@ -386,7 +378,7 @@ function inspectPath(container, state, powers, locked, action) {
     for (const corner of inspection.corners) {
       const row = node('div');
       const actors = (corner.actors || []).map(actor => actor.type === 'hako' ? '箱娃' : `${playerName(state, actor.playerId)}（箱人）`);
-      row.append(node('dt', '', cornerName(state, corner.id)), node('dd', '', [...(corner.token ? [tokenName(corner.token)] : []), ...actors].join('、') || '无标志'));
+      row.append(node('dt', '', cornerName(corner.id)), node('dd', '', [...(corner.token ? [tokenName(corner.token)] : []), ...actors].join('、') || '无标志'));
       list.append(row);
     }
     controls.append(list);

@@ -1,16 +1,9 @@
 import { MAP_TILES } from '/shared/maps.mjs';
+import { cornerName } from './tile.js';
 import { renderAbilities, renderActiveItems } from './abilities.js';
 
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
-const cornerName = id => {
-  if (id?.startsWith('suitcase:')) return `${roomName(id.slice(9))} · 行李箱中`;
-  for (const room of rooms) {
-    const corner = room.corners.find(candidate => candidate.id === id);
-    if (corner) return `${room.name} · ${corner.name}`;
-  }
-  return '未知角落';
-};
 const playerName = (state, id) => state.players.find(player => player.id === id)?.name || '访问者';
 const selections = new Map();
 const selectedGifts = new Set();

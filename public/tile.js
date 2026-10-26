@@ -1,4 +1,21 @@
-import { getTile } from '/shared/maps.mjs';
+import { getTile, MAP_TILES } from '/shared/maps.mjs';
+
+const rooms = MAP_TILES.flatMap(tile => tile.rooms);
+const corners = rooms.flatMap(room => room.corners.map(corner => ({ ...corner, room })));
+
+// Numbers identify public locations and stay fixed across floors and rotations.
+export function cornerNumber(id) {
+  const index = corners.findIndex(corner => corner.id === id);
+  if (index >= 0) return String(index + 1).padStart(2, '0');
+  const roomIndex = id?.startsWith('suitcase:') ? rooms.findIndex(room => room.id === id.slice(9)) : -1;
+  return roomIndex >= 0 ? String(corners.length + roomIndex + 1) : '';
+}
+
+export function cornerName(id) {
+  const corner = corners.find(corner => corner.id === id);
+  const room = id?.startsWith('suitcase:') ? rooms.find(room => room.id === id.slice(9)) : corner?.room;
+  return room ? `${cornerNumber(id)} · ${room.name} · ${corner?.name || '行李箱中'}` : '尚未选择';
+}
 
 const NS = 'http://www.w3.org/2000/svg';
 function el(tag, attrs = {}, value) {
@@ -48,17 +65,6 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = []) {
   group.append(el('rect', { x: .8, y: .8, width: 98.4, height: 98.4, fill: '#e6dbc3' }));
   for (const room of tile.rooms) {
     group.append(el('polygon', { points: room.shape.map(p => p.join(',')).join(' '), class: `room-shape${room.haunted ? ' haunted-room' : ''}` }));
-    for (const corner of room.corners) {
-      const mark = el('rect', { x: corner.x - 2.6, y: corner.y - 2.6, width: 5.2, height: 5.2, rx: .5, class: 'corner-mark' });
-      mark.append(el('title', {}, corner.name));
-      group.append(mark);
-    }
-    for (const corner of extraCorners.filter(corner => corner.roomId === room.id)) {
-      const mark = el('rect', { x: room.label.x - 3, y: room.label.y - 16, width: 6, height: 6, rx: .5,
-        class: 'corner-mark', 'data-testid': 'suitcase-corner', 'data-corner-id': corner.id });
-      mark.append(el('title', {}, `${room.name} · 行李箱中`));
-      group.append(mark);
-    }
   }
   group.append(el('rect', { x: .8, y: .8, width: 98.4, height: 98.4, class: 'tile-outline' }));
   for (const [direction] of Object.entries(tile.doors)) {
@@ -94,6 +100,20 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = []) {
     lines.forEach((line, i) => label.append(el('tspan', { x, y: top + i * 11 }, line)));
     svg.append(label);
     if (room.haunted) svg.append(el('text', { x, y: top + (lines.length - 1) * 11 + 9, 'text-anchor': 'middle', class: 'haunted-mark' }, '怨'));
+  }
+  for (const room of tile.rooms) {
+    const extra = extraCorners.filter(corner => corner.roomId === room.id)
+      .map(corner => ({ ...corner, x: room.label.x, y: Math.max(7, room.label.y - 13) }));
+    for (const corner of [...room.corners, ...extra]) {
+      const [x, y] = rotatePoint([corner.x, corner.y], rotation);
+      const mark = el('g', { transform: `translate(${x} ${y})`, class: 'corner-location',
+        'data-corner-id': corner.id, 'aria-label': cornerName(corner.id) });
+      if (corner.id.startsWith('suitcase:')) mark.setAttribute('data-testid', 'suitcase-corner');
+      mark.append(el('title', {}, cornerName(corner.id)));
+      mark.append(el('rect', { x: -5.5, y: -5.5, width: 11, height: 11, rx: 1, class: 'corner-mark' }));
+      mark.append(el('text', { x: 0, y: .5, 'text-anchor': 'middle', 'dominant-baseline': 'middle', class: 'corner-number' }, cornerNumber(corner.id)));
+      svg.append(mark);
+    }
   }
   return svg;
 }

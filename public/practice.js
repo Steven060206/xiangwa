@@ -1,16 +1,9 @@
 import { MAP_TILES } from '/shared/maps.mjs';
+import { cornerName } from './tile.js';
 import { renderExploration, explorationDescription, explorationSeatStatus } from './exploration.js';
 
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
-const cornerName = id => {
-  if (id?.startsWith('suitcase:')) return `${roomName(id.slice(9))} · 行李箱中`;
-  for (const room of rooms) {
-    const corner = room.corners.find(item => item.id === id);
-    if (corner) return `${room.name} · ${corner.name}`;
-  }
-  return '尚未选择';
-};
 const node = (tag, className, text) => {
   const element = document.createElement(tag);
   if (className) element.className = className;

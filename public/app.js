@@ -1,5 +1,5 @@
 import { getTile } from '/shared/maps.mjs';
-import { createTileSvg } from './tile.js';
+import { createTileSvg, cornerNumber } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
@@ -301,6 +301,41 @@ function samePosition(a, b) {
   return a && b && a.floor === b.floor && a.x === b.x && a.y === b.y && a.rotation === b.rotation;
 }
 
+function renderCornerGuide(placements, extraCorners) {
+  let guide = $('corner-guide');
+  if (!guide) {
+    guide = node('section', 'corner-guide');
+    guide.id = 'corner-guide';
+    guide.setAttribute('aria-labelledby', 'corner-guide-title');
+    const heading = node('h2', '', '角落位置对照');
+    heading.id = 'corner-guide-title';
+    const list = node('div', 'corner-guide-rooms');
+    list.id = 'corner-guide-rooms';
+    guide.append(heading, node('p', '', '地图上的编号与右侧选项一致；每个编号代表一个可放标志的位置。'), list);
+    $('board-section').append(guide);
+  }
+  guide.hidden = !placements.length;
+  const fragment = document.createDocumentFragment();
+  for (const placement of placements) {
+    for (const room of getTile(placement.tileId).rooms) {
+      const section = node('section', 'corner-guide-room');
+      section.dataset.roomId = room.id;
+      section.append(node('h3', '', room.name));
+      const list = node('ul');
+      for (const corner of [...room.corners, ...extraCorners.filter(corner => corner.roomId === room.id)]) {
+        const entry = node('li', 'corner-guide-entry');
+        entry.dataset.cornerId = corner.id;
+        entry.append(node('span', 'corner-guide-number', cornerNumber(corner.id)),
+          node('span', 'corner-guide-name', corner.id.startsWith('suitcase:') ? '行李箱中' : corner.name));
+        list.append(entry);
+      }
+      section.append(list);
+      fragment.append(section);
+    }
+  }
+  $('corner-guide-rooms').replaceChildren(fragment);
+}
+
 function renderBoard() {
   const setup = state.setup;
   const showTargets = canPlace() && Boolean(setup.drawnTileId);
@@ -359,6 +394,7 @@ function renderBoard() {
     }
   }
   board.replaceChildren(fragment);
+  renderCornerGuide(placements, extraCorners);
 }
 
 function renderSetup() {

@@ -7,6 +7,18 @@
 .completion-panel>.button{margin-top:18px;width:100%;padding-inline:10px}
 .has-round .game-layout{grid-template-columns:minmax(0,1fr) 340px}
 .has-round .board-section{align-self:start}
+.tile-svg .corner-mark{fill:#faf5e9;stroke:#665b46;stroke-width:.8}
+.tile-svg .corner-number{font-family:var(--sans);font-size:7px;font-weight:600;fill:#302c25;font-variant-numeric:tabular-nums}
+.corner-guide{padding:16px;background:var(--paper);border-top:1px solid #cbbda5}
+.corner-guide h2{font-size:18px}
+.corner-guide>p{font-size:12px;color:var(--muted);margin:4px 0 15px}
+.corner-guide-rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:16px 24px}
+.corner-guide-room{min-width:0}
+.corner-guide-room h3{font-family:var(--serif);font-size:15px;margin:0 0 7px;font-weight:600}
+.corner-guide-room ul{list-style:none;margin:0;padding:0}
+.corner-guide-entry{display:flex;align-items:baseline;gap:8px;font-size:13px;line-height:1.7;margin-top:4px}
+.corner-guide-number{flex:none;display:inline-grid;place-items:center;min-width:24px;padding:0 3px;border:1px solid #9a8868;background:var(--paper-light);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}
+.corner-guide-name{overflow-wrap:anywhere}
 .practice-panel{border-bottom:1px solid var(--rule);padding-bottom:24px;min-width:0}
 .practice-panel h2{font-size:23px}
 .practice-panel h3{margin:0;font-family:var(--serif);font-size:16px;font-weight:600}

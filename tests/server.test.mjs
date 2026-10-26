@@ -1194,6 +1194,7 @@ test('pending peeks, private results, inventory, exchanges and the final result 
   const people = await createFour(request);
   const [hako, first, second, third] = people;
   await preparePlay(request, people);
+  const originalHakoMemory = (await snapshot(request, hako)).body.round.hako.lastInspectedRoom;
   await action(request, first, 'silent_reveal', { index: 0 });
   await action(request, first, 'peek', { cornerId: 'hall_clock' });
   await checkRestart(saved, people);
@@ -1204,7 +1205,16 @@ test('pending peeks, private results, inventory, exchanges and the final result 
     const live = await stream(t, saved.base, person);
     const view = await live.state();
     assert.deepEqual(view.round.resolution, { kind: 'waiting', playerId: first.playerId });
-    assert.equal(JSON.stringify(view).includes('password_4'), false);
+    if (person.playerId === hako.playerId) {
+      // The fixture moves password_4 after opening. The owner may already have
+      // seen it in the randomly dealt room; that unchanged history is allowed.
+      assert.deepEqual(view.round.hako.lastInspectedRoom, originalHakoMemory,
+        'Peeking must not add private visitor results to the owner\'s existing room history');
+      const { lastInspectedRoom, ...hakoWithoutHistory } = view.round.hako;
+      assert.equal(JSON.stringify({ ...view, round: { ...view.round, hako: hakoWithoutHistory } }).includes('password_4'), false);
+    } else {
+      assert.equal(JSON.stringify(view).includes('password_4'), false);
+    }
     await live.close();
   }
   await action(request, first, 'resolve_peek', { take: true, replacement: 'empty_box' });

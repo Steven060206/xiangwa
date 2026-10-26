@@ -8,9 +8,17 @@ import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { createGameServer } from '../src/server.mjs';
 import { createPlay } from '../src/play.mjs';
+import { MAP_TILES } from '../src/maps.mjs';
 
 const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+const mapRooms = MAP_TILES.flatMap(tile => tile.rooms);
+const mapCorners = mapRooms.flatMap(room => room.corners.map(corner => ({ ...corner, room })));
+const numberedCornerName = id => {
+  const index = mapCorners.findIndex(corner => corner.id === id);
+  const corner = mapCorners[index];
+  return `${String(index + 1).padStart(2, '0')} · ${corner.room.name} · ${corner.name}`;
+};
 
 test('four browser sessions complete private opening, powers, exploration, item answers, exchanges and surrender', { timeout: 180000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'hako-browser-'));
@@ -157,11 +165,47 @@ test('four browser sessions complete private opening, powers, exploration, item 
       assert.ok(expected, `Missing test name for ${corner.token?.type}`);
       const option = page.getByTestId(selectId).locator(`option[value="${corner.id}"]`);
       for (const text of [await row.innerText(), await option.textContent()]) {
+        assert.ok(text.includes(numberedCornerName(corner.id)), 'Room list and location option share the map number and full name');
         assert.ok(text.includes(expected), `Room list and location option must identify ${expected}`);
         if (corner.token?.number !== undefined) assert.ok(text.includes(`数字${corner.token.number}`));
       }
     }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  }
+
+  async function assertCornerGuide(page, setup) {
+    for (const floor of [1, 2, -1]) {
+      await page.getByTestId(floor === -1 ? 'floor-basement' : `floor-${floor}`).click();
+      const expectedRooms = setup.placements.filter(placement => placement.floor === floor)
+        .flatMap(placement => MAP_TILES.find(tile => tile.id === placement.tileId).rooms);
+      const actual = await page.evaluate(() => ({
+        visible: document.getElementById('corner-guide').checkVisibility(),
+        rooms: [...document.querySelectorAll('#corner-guide .corner-guide-room')].map(room => ({
+          id: room.dataset.roomId, name: room.querySelector('h3').textContent,
+          corners: [...room.querySelectorAll('.corner-guide-entry')].map(corner => ({
+            id: corner.dataset.cornerId, number: corner.querySelector('.corner-guide-number').textContent,
+            name: corner.querySelector('.corner-guide-name').textContent,
+            visible: corner.querySelector('.corner-guide-name').checkVisibility(),
+          })),
+        })),
+        markers: [...document.querySelectorAll('#tile-board .placed-tile .corner-location')]
+          .map(corner => ({ id: corner.dataset.cornerId, number: corner.querySelector('.corner-number').textContent })),
+        fits: document.documentElement.scrollWidth <= innerWidth,
+      }));
+      assert.equal(actual.visible, true, 'The corner guide is visible without hovering on desktop and mobile');
+      assert.deepEqual(actual.rooms, expectedRooms.map(room => ({
+        id: room.id, name: room.name,
+        corners: room.corners.map(corner => ({
+          id: corner.id, number: String(mapCorners.findIndex(candidate => candidate.id === corner.id) + 1).padStart(2, '0'),
+          name: corner.name, visible: true,
+        })),
+      })), 'The guide describes exactly the rooms and public locations on the selected floor');
+      const expectedMarkers = actual.rooms.flatMap(room => room.corners.map(({ id, number }) => ({ id, number })));
+      assert.deepEqual(actual.markers.sort((a, b) => a.id.localeCompare(b.id)),
+        expectedMarkers.sort((a, b) => a.id.localeCompare(b.id)), 'Map marks and the readable guide use matching stable numbers');
+      assert.equal(actual.fits, true, 'The location guide fits the page at desktop and mobile widths');
+    }
+    await page.getByTestId('floor-1').click();
   }
 
   const names = ['守夜人', '青禾', '小满', '阿照'];
@@ -329,6 +373,52 @@ test('four browser sessions complete private opening, powers, exploration, item 
   await pages[0].screenshot({ path: 'test-results/complete-desktop.png', fullPage: true });
   await pages[1].screenshot({ path: 'test-results/complete-mobile.png', fullPage: true });
 
+  for (const page of pages.slice(0, 2)) await assertCornerGuide(page, state.setup);
+  const rotationErrors = await pages[0].evaluate(async expected => {
+    const { createTileSvg, cornerNumber, cornerName } = await import('/tile.js');
+    const { MAP_TILES } = await import('/shared/maps.mjs');
+    const errors = [];
+    const locations = new Map([...expected.base, ...expected.extra].map(corner => [corner.id, corner]));
+    const extras = expected.extra.toReversed().map(corner => ({ id: corner.id, roomId: corner.roomId, name: corner.name }));
+    const host = document.createElement('div');
+    host.style.cssText = 'position:fixed;left:0;top:0;width:160px;height:160px;pointer-events:none';
+    document.body.append(host);
+    try {
+      for (const tile of MAP_TILES) for (let rotation = 0; rotation < 4; rotation++) {
+        const svg = createTileSvg(tile.id, rotation, extras);
+        host.replaceChildren(svg);
+        const markers = [...svg.querySelectorAll('.corner-location')];
+        const count = tile.rooms.reduce((total, room) => total + room.corners.length + 1, 0);
+        if (markers.length !== count) errors.push(`${tile.id}/${rotation}: missing or duplicate corner marks`);
+        for (const marker of markers) {
+          const id = marker.dataset.cornerId;
+          const corner = locations.get(id);
+          const label = marker.querySelector('.corner-number');
+          const matrix = label?.getCTM();
+          if (!corner || label?.textContent !== corner.number || cornerNumber(id) !== corner.number)
+            errors.push(`${id}/${rotation}: number differs from public location`);
+          if (corner && cornerName(id) !== `${corner.number} · ${corner.roomName} · ${corner.name}`)
+            errors.push(`${id}/${rotation}: incomplete location name`);
+          if (!matrix || matrix.a <= 0 || matrix.d <= 0 || Math.abs(matrix.b) > 0.001 || Math.abs(matrix.c) > 0.001)
+            errors.push(`${id}/${rotation}: number turns with the board`);
+          if (!label?.checkVisibility() || !marker.querySelector('.corner-mark'))
+            errors.push(`${id}/${rotation}: location cannot be read without hovering`);
+        }
+      }
+    } finally {
+      host.remove();
+    }
+    return errors;
+  }, {
+    base: mapCorners.map((corner, index) => ({ id: corner.id, name: corner.name, roomName: corner.room.name,
+      number: String(index + 1).padStart(2, '0') })),
+    extra: mapRooms.map((room, index) => ({ id: `suitcase:${room.id}`, roomId: room.id, name: '行李箱中',
+      roomName: room.name, number: String(index + 25).padStart(2, '0') })),
+  });
+  assert.deepEqual(rotationErrors, [], 'All map locations and additional suitcases retain upright, stable numbers in every rotation');
+  await pages[0].screenshot({ path: 'test-results/corner-guide-desktop.png', fullPage: true });
+  await pages[1].screenshot({ path: 'test-results/corner-guide-mobile.png', fullPage: true });
+
   const hakoPage = pages[0];
   state = await performAction(hakoPage, 'prepare_opening', () => hakoPage.getByTestId('prepare-opening').click());
   assert.equal(state.phase, 'opening_setup');
@@ -343,6 +433,11 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.opening.weakness, 'gasoline');
   assert.equal(state.opening.corners.filter(corner => corner.occupied).length, 23);
   await assertVisitorPrivacy('remains');
+
+  assert.deepEqual(await hakoPage.getByTestId('remains-select').locator('option').evaluateAll(options =>
+    options.map(option => ({ id: option.value, name: option.textContent }))),
+  state.opening.remainsTargets.map(id => ({ id, name: numberedCornerName(id) })),
+  'Every remains option identifies the same numbered position as the map and its guide');
 
   const remainsCorner = state.opening.remainsTargets[0];
   await hakoPage.getByTestId('remains-select').selectOption(remainsCorner);
