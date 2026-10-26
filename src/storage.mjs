@@ -34,7 +34,10 @@ export function createRoomStore(filePath) {
               || !room.players.some(player => player.id === room.hostId)
               || new Set(room.players.map(player => player.id)).size !== room.players.length
               || new Set(room.players.map(player => player.seat)).size !== room.players.length
+              || (room.selectingHako !== undefined && typeof room.selectingHako !== 'boolean')
               || room.players.filter(player => player.role === 'hako').length > 1
+              || (room.selectingHako && (room.draft || room.game || room.opening || room.play
+                || room.players.length !== 4 || room.players.some(player => !player.ready || player.role === 'hako')))
               || (room.draft && !room.players.some(player => player.role === 'hako'))) {
             throw new Error('房间数据无效');
           }

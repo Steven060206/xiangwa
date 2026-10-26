@@ -186,20 +186,23 @@ function renderSeats(container, compact = false) {
 
 function renderLobby() {
   const you = state.players.find(p => p.id === state.you);
-  const hako = state.players.find(p => p.role === 'hako');
+  const selecting = state.phase === 'hako_selection';
   const host = state.hostId === state.you;
   const locked = pending || !online;
   renderSeats($('lobby-seats'));
+  $('lobby-title').textContent = selecting ? '谁来扮演箱娃？' : '人齐，便可进宅。';
   $('lobby-count').textContent = `${state.players.length} / 4 人入席`;
   $('ready-button').textContent = you?.ready ? '取消准备' : '准备';
   $('ready-button').disabled = locked || !you;
-  $('start-setup').hidden = !host;
-  $('start-setup').disabled = locked || !hako || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
-  $('start-hint').textContent = !hako ? '先由一位玩家抢当箱娃，四人准备后即可开始。' : state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始准备流程。' : host ? '都已准备，可以开始领取道具。' : '都已准备，等待房主开始准备流程。';
-  $('claim-hako').textContent = !hako ? '抢当箱娃' : hako.id === state.you ? '放弃箱娃' : '箱娃已有人扮演';
-  $('claim-hako').disabled = locked || !you || Boolean(hako && hako.id !== state.you);
-  $('hako-claim-status').textContent = hako ? `${hako.name} 已抢到箱娃。` : '箱娃尚未有人扮演，先抢先得。';
+  $('ready-button').hidden = selecting;
+  $('start-setup').hidden = !host || selecting;
+  $('start-setup').disabled = locked || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
+  $('start-hint').hidden = selecting;
+  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始游戏，一起抢箱娃。' : host ? '都已准备，开始游戏后一起抢箱娃。' : '都已准备，等待房主开始游戏后一起抢箱娃。';
+  $('hako-claim-controls').hidden = !selecting;
+  $('claim-hako').disabled = locked || !you;
   $('leave-room').disabled = locked;
+  $('leave-room').hidden = selecting;
 }
 
 function canPlace() {
@@ -352,12 +355,13 @@ function render() {
   $('entry-view').hidden = true;
   $('room-view').hidden = false;
   $('room-code-display').textContent = state.code;
-  $('lobby-view').hidden = state.phase !== 'lobby';
-  $('setup-view').hidden = state.phase === 'lobby';
-  const phaseName = state.phase === 'lobby' ? '等待入席' : state.round ? state.round.result ? '本局结束' : state.round.mode === 'exploration' ? '旧宅探索' : '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
+  const lobby = state.phase === 'lobby' || state.phase === 'hako_selection';
+  $('lobby-view').hidden = !lobby;
+  $('setup-view').hidden = lobby;
+  const phaseName = state.phase === 'lobby' ? '等待入席' : state.phase === 'hako_selection' ? '抢选箱娃' : state.round ? state.round.result ? '本局结束' : state.round.mode === 'exploration' ? '旧宅探索' : '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
   document.title = `箱娃 · ${state.code} · ${phaseName}`;
   $('room-phase-label').textContent = `箱娃 · ${phaseName}`;
-  if (state.phase === 'lobby') renderLobby();
+  if (lobby) renderLobby();
   else renderSetup();
 }
 
@@ -369,7 +373,7 @@ $('dismiss-error').addEventListener('click', () => { $('error-banner').hidden = 
 $('ready-button').addEventListener('click', () => action('ready', { ready: !state.players.find(p => p.id === state.you)?.ready }));
 $('start-setup').addEventListener('click', () => action('start'));
 $('prepare-opening').addEventListener('click', () => action('prepare_opening'));
-$('claim-hako').addEventListener('click', () => action(state.players.find(p => p.id === state.you)?.role === 'hako' ? 'release_hako' : 'claim_hako'));
+$('claim-hako').addEventListener('click', () => action('claim_hako'));
 $('leave-room').addEventListener('click', () => action('leave'));
 $('draw-tile').addEventListener('click', () => action('draw'));
 $('rotate-tile').addEventListener('click', () => {

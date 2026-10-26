@@ -116,7 +116,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       code: room.code,
       hostId: room.hostId,
       phase: room.play ? round.result ? 'game_over' : 'practice' : room.opening ? 'opening_setup'
-        : room.game?.phase ?? (room.draft ? 'item_draft' : 'lobby'),
+        : room.game?.phase ?? (room.draft ? 'item_draft' : room.selectingHako ? 'hako_selection' : 'lobby'),
       players: room.players.map(({ id, name, role, ready, connections, seat }) => ({
         id, name, role, ready, connected: connections.size > 0, seat,
       })),
@@ -186,7 +186,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
 
   function runAction(room, player, input) {
     const inLobby = () => {
-      if (room.draft) fail(409, '游戏准备已经开始，无法进行此房间操作。');
+      if (room.selectingHako || room.draft) fail(409, '游戏已经开始，无法进行此房间操作。');
     };
     const hostOnly = () => {
       if (room.hostId !== player.id) fail(403, '只有房主可以进行此操作。');
@@ -200,37 +200,29 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         message = `${player.name}${player.ready ? ' 已准备。' : ' 取消了准备。'}`;
         break;
       case 'claim_hako': {
-        inLobby();
-        if (player.role === 'hako') return snapshot(room, player.id);
-        if (room.players.some(candidate => candidate.role === 'hako')) fail(409, '箱娃已被其他玩家抢到，请等待对方放弃。');
+        if (room.draft) fail(409, '箱娃角色已确定，无法再次抢选。');
+        if (!room.selectingHako) fail(409, '只有四人准备并开始游戏后，才可以抢当箱娃。');
         player.role = 'hako';
-        for (const candidate of room.players) candidate.ready = false;
-        message = `${player.name} 抢到了箱娃，请重新准备。`;
-        break;
-      }
-      case 'release_hako': {
-        inLobby();
-        if (player.role !== 'hako') fail(403, '只有当前扮演箱娃的玩家可以放弃角色。');
-        player.role = 'visitor';
-        for (const candidate of room.players) candidate.ready = false;
-        message = `${player.name} 放弃了箱娃，大家可以重新抢选，请重新准备。`;
+        const hakoSeat = room.players.findIndex(candidate => candidate.id === player.id);
+        const ordered = [...room.players.slice(hakoSeat + 1), ...room.players.slice(0, hakoSeat)];
+        room.draft = createItemDraft(ordered.map(candidate => candidate.id));
+        room.selectingHako = false;
+        message = `${player.name} 抢到了箱娃，访问者开始依次选择初始道具。`;
         break;
       }
       case 'start': {
         hostOnly();
         inLobby();
-        if (!room.players.some(candidate => candidate.role === 'hako')) fail(409, '请先由一位玩家抢当箱娃。');
         if (room.players.length !== 4 || !room.players.every(candidate => candidate.ready)) {
           fail(409, '需要四名玩家全部准备后才能开始。');
         }
-        const hakoSeat = room.players.findIndex(candidate => candidate.role === 'hako');
-        const ordered = [...room.players.slice(hakoSeat + 1), ...room.players.slice(0, hakoSeat)];
-        room.draft = createItemDraft(ordered.map(candidate => candidate.id));
-        message = '四人已就座，访问者先依次选择初始道具。';
+        for (const candidate of room.players) candidate.role = 'visitor';
+        room.selectingHako = true;
+        message = '四人已准备，游戏开始，大家一起抢当箱娃。';
         break;
       }
       case 'choose_item': {
-        if (!room.draft) fail(409, '请先由房主开始准备。');
+        if (!room.draft) fail(409, '请先完成箱娃抢选，再选择初始道具。');
         try {
           chooseItem(room.draft, player.id, input.itemId);
           if (room.draft.phase === 'items_ready') {
@@ -403,7 +395,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const input = await readJson(request);
         const name = nickname(input.name);
         const code = newRoomCode();
-        const room = { code, hostId: null, players: [], draft: null, game: null,
+        const room = { code, hostId: null, players: [], selectingHako: false, draft: null, game: null,
           opening: null, play: null, log: [], version: 0 };
         sendJson(response, 201, addPlayer(room, name));
         return;
@@ -417,7 +409,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           const input = await readJson(request);
           const room = roomFor(code);
           const name = nickname(input.name);
-          if (room.draft) fail(409, '游戏准备已开始，无法加入新玩家。');
+          if (room.selectingHako || room.draft) fail(409, '游戏已开始，无法加入新玩家。');
           if (room.players.length >= 4) fail(409, '房间已满，最多四名玩家。');
           sendJson(response, 201, addPlayer(copyRoom(room), name));
           return;

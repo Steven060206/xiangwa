@@ -173,25 +173,45 @@ test('four browser sessions complete private opening, powers, exploration, item 
   let lobbyState = await getState(identities[0]);
   await waitForSSE(lobbyState.version);
   assert.equal(lobbyState.players.every(player => player.role === 'visitor'), true);
-  for (const page of pages) {
-    assert.equal(await page.getByTestId('claim-hako').isEnabled(), true);
-    assert.equal(await page.getByTestId('claim-hako').innerText(), '抢当箱娃');
-    assert.equal(await page.getByTestId('hako-claim-status').innerText(), '箱娃尚未有人扮演，先抢先得。');
-    assert.equal(await page.getByTestId('hako-claim-status').getAttribute('aria-live'), 'polite');
+  for (let index = 0; index < pages.length; index++) {
+    const page = pages[index];
+    assert.equal(await page.getByTestId('claim-hako').isVisible(), false);
+    assert.equal(await page.locator('#hako-claim-controls').isVisible(), false);
+    assert.equal(await page.getByTestId('ready-button').isEnabled(), true);
+    assert.equal(await page.getByTestId('start-setup').isVisible(), index === 0);
   }
-  await performAction(pages[3], 'ready', () => pages[3].getByTestId('ready-button').click());
-  lobbyState = await performAction(pages[1], 'claim_hako', () => pages[1].getByTestId('claim-hako').click());
-  assert.equal(lobbyState.players.find(player => player.role === 'hako').id, identities[1].playerId);
-  assert.equal(lobbyState.players.every(player => !player.ready), true, 'Claiming Hako clears every ready flag');
+  assert.equal(await pages[0].getByTestId('start-setup').innerText(), '开始游戏');
+  for (const page of pages) {
+    lobbyState = await performAction(page, 'ready', () => page.getByTestId('ready-button').click());
+  }
+  assert.equal(lobbyState.phase, 'lobby');
+  assert.equal(lobbyState.players.every(player => player.ready), true);
+  for (const page of pages) assert.equal(await page.getByTestId('claim-hako').isVisible(), false,
+    'All four players being ready must still wait for the host to start');
+
+  let state = await performAction(pages[0], 'start', () => pages[0].getByTestId('start-setup').click());
+  assert.equal(state.phase, 'hako_selection');
+  assert.equal(state.draft, null);
   for (let index = 0; index < pages.length; index++) {
     const page = pages[index];
     const snapshot = await getState(identities[index]);
-    assert.equal(snapshot.players.find(player => player.role === 'hako').id, identities[1].playerId);
-    assert.equal(await page.getByTestId('claim-hako').isEnabled(), index === 1);
-    assert.equal(await page.getByTestId('claim-hako').innerText(), index === 1 ? '放弃箱娃' : '箱娃已有人扮演');
-    assert.equal(await page.getByTestId('hako-claim-status').innerText(), `${names[1]} 已抢到箱娃。`);
+    assert.equal(snapshot.phase, 'hako_selection');
+    assert.equal(snapshot.draft, null);
+    assert.equal(snapshot.players.every(player => player.role === 'visitor' && player.ready), true);
+    assert.equal(await page.locator('#lobby-view').isVisible(), true);
+    assert.equal(await page.locator('#lobby-title').innerText(), '谁来扮演箱娃？');
+    assert.equal(await page.locator('#lobby-seats > li').count(), 4);
+    assert.equal(await page.getByTestId('ready-button').isVisible(), false);
+    assert.equal(await page.getByTestId('start-setup').isVisible(), false);
+    assert.equal(await page.locator('#leave-room').isVisible(), false);
+    assert.equal(await page.locator('#hako-claim-controls').isVisible(), true);
+    assert.equal(await page.getByTestId('claim-hako').isVisible(), true);
+    assert.equal(await page.getByTestId('claim-hako').isEnabled(), true);
+    assert.equal(await page.getByTestId('claim-hako').innerText(), '抢当箱娃');
+    assert.equal(await page.getByTestId('hako-claim-status').innerText(), '四人已准备，点击按钮抢当箱娃，先抢先得。');
+    assert.equal(await page.getByTestId('hako-claim-status').getAttribute('aria-live'), 'polite');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
-      'The lobby must fit desktop and mobile viewports');
+      'The Hako selection must fit desktop and mobile viewports');
   }
   await mkdir('test-results', { recursive: true });
   await pages[0].screenshot({ path: 'test-results/lobby-claim-desktop.png', fullPage: true });
@@ -201,26 +221,19 @@ test('four browser sessions complete private opening, powers, exploration, item 
   await pages[1].getByTestId('room-code-display').waitFor();
   lobbyState = await getState(identities[1]);
   await waitForSSE(lobbyState.version);
-  assert.equal(lobbyState.you, identities[1].playerId, 'Refreshing preserves the claimant identity');
+  assert.equal(lobbyState.you, identities[1].playerId, 'Refreshing preserves the player identity');
   assert.equal(lobbyState.players.length, 4);
-  assert.equal(lobbyState.players.find(player => player.role === 'hako').id, identities[1].playerId);
-  assert.equal(await pages[1].getByTestId('claim-hako').innerText(), '放弃箱娃');
-  await performAction(pages[2], 'ready', () => pages[2].getByTestId('ready-button').click());
-  lobbyState = await performAction(pages[1], 'release_hako', () => pages[1].getByTestId('claim-hako').click());
-  assert.equal(lobbyState.players.every(player => player.role === 'visitor' && !player.ready), true,
-    'Releasing Hako clears the role and every ready flag');
-  for (const page of pages) {
-    assert.equal(await page.getByTestId('claim-hako').isEnabled(), true);
-    assert.equal(await page.getByTestId('claim-hako').innerText(), '抢当箱娃');
-    assert.equal(await page.getByTestId('hako-claim-status').innerText(), '箱娃尚未有人扮演，先抢先得。');
-  }
-  await performAction(pages[0], 'claim_hako', () => pages[0].getByTestId('claim-hako').click());
+  assert.equal(lobbyState.phase, 'hako_selection');
+  assert.equal(lobbyState.draft, null);
+  assert.equal(lobbyState.players.every(player => player.role === 'visitor' && player.ready), true,
+    'Refreshing during Hako selection preserves readiness');
+  assert.equal(await pages[1].getByTestId('claim-hako').isVisible(), true);
+  assert.equal(await pages[1].getByTestId('claim-hako').isEnabled(), true);
 
-  for (const page of pages) {
-    await performAction(page, 'ready', () => page.getByTestId('ready-button').click());
-  }
-  let state = await performAction(pages[0], 'start', () => pages[0].getByTestId('start-setup').click());
+  state = await performAction(pages[0], 'claim_hako', () => pages[0].getByTestId('claim-hako').click());
   assert.equal(state.phase, 'item_draft');
+  assert.equal(state.players.find(player => player.role === 'hako').id, identities[0].playerId);
+  for (const page of pages) assert.equal(await page.getByTestId('claim-hako').isVisible(), false);
   for (let choice = 0; choice < 3; choice++) {
     const currentIndex = identities.findIndex(person => person.playerId === state.draft.turnPlayerId);
     const page = pages[currentIndex];
