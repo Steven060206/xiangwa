@@ -21,6 +21,10 @@ const tokenView = token => token ? { ...clone(token), name: token.type === 'weap
 function visitor(play, id) { return play.round.visitors.find(player => player.id === id); }
 function alive(play, id) { return visitor(play, id)?.status === 'alive'; }
 function inventory(play, id) { return play.inventories[id]; }
+function itemView(item) {
+  const current = INITIAL_ITEMS.find(known => known.id === item.id);
+  return { ...clone(item), description: current?.description || item.description };
+}
 function hasItem(play, id, itemId) { return inventory(play, id)?.items.some(item => item.id === itemId); }
 function hasToken(play, id, type) { return inventory(play, id)?.tokens.some(token => token.type === type); }
 function roomOf(cornerId) { return getCornerRoom(cornerId)?.id; }
@@ -684,7 +688,7 @@ function resolutionView(play, id) {
     canUseEmptyBox: play.opening.emptyBoxTokens.length > 0,
     canLeaveEmpty: play.opening.emptyBoxTokens.length === 0,
     canFaceUp: hasItem(play, id, 'deduction'),
-    nightVisionItems: resolution.kind === 'notebook' && resolution.useNightVision ? clone(play.availableItems) : [],
+    nightVisionItems: resolution.kind === 'notebook' && resolution.useNightVision ? play.availableItems.map(itemView) : [],
     canUseStethoscope: resolution.kind === 'safe' && hasItem(play, id, 'stethoscope'),
   };
 }
@@ -714,7 +718,7 @@ export function getPlayView(play, playerId) {
         : pending.type === 'item' ? { itemId: pending.itemId, ...(pending.roomId ? { roomId: pending.roomId } : {}) }
           : { cornerId: pending.cornerId }) };
   }
-  view.inventory = player ? { tokens: inventory(play, playerId).tokens.map(tokenView), items: clone(inventory(play, playerId).items) }
+  view.inventory = player ? { tokens: inventory(play, playerId).tokens.map(tokenView), items: inventory(play, playerId).items.map(itemView) }
     : { tokens: [], items: [] };
   const canChoose = canAct && !isPowerMoveForced(play, playerId);
   view.peekTargets = canChoose ? corners(play, player.roomId).filter(corner => occupied(play, corner.id)).map(corner => corner.id) : [];

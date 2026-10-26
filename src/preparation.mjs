@@ -4,13 +4,13 @@ import { MAP_TILES, getTile } from './maps.mjs';
 export const INITIAL_ITEMS = Object.freeze([
   { id: 'walkie_talkie', name: '对讲机', description: '持有对讲机的访问者可通过自由行动远距离互看标志，不能远距离交换；与箱娃同房的使用者会死亡。' },
   { id: 'spirit_pen', name: '笔仙', description: '同房有其他访问者时，消耗标准行动询问箱娃是否在指定房间；与箱娃同房的使用者会死亡。' },
-  { id: 'ventriloquist_doll', name: '腹语人偶', description: '消耗标准行动调查一个房间的人偶和手记；与箱娃同房的使用者会死亡。' },
+  { id: 'ventriloquist_doll', name: '腹语人偶', description: '消耗标准行动指定一个房间：箱娃回答人偶是否在其中，并公开该房间的全部手记；与箱娃同房的使用者会死亡。' },
   { id: 'stethoscope', name: '听诊器', description: '窥探保险箱时可只声明一个数字，正确时翻开该数字；与箱娃同房的使用者会死亡。' },
   { id: 'nightmare_letter', name: '噩梦的来信', description: '消耗标准行动将牌库中的绝望时刻移至牌库底；与箱娃同房的使用者会死亡。' },
   { id: 'shrine_bell', name: '深菱神社之铃', description: '翻牌前可选择额外翻一张；成功后消耗标准行动，限制下一箱娃阶段设置危险度B或C能力。' },
-  { id: 'relic_ring', name: '遗物戒指', description: '死亡后胜利条件暂时不变，并可将盖放标志和访问者道具交给其他任意存活访问者。' },
+  { id: 'relic_ring', name: '遗物戒指', description: '死亡后到下一个箱娃阶段前维持访问者胜利条件，并可将全部盖放标志和访问者道具交给一名任意存活访问者。' },
   { id: 'smartphone', name: '智能手机', description: '消耗标准行动查看一张可用能力或箱娃手牌；与箱娃同房时不生效且使用者死亡。' },
-  { id: 'suitcase', name: '行李箱', description: '仅用一次，在当前房间增加一个“行李箱中”角落并盖放空箱；卡面未注明动作消耗。' },
+  { id: 'suitcase', name: '行李箱', description: '消耗标准行动，仅用一次：在当前房间增加一个“行李箱中”角落，并盖放一枚空箱标志。' },
   { id: 'dowsing_rod', name: '占卜棒', description: '消耗标准行动询问箱娃所在楼层；与箱娃同房的使用者会死亡。' },
   { id: 'deduction', name: '归纳推理法', description: '窥探后需放空箱时可使X面朝上；箱娃或箱人潜入房间时仍可将其重新盖放。' },
   { id: 'night_vision', name: '夜视仪', description: '窥探发现手记时可获得本局开局未选的访问者道具；与箱娃同房时会在获得道具前死亡。' },
@@ -91,6 +91,7 @@ export function getItemDraftView(draft) {
     turnPlayerId: draft.turnPlayerId,
     choices: draft.choices.map(choice => ({
       ...choice, itemName: draft.items.find(item => item.id === choice.itemId).name,
+      itemDescription: draft.items.find(item => item.id === choice.itemId).description,
     })),
     availableItems: draft.items.filter(item => !draft.choices.some(choice => choice.itemId === item.id)).map(copyItem),
   };

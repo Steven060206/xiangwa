@@ -174,6 +174,9 @@ test('four browser sessions complete private opening, powers, exploration, item 
   }
 
   async function assertCornerGuide(page, setup) {
+    const guideToggle = page.locator('#corner-guide-toggle');
+    const wasExpanded = await guideToggle.getAttribute('aria-expanded') === 'true';
+    if (!wasExpanded) await guideToggle.click();
     for (const floor of [1, 2, -1]) {
       await page.getByTestId(floor === -1 ? 'floor-basement' : `floor-${floor}`).click();
       const expectedRooms = setup.placements.filter(placement => placement.floor === floor)
@@ -206,6 +209,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
       assert.equal(actual.fits, true, 'The location guide fits the page at desktop and mobile widths');
     }
     await page.getByTestId('floor-1').click();
+    if (!wasExpanded) await guideToggle.click();
   }
 
   const names = ['守夜人', '青禾', '小满', '阿照'];

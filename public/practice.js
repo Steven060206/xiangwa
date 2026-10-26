@@ -246,15 +246,26 @@ export function renderDraft({ state, pending, online, action }) {
   for (const player of state.players.filter(player => player.role === 'visitor')) {
     const choice = draft.choices.find(item => item.playerId === player.id);
     const line = node('li');
-    line.append(node('span', '', `${player.name}${player.id === state.you ? '（你）' : ''}`), node('span', '', choice ? itemChoiceName(choice) : draft.turnPlayerId === player.id ? '正在选择' : '等待领取'));
+    line.append(node('span', '', `${player.name}${player.id === state.you ? '（你）' : ''}`));
+    if (choice?.itemDescription) {
+      const detail = node('details', 'draft-chosen-item');
+      detail.dataset.itemId = choice.itemId;
+      detail.append(node('summary', '', `${itemChoiceName(choice)} · 查看效果`), node('p', 'item-description', choice.itemDescription));
+      line.append(detail);
+    } else {
+      line.append(node('span', '', choice ? itemChoiceName(choice) : draft.turnPlayerId === player.id ? '正在选择' : '等待领取'));
+    }
     choices.append(line);
   }
   fragment.append(choices);
   const items = node('ul', 'item-list');
   for (const item of draft.availableItems) {
     const line = node('li');
+    line.dataset.itemId = item.id;
     const copy = node('div', 'item-copy');
-    copy.append(node('h3', '', item.name), node('p', '', item.description));
+    const description = node('p', 'item-description', `效果：${item.description}`);
+    description.dataset.testid = 'item-choice-description';
+    copy.append(node('h3', '', item.name), description);
     line.append(copy);
     if (mine) {
       const choose = button('领取', 'item-choice', locked, () => action('choose_item', { itemId: item.id }), true);

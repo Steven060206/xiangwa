@@ -843,6 +843,7 @@ test('HTTP, polling and SSE isolate peeks, inventories, deliberate sharing and c
   await preparePlay(request, people);
   const [hako, first, second, third] = people;
   assert.equal(first.playerId, firstId);
+  const originalMemory = (await snapshot(request, hako)).body.round.hako.lastInspectedRoom;
   const streams = await Promise.all(people.map(person => stream(t, base, person)));
   await action(request, first, 'silent_reveal', { index: 0 });
   const declared = await action(request, first, 'peek', { cornerId: 'hall_clock', useNightVision: false });
@@ -863,7 +864,13 @@ test('HTTP, polling and SSE isolate peeks, inventories, deliberate sharing and c
       assert.equal(view.round.resolution.token.type, 'password');
     } else {
       assert.deepEqual(view.round.resolution, { kind: 'waiting', playerId: firstId });
-      assert.equal(JSON.stringify(view.round).includes('password_4'), false);
+      if (index === 0) {
+        // The fixture relocates the token after the initial room was remembered.
+        // Preserve legitimately seen history while denying the new private result.
+        assert.deepEqual(view.round.hako.lastInspectedRoom, originalMemory);
+        const { lastInspectedRoom, ...hakoWithoutHistory } = view.round.hako;
+        assert.equal(JSON.stringify({ ...view.round, hako: hakoWithoutHistory }).includes('password_4'), false);
+      } else assert.equal(JSON.stringify(view.round).includes('password_4'), false);
     }
   }
   const before = (await snapshot(request, first)).body;

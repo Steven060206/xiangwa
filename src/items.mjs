@@ -1,5 +1,6 @@
 import { getTile } from './maps.mjs';
 import { getNoiseEffectsView } from './noise-effects.mjs';
+import { INITIAL_ITEMS } from './preparation.mjs';
 
 const ITEM_NAMES = {
   spirit_pen: '笔仙', ventriloquist_doll: '腹语人偶', nightmare_letter: '噩梦的来信',
@@ -218,9 +219,11 @@ export function getItemView(play, id, ctx) {
     if (item.id === 'smartphone') return play.powers.hand.length > 0 || play.powers.slots.some(Boolean);
     if (item.id === 'suitcase') return play.opening.emptyBoxTokens.length > 0 && !play.extraCorners[`suitcase:${player.roomId}`];
     return true;
-  }).map(item => ({ id: item.id, name: ITEM_NAMES[item.id] })) : [];
+  }).map(item => ({ id: item.id, name: ITEM_NAMES[item.id],
+    description: INITIAL_ITEMS.find(known => known.id === item.id)?.description || item.description })) : [];
   if (canUse && ctx.inventory(id).tokens.some(token => token.type === 'amulet') && play.powers.slots.some(Boolean)) {
-    usableItems.push({ id: 'amulet', name: ITEM_NAMES.amulet });
+    usableItems.push({ id: 'amulet', name: ITEM_NAMES.amulet,
+      description: '消耗标准行动和一枚古怪护符，将所选可用能力栏中的能力移出游戏。' });
   }
   const phoneTargets = [
     ...play.powers.hand.map((card, index) => ({ id: `hand:${index}`, name: `箱娃手牌第${index + 1}张` })),

@@ -280,6 +280,17 @@ function resolutionControls(container, state, locked, action) {
     const faceUp = resolution.canFaceUp ? checkbox(replacementGroup, 'replacement-face-up', '使用归纳推理法，将空箱X面朝上', locked) : null;
     section.append(replacementGroup);
     const nightVision = resolution.nightVisionItems?.length ? select(section, 'night-vision-item', '夜视仪：领取一张未选道具', resolution.nightVisionItems, locked) : null;
+    if (nightVision) {
+      const description = node('p', 'item-description small-note');
+      description.dataset.testid = 'night-vision-item-description';
+      description.setAttribute('aria-live', 'polite');
+      const describe = () => {
+        description.textContent = resolution.nightVisionItems.find(item => item.id === nightVision.value)?.description || '';
+      };
+      nightVision.addEventListener('change', describe);
+      describe();
+      section.append(description);
+    }
     const confirm = button('确认窥探结算', 'resolve-peek', locked, () => action('resolve_peek', { take, replacement: take && resolution.needsReplacement ? replacement.value : 'none', faceUp: Boolean(faceUp?.checked && replacement.value === 'empty_box'), ...(nightVision ? { itemId: nightVision.value } : {}) }));
     function update() {
       takeButton.setAttribute('aria-pressed', String(take));
@@ -350,7 +361,7 @@ function inventory(container, state, locked, action) {
     const details = node('details', 'inventory-item');
     details.dataset.testid = 'inventory-item';
     details.dataset.itemId = item.id;
-    details.append(node('summary', '', item.name), node('p', 'small-note', item.description));
+    details.append(node('summary', '', `${item.name} · 查看效果`), node('p', 'item-description small-note', item.description));
     section.append(details);
   }
   const alive = round.visitors.find(visitor => visitor.id === state.you)?.status === 'alive';
@@ -514,7 +525,13 @@ export function renderExploration({ panel, state, pending, online, action, silen
       row.dataset.testid = 'initial-item';
       row.dataset.playerId = item.playerId;
       row.dataset.itemId = item.itemId;
-      row.append(node('dt', '', playerName(state, item.playerId)), node('dd', '', item.itemName));
+      const description = node('dd');
+      if (item.itemDescription) {
+        const detail = node('details');
+        detail.append(node('summary', '', `${item.itemName} · 查看效果`), node('p', 'item-description small-note', item.itemDescription));
+        description.append(detail);
+      } else description.textContent = item.itemName;
+      row.append(node('dt', '', playerName(state, item.playerId)), description);
       list.append(row);
     }
     initial.append(list, node('p', 'small-note', '这是开局领取记录；你当前持有的物品见下方随身物品。'));

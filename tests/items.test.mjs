@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSetup, drawTile, placeTile } from '../src/game.mjs';
-import { createOpening, chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding, chooseInitialPower } from '../src/preparation.mjs';
+import { createOpening, chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding, chooseInitialPower, INITIAL_ITEMS } from '../src/preparation.mjs';
 import { createPlay, applyPlayAction, getPlayView } from '../src/play.mjs';
 
 const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
@@ -53,6 +53,19 @@ function nextFirstTurn(play) {
   }
   return reveal(play);
 }
+
+test('item selections and held cards expose current effect descriptions, including old saved suitcase text', () => {
+  let play = reveal(newPlay('suitcase'));
+  play.inventories[first].items[0].description = '卡面未注明动作消耗。';
+  const view = getPlayView(play, first);
+  const expected = INITIAL_ITEMS.find(item => item.id === 'suitcase').description;
+  assert.match(expected, /消耗标准行动/);
+  assert.equal(view.items.usableItems.find(item => item.id === 'suitcase').description, expected);
+  assert.equal(view.inventory.items.find(item => item.id === 'suitcase').description, expected);
+  assert.equal(play.inventories[first].items[0].description, '卡面未注明动作消耗。', 'Reading the current help does not rewrite saved inventory');
+  view.inventory.items[0].description = 'changed';
+  assert.equal(getPlayView(play, first).inventory.items[0].description, expected);
+});
 
 test('active items wait for hako, consume one standard action, and remain reusable', () => {
   let play = newPlay('dowsing_rod');

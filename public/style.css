@@ -19,6 +19,16 @@
 .corner-guide-entry{display:flex;align-items:baseline;gap:8px;font-size:13px;line-height:1.7;margin-top:4px}
 .corner-guide-number{flex:none;display:inline-grid;place-items:center;min-width:24px;padding:0 3px;border:1px solid #9a8868;background:var(--paper-light);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}
 .corner-guide-name{overflow-wrap:anywhere}
+.corner-guide-toggle{border:0;background:none;color:var(--ink);font:inherit;font-weight:inherit;padding:0;min-height:26px;text-align:left}
+#corner-guide-body>p{font-size:12px;color:var(--muted);margin:2px 0 9px}
+.undo-controls{display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;padding:7px 0;border-bottom:1px solid var(--rule);font-size:12px}
+.undo-controls .button{padding:5px 12px;min-height:32px;font-size:12px}
+.undo-hint{color:var(--muted);line-height:1.5}
+.undo-panel{flex:none}
+.item-description{font-size:13px;line-height:1.75;margin:8px 0;color:var(--ink);overflow-wrap:anywhere}
+.draft-chosen-item summary{cursor:pointer}
+.draft-chosen-item .item-description{max-width:36ch}
+@media(max-width:720px){.undo-controls{gap:4px 8px;padding:4px 0}.undo-controls .button{min-height:36px;padding:5px 9px}.undo-hint{font-size:11px}}
 .practice-panel{border-bottom:1px solid var(--rule);padding-bottom:24px;min-width:0}
 .practice-panel h2{font-size:23px}
 .practice-panel h3{margin:0;font-family:var(--serif);font-size:16px;font-weight:600}
@@ -117,3 +127,150 @@ input,select{caret-color:var(--accent)}
 @media(max-width:720px){.has-round .game-layout{grid-template-columns:1fr}.has-round .setup-sidebar{display:flex;flex-direction:column;gap:24px}.practice-panel{padding-bottom:24px}.practice-panel h2{font-size:23px}.practice-status{margin-top:14px}.round-positions{margin-block:14px}.silent-heading{flex-wrap:nowrap;gap:10px}.silent-card-face{min-height:104px}.practice-controls .button{min-height:44px}.has-round .table-players{max-width:none}.has-round .setup-seats .seat{flex-wrap:nowrap}.has-round .setup-seats .seat-info{max-width:none}.has-round .setup-seats .seat-name{max-width:160px}.has-round .setup-seats .seat-status{width:auto;margin:0}.completion-panel>.button{white-space:normal}}
 @media(max-width:720px){.has-draft .setup-sidebar{display:block}.draft-panel{padding-top:18px}.draft-panel h2{font-size:23px}.item-list>li{gap:14px;padding-block:18px}.item-copy h3{font-size:18px}.item-list .button{min-width:64px;padding-inline:10px}.draft-choices{margin-block:18px}.opening-progress{gap:8px 12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Keep the board and the current decision on screen together. */
+.room-view.in-game{height:100dvh;min-height:0;margin:0 auto;padding:12px 24px 0;display:flex;flex-direction:column}
+.in-game .room-header{flex:none;padding-bottom:10px}
+.in-game #setup-view{flex:1;min-height:0;display:flex;flex-direction:column}
+.in-game .setup-heading{flex:none;padding:10px 0 12px;gap:16px}
+.in-game .setup-heading h1{font-size:26px}
+.in-game .setup-heading p{margin-top:4px;line-height:1.6}
+.in-game .map-progress{flex-direction:row;align-items:center;gap:9px;padding:0}
+.in-game .map-progress strong{font-size:27px}
+.in-game .map-progress strong span{font-size:15px;margin-left:3px}
+.in-game .map-progress>span{font-size:12px}
+.in-game .game-layout,.in-game.has-round .game-layout{flex:1;min-height:0;grid-template-columns:minmax(0,1fr) minmax(290px,350px);grid-template-rows:minmax(0,1fr);gap:20px}
+.in-game .has-round .game-layout{grid-template-columns:minmax(0,1fr) minmax(310px,380px)}
+.in-game .board-section{align-self:stretch;min-height:0;height:100%;overflow:hidden;position:relative}
+.in-game .board-viewport{min-height:0;max-height:none;flex:1;padding:20px}
+.in-game .tile-board{align-self:flex-start}
+.in-game .board-toolbar{min-height:42px;padding:0 14px;flex:none}
+.in-game .floor-tab{min-height:42px;padding:8px 2px}
+.in-game .board-caption{flex:none;padding:7px 12px}
+.in-game .corner-guide{flex:none;max-height:clamp(95px,22dvh,190px);overflow:auto;padding:11px 14px;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b3a186 #ede4d3}
+.in-game .corner-guide h2{font-size:16px}
+.in-game .corner-guide>p{margin:2px 0 9px}
+.in-game .corner-guide-rooms{grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:11px 20px}
+.in-game .corner-guide-room h3{font-size:14px;margin-bottom:4px}
+.in-game .corner-guide-entry{font-size:12px;gap:7px}
+.in-game .setup-sidebar{min-height:0;height:100%;overflow:auto;overscroll-behavior:contain;padding-right:5px;gap:16px;scrollbar-width:thin;scrollbar-color:#b3a186 #ede4d3}
+.in-game .setup-sidebar>section{flex:none}
+.in-game .practice-panel{padding-bottom:16px}
+.in-game .practice-panel h2{font-size:21px}
+.in-game .practice-status{margin:8px 0 12px}
+.in-game .practice-scope{display:none}
+.in-game .exploration-section{margin-top:15px;padding-top:13px}
+.in-game .silent-section{margin-top:12px}
+.in-game .silent-cards{gap:7px;margin-bottom:8px}
+.in-game .silent-card-face{min-height:67px;padding:7px 4px;gap:3px}
+.in-game .silent-card-value{font-size:18px}
+.in-game .up .silent-card-value{font-size:25px}
+.in-game .button.silent-skip{min-height:32px;padding:5px 2px}
+.in-game .round-positions{margin:12px 0}
+.in-game .initial-power-public{margin:12px 0}
+.in-game .initial-items{margin-top:12px}
+.in-game .activity-details{flex:none;margin:5px 0;max-height:130px;overflow:auto}
+.in-game .room-footer{flex:none;padding:6px 0}
+.in-game .drawn-preview{width:100px;height:100px;margin:10px auto 8px}
+.in-game .drawn-preview .tile-back{height:92px;width:82px}
+.in-game .action-instruction{margin-bottom:12px}
+.in-game .setup-seats .seat{padding:7px 0}
+.in-game .setup-seats .seat-name{max-width:130px}
+.in-game .draft-panel{height:100%;min-height:0;overflow:auto;padding:12px 6px 12px 0;scrollbar-width:thin;scrollbar-color:#b3a186 #ede4d3}
+.in-game .item-list{margin-bottom:10px}
+.in-game .item-list>li{padding:13px 0}
+.in-game .draft-choices{margin:12px 0}
+.map-toolbar-actions{display:flex;align-items:center;gap:13px;flex:none}
+.map-toolbar-actions .text-button{margin:0;font-size:12px;min-height:36px}
+.map-positions{display:flex;flex-wrap:wrap;gap:5px 12px;padding:8px 12px;border-bottom:1px solid #cbbda5;background:var(--paper);max-height:90px;overflow:auto;flex:none;scrollbar-width:thin}
+.map-position{display:inline-flex;align-items:center;gap:6px;border:0;background:none;padding:2px 0;color:var(--ink);font-size:12px;text-align:left;min-width:0;line-height:1.6}
+.map-position>span:last-child{overflow-wrap:anywhere}
+.player-number{flex:none;display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--player-color);color:#fff;font-size:12px;line-height:1;font-weight:600}
+.map-position.self-player>span:last-child{font-weight:600}
+.seat-color-0{--player-color:#923e31}.seat-color-1{--player-color:#3c6177}.seat-color-2{--player-color:#536446}.seat-color-3{--player-color:#785336}
+.tile-svg .map-player-marker circle{fill:var(--player-color);stroke:#faf5e9;stroke-width:.8}
+.tile-svg .map-player-marker text{fill:#fff;font-family:var(--sans);font-size:7px;font-weight:600}
+.tile-svg .map-player-marker.self-player circle{stroke:#302c25;stroke-width:1.1}
+.tile-svg .self-hiding-corner .corner-mark{stroke:var(--accent);stroke-width:1.5;stroke-dasharray:2 1}
+.map-focused .game-layout{grid-template-columns:minmax(0,1fr)!important}
+.map-focused .setup-sidebar{display:none!important}
+.map-focused .corner-guide{max-height:24dvh}
+@media(max-width:1050px){.room-view.in-game{padding-inline:16px}.in-game .game-layout,.in-game .has-round .game-layout{grid-template-columns:minmax(0,1fr) 300px;gap:14px}.in-game .map-progress>span{display:none}.in-game .board-viewport{padding:15px}}
+@media(max-width:720px){
+  .room-view.in-game{padding:9px 12px 0;max-width:none}
+  .in-game .room-header{padding-bottom:7px;gap:7px}
+  .in-game .room-header .wordmark{font-size:20px;gap:6px}
+  .in-game .room-header .seal{width:24px;height:28px;font-size:17px}
+  .in-game .room-identity{gap:7px}
+  .in-game .room-identity strong{font-size:14px}
+  .in-game .room-identity .text-button{font-size:12px}
+  .in-game .connection-state{width:auto;margin:0;font-size:12px}
+  .in-game .setup-heading{padding:8px 0;gap:8px}
+  .in-game .setup-heading h1{font-size:20px;line-height:1.25}
+  .in-game .setup-heading p{font-size:12px;line-height:1.5;max-width:none;margin-top:3px}
+  .in-game .map-progress{align-self:flex-start;min-width:50px;gap:4px}
+  .in-game .map-progress strong{font-size:23px}
+  .in-game .map-progress strong span{font-size:13px}
+  .in-game .game-layout,.in-game .has-round .game-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(250px,50%) minmax(0,1fr);gap:10px}
+  .in-game .board-toolbar{min-height:35px;padding-inline:10px}
+  .in-game .floor-tabs{gap:16px}
+  .in-game .floor-tab{min-height:35px;padding:5px 1px;font-size:12px}
+  .map-toolbar-actions{gap:8px}
+  .map-toolbar-actions .text-button{min-height:32px}
+  .in-game .board-viewport{padding:16px;align-items:center}
+  .in-game .board-caption{font-size:12px;line-height:1.5;padding:4px 8px;gap:3px}
+  .in-game .board-caption #board-help{display:none}
+  .in-game .corner-guide{max-height:none;padding:3px 10px}
+  .in-game .corner-guide.expanded{position:absolute;bottom:0;left:0;width:100%;z-index:5;max-height:calc(100% - 38px);padding-bottom:9px}
+  .in-game .corner-guide h2{position:sticky;top:-3px;background:var(--paper);z-index:1;padding:1px 0;font-size:14px;line-height:1.4}
+  .in-game #corner-guide-body>p{display:none}
+  .in-game .corner-guide-rooms{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;margin-top:6px}
+  .in-game .corner-guide-room h3{font-size:13px}
+  .in-game .corner-guide-entry{line-height:1.6}
+  .map-positions{padding:5px 8px;max-height:48px;gap:3px 10px}
+  .map-position{font-size:12px;line-height:1.4;padding:1px 0}
+  .player-number{width:17px;height:17px;font-size:11px}
+  .in-game .setup-sidebar{display:flex;flex-direction:column;gap:14px;padding:0 4px 8px 0;min-height:0}
+  .in-game .practice-panel{padding:0 0 12px}
+  .in-game .practice-panel h2{font-size:19px}
+  .in-game .practice-status{font-size:12px;margin:5px 0 10px}
+  .in-game .practice-controls .button{min-height:42px}
+  .in-game .silent-card-face{min-height:55px}
+  .in-game .silent-heading{margin-bottom:8px}
+  .in-game .silent-skip{min-height:32px}
+  .in-game .turn-panel .drawn-preview{float:left;margin:4px 14px 5px 0;width:74px;height:74px}
+  .in-game .drawn-preview .tile-back{height:68px;width:62px}
+  .in-game .drawn-preview .tile-back>span{font-size:23px}
+  .in-game .drawn-name{font-size:15px;text-align:left;min-height:0;margin-top:4px}
+  .in-game .action-instruction{text-align:left;min-height:0;margin:3px 0 8px}
+  .in-game .tile-actions{gap:6px}
+  .in-game .selection-description{text-align:left;clear:both;font-size:12px}
+  .in-game .table-players h2{font-size:15px;margin-bottom:6px}
+  .in-game .setup-seats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
+  .in-game .setup-seats .seat{gap:6px;padding:6px 0;flex-wrap:wrap}
+  .in-game .setup-seats .seat-mark{width:22px;height:25px;font-size:13px}
+  .in-game .setup-seats .seat-name{font-size:12px;max-width:100px}
+  .in-game .setup-seats .seat-info{max-width:calc(100% - 28px)}
+  .in-game .setup-seats .seat-meta{font-size:12px;gap:4px}
+  .in-game .setup-seats .seat-status{font-size:12px;width:100%;margin:0 0 0 28px}
+  .in-game .completion-panel{padding-bottom:12px}
+  .in-game .completion-panel>svg{display:none}
+  .in-game .completion-panel h2{font-size:20px}
+  .in-game .activity-details{margin:3px 0;max-height:90px}
+  .in-game .room-footer{font-size:11px;padding:4px 0;gap:6px}
+  .in-game .has-draft .game-layout{grid-template-rows:minmax(0,1fr)}
+  .in-game .has-draft .setup-sidebar{display:none}
+  .in-game .draft-panel{padding:5px 4px 10px 0}
+  .in-game .draft-panel h2{font-size:21px}
+  .in-game .draft-description{margin-top:6px;font-size:12px}
+  .in-game .draft-choices{margin:10px 0}
+  .in-game .draft-choices li{padding:5px 0}
+  .in-game .item-list>li{padding:12px 0;gap:10px}
+  .in-game .item-copy h3{font-size:17px}
+  .in-game .item-list .button{min-height:40px}
+  .in-game .map-focused .game-layout{grid-template-rows:minmax(0,1fr)}
+  .in-game .map-focused .corner-guide.expanded{max-height:65%}
+  .undo-controls{flex-wrap:nowrap;gap:7px;min-height:43px;overflow-x:auto;scrollbar-width:thin}
+  .undo-controls .button{flex:none;white-space:nowrap}
+  .undo-controls>.undo-hint,.undo-controls>p{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+}

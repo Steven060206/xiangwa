@@ -17,6 +17,33 @@ export function cornerName(id) {
   return room ? `${cornerNumber(id)} · ${room.name} · ${corner?.name || '行李箱中'}` : '尚未选择';
 }
 
+export function mapPlayers(state) {
+  const result = [];
+  const add = (id, location, kind = 'visitor') => {
+    const player = state.players.find(player => player.id === id);
+    if (player && location.roomId) result.push({ id, name: player.name, seat: player.seat,
+      self: id === state.you, kind, ...location });
+  };
+  if (state.round) {
+    for (const visitor of state.round.visitors) {
+      if ((!visitor.status || visitor.status === 'alive') && visitor.roomId) add(visitor.id, { roomId: visitor.roomId });
+    }
+    if (state.round.hako.playerId === state.you && state.round.hako.cornerId) {
+      add(state.you, { roomId: state.round.hako.roomId, cornerId: state.round.hako.cornerId }, 'hako');
+    }
+    if (state.round.ghost?.status !== 'banished' && state.round.ghost?.cornerId) {
+      add(state.you, { roomId: state.round.ghost.roomId, cornerId: state.round.ghost.cornerId }, 'ghost');
+    }
+  } else if (state.opening || state.setup?.phase === 'map_ready') {
+    for (const player of state.players.filter(player => player.role === 'visitor')) add(player.id, { roomId: 'entrance' });
+    if (state.opening?.hakoId === state.you && state.opening.hidingCornerId) {
+      const corner = corners.find(corner => corner.id === state.opening.hidingCornerId);
+      if (corner) add(state.you, { roomId: corner.room.id, cornerId: corner.id }, 'hako');
+    }
+  }
+  return result;
+}
+
 const NS = 'http://www.w3.org/2000/svg';
 function el(tag, attrs = {}, value) {
   const node = document.createElementNS(NS, tag);
@@ -56,7 +83,7 @@ function roomLabelLayout(room, rotation) {
   return { x, y, lines };
 }
 
-export function createTileSvg(tileId, rotation = 0, extraCorners = []) {
+export function createTileSvg(tileId, rotation = 0, extraCorners = [], players = []) {
   const tile = getTile(tileId);
   const svg = el('svg', { viewBox: '0 0 100 100', class: 'tile-svg', role: 'img', 'aria-label': `${tile.name}，旋转${rotation * 90}度` });
   svg.append(el('title', {}, tile.name));
@@ -114,6 +141,39 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = []) {
       mark.append(el('text', { x: 0, y: .5, 'text-anchor': 'middle', 'dominant-baseline': 'middle', class: 'corner-number' }, cornerNumber(corner.id)));
       svg.append(mark);
     }
+  }
+  const addPlayer = (player, x, y) => {
+    const label = `${player.name}${player.self ? '（你）' : ''} · ${player.kind === 'visitor' ? '访问者' : player.kind === 'hako' ? '箱娃，仅自己可见' : '箱人，仅自己可见'}`;
+    const marker = el('g', { class: `map-player-marker seat-color-${player.seat}${player.self ? ' self-player' : ''}${player.cornerId ? ' private-position' : ''}`,
+      transform: `translate(${x} ${y})`, 'data-player-id': player.id, 'data-room-id': player.roomId,
+      'aria-label': label, 'data-testid': 'map-player-marker' });
+    if (player.cornerId) marker.setAttribute('data-corner-id', player.cornerId);
+    marker.append(el('title', {}, label));
+    marker.append(el('circle', { r: 5.4 }));
+    marker.append(el('text', { x: 0, y: .4, 'text-anchor': 'middle', 'dominant-baseline': 'middle' }, String(player.seat + 1)));
+    svg.append(marker);
+  };
+  for (const room of tile.rooms) {
+    const visitors = players.filter(player => player.roomId === room.id && !player.cornerId);
+    const { x, y, lines } = roomLabelLayout(room, rotation);
+    visitors.forEach((player, index) => addPlayer(player,
+      x + (index - (visitors.length - 1) / 2) * 12, Math.min(93, y + (lines.length - 1) * 5.5 + 13)));
+    for (const player of players.filter(player => player.roomId === room.id && player.cornerId)) {
+      const corner = room.corners.find(corner => corner.id === player.cornerId)
+        || extraCorners.find(corner => corner.id === player.cornerId);
+      if (!corner) continue;
+      const [cx, cy] = rotatePoint([corner.x ?? room.label.x, corner.y ?? Math.max(7, room.label.y - 13)], rotation);
+      const location = [...svg.querySelectorAll('.corner-location')].find(mark => mark.dataset.cornerId === player.cornerId);
+      location?.classList.add('self-hiding-corner');
+      addPlayer(player, Math.min(94, Math.max(6, cx + (cx > 80 ? -9 : 9))), Math.min(94, Math.max(6, cy - 9)));
+    }
+  }
+  if (tile.entrance) {
+    const entrancePlayers = players.filter(player => player.roomId === 'entrance');
+    entrancePlayers.forEach((player, index) => {
+      const [x, y] = rotatePoint([50 + (index - (entrancePlayers.length - 1) / 2) * 12, 106], rotation);
+      addPlayer(player, x, y);
+    });
   }
   return svg;
 }

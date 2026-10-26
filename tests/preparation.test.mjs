@@ -136,8 +136,11 @@ test('item draft views detach participant ids, choices, card names and descripti
   chooseItem(draft, visitors[0], INITIAL_ITEMS[0].id);
   const before = structuredClone(draft);
   const view = getItemDraftView(draft);
+  assert.equal(view.choices[0].itemDescription, INITIAL_ITEMS[0].description,
+    'A picked card retains its effect for later viewing');
   view.visitorIds[0] = 'changed';
   view.choices[0].itemId = 'changed';
+  view.choices[0].itemDescription = 'changed';
   view.choices.push({ playerId: 'changed', itemId: 'changed' });
   view.availableItems[0].name = 'changed';
   view.availableItems[0].description = 'changed';

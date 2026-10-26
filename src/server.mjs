@@ -9,6 +9,7 @@ import {
 import { createPlay, applyPlayAction, getPlayView } from './play.mjs';
 import { copyRoom, createRoomStore } from './storage.mjs';
 import { chooseBotAction } from './bots.mjs';
+import { checkpoint, clearUndo, rememberAction, undoView, applyUndo, membershipActions } from './undo.mjs';
 
 const BODY_LIMIT = 64 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -21,6 +22,7 @@ const staticFiles = new Map([
   ['/practice.js', ['../public/practice.js', 'text/javascript; charset=utf-8']],
   ['/exploration.js', ['../public/exploration.js', 'text/javascript; charset=utf-8']],
   ['/abilities.js', ['../public/abilities.js', 'text/javascript; charset=utf-8']],
+  ['/undo.js', ['../public/undo.js', 'text/javascript; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
@@ -137,11 +139,13 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       } : null,
       log: [...room.log],
       version: room.version,
+      undo: undoView(room, playerId),
     };
   }
 
   function scheduleBots(room, delay = botDelayMs) {
     const canRun = candidate => candidate && candidate.players.some(player => player.isBot)
+      && !candidate.undoPending && !candidate.undoPaused
       && candidate.players.some(player => !player.isBot && (player.connections.size || polling.has(player.id)))
       && !candidate.play?.result && botFailures.get(candidate.code) !== candidate.version;
     if (closing || botTimers.has(room.code) || !canRun(room)) return;
@@ -215,6 +219,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   }
 
   function addPlayer(room, name) {
+    clearUndo(room);
     const player = createPlayer(room, name);
     publish(room, `${name} 加入了房间。`);
     return { roomCode: room.code, playerId: player.id, token: player.token, state: snapshot(room, player.id) };
@@ -229,6 +234,17 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   }
 
   function runAction(room, player, input) {
+    if (['undo_request', 'undo_respond', 'undo_cancel', 'undo_resume'].includes(input.type)) {
+      let message;
+      try {
+        const onlineIds = room.players.filter(candidate => candidate.connections.size || polling.has(candidate.id)).map(candidate => candidate.id);
+        message = applyUndo(room, player, input, onlineIds);
+      } catch (error) { fail(409, error.message); }
+      publish(room, message);
+      return snapshot(room, player.id);
+    }
+    if (room.undoPending) fail(409, '正在等待撤销确认，请先同意、拒绝或取消撤销。');
+    const before = checkpoint(room);
     const inLobby = () => {
       if (room.selectingHako || room.draft) fail(409, '游戏已经开始，无法进行此房间操作。');
     };
@@ -448,6 +464,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       default:
         fail(400, '未知操作。');
     }
+    if (membershipActions.has(input.type)) clearUndo(room);
+    else rememberAction(room, before, player.id, input.type, message);
+    if (!player.isBot) room.undoPaused = false;
     publish(room, message);
     if (input.type === 'leave') {
       for (const response of player.connections) response.end();
@@ -485,6 +504,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         if (endpoint === 'join') {
           const input = await readJson(request);
           const room = roomFor(code);
+          if (room.undoPending) fail(409, '正在等待撤销确认，请稍后加入。');
           const name = nickname(input.name);
           if (room.selectingHako || room.draft) fail(409, '游戏已开始，无法加入新玩家。');
           if (room.players.length >= 4) fail(409, '房间已满，最多四名玩家。');

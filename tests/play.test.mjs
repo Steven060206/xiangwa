@@ -582,9 +582,13 @@ test('relic ring passes all possessions to a living visitor anywhere or publicly
 
 test('night vision grants only an available item unselected at setup and leaves notebook disclosure mandatory', () => {
   let play = newPlay('night_vision');
+  play.availableItems.find(item => item.id === 'suitcase').description = '卡面未注明动作消耗。';
   play.tokens.hall_clock = token('night-notebook', 'notebook', { number: 6 });
   play = peek(reveal(play), 'hall_clock', first, { useNightVision: true });
-  const options = getPlayView(play, first).resolution.nightVisionItems.map(candidate => candidate.id);
+  const available = getPlayView(play, first).resolution.nightVisionItems;
+  const options = available.map(candidate => candidate.id);
+  assert.equal(available.find(item => item.id === 'suitcase').description,
+    INITIAL_ITEMS.find(item => item.id === 'suitcase').description, 'Night vision explains the current item effect even after loading older inventory');
   assert.ok(options.includes('relic_ring'));
   assert.ok(['night_vision', 'spirit_pen', 'ventriloquist_doll'].every(id => !options.includes(id)));
   for (const itemId of ['night_vision', 'spirit_pen', 'unknown-item', undefined]) {

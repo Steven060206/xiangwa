@@ -156,6 +156,10 @@ export function renderActiveItems({ container, state, locked, action }) {
     controls.dataset.testid = 'active-items';
     controls.append(node('h3', '', '使用主动道具'));
     const choice = select(controls, 'active-item-select', '选择可用道具', items.usableItems, locked);
+    const description = node('p', 'item-description small-note');
+    description.dataset.testid = 'active-item-description';
+    description.setAttribute('aria-live', 'polite');
+    controls.append(description);
     const targets = node('div', 'practice-controls');
     const use = button('声明使用道具', 'use-item', true, () => {
       const payload = { itemId: choice.value };
@@ -169,6 +173,9 @@ export function renderActiveItems({ container, state, locked, action }) {
       action('use_item', payload);
     });
     const renderTargets = () => {
+      const item = items.usableItems.find(item => item.id === choice.value);
+      description.textContent = item?.description || round.inventory?.items?.find(item => item.id === choice.value)?.description || '';
+      description.hidden = !description.textContent;
       targets.replaceChildren();
       let valid = Boolean(choice.value);
       if (['spirit_pen', 'ventriloquist_doll'].includes(choice.value)) {

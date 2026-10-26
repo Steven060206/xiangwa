@@ -41,6 +41,23 @@ export function createRoomStore(filePath) {
               || (room.draft && !room.players.some(player => player.role === 'hako'))) {
             throw new Error('房间数据无效');
           }
+          if ((room.undoHistory !== undefined && (!Array.isArray(room.undoHistory) || room.undoHistory.length > 40
+              || room.undoHistory.some(entry => !entry?.before || !Array.isArray(entry.before.players)
+                || !Array.isArray(entry.before.log) || typeof entry.actorId !== 'string'
+                || typeof entry.type !== 'string' || typeof entry.label !== 'string'
+                || typeof entry.direct !== 'boolean'
+                || entry.before.players.length !== room.players.length
+                || entry.before.players.some(saved => !room.players.some(player => player.id === saved.id)
+                  || !['visitor', 'hako'].includes(saved.role) || typeof saved.ready !== 'boolean'))))
+              || (room.undoPaused !== undefined && typeof room.undoPaused !== 'boolean')
+              || (room.undoPending != null && (typeof room.undoPending.id !== 'string'
+                || typeof room.undoPending.label !== 'string' || !room.undoHistory?.length
+                || !Array.isArray(room.undoPending.requiredIds) || !Array.isArray(room.undoPending.approvedIds)
+                || !room.players.some(player => player.id === room.undoPending.requestedBy && !player.isBot)
+                || room.undoPending.requiredIds.some(id => !room.players.some(player => player.id === id && !player.isBot))
+                || room.undoPending.approvedIds.some(id => !room.undoPending.requiredIds.includes(id))))) {
+            throw new Error('撤销记录无效');
+          }
           for (const player of room.players) {
             if (typeof player.id !== 'string' || !player.id || typeof player.name !== 'string'
                 || !player.name.trim() || typeof player.token !== 'string' || !player.token

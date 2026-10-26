@@ -1,5 +1,6 @@
 import { getTile } from '/shared/maps.mjs';
-import { createTileSvg, cornerNumber } from './tile.js';
+import { renderUndo } from './undo.js';
+import { createTileSvg, cornerNumber, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
@@ -18,6 +19,8 @@ let rotation = 0;
 let selected = null;
 let tileTurnKey = '';
 let boardKey = '';
+const compactScreen = matchMedia('(max-width:720px)');
+let guideExpanded = !compactScreen.matches;
 
 function node(tag, className, value) {
   const result = document.createElement(tag);
@@ -307,14 +310,25 @@ function renderCornerGuide(placements, extraCorners) {
     guide = node('section', 'corner-guide');
     guide.id = 'corner-guide';
     guide.setAttribute('aria-labelledby', 'corner-guide-title');
-    const heading = node('h2', '', '角落位置对照');
+    const heading = node('h2');
     heading.id = 'corner-guide-title';
+    const toggle = node('button', 'corner-guide-toggle');
+    toggle.id = 'corner-guide-toggle';
+    toggle.dataset.testid = 'corner-guide-toggle';
+    toggle.type = 'button';
+    toggle.setAttribute('aria-controls', 'corner-guide-body');
+    toggle.addEventListener('click', () => { guideExpanded = !guideExpanded; updateCornerGuide(); });
+    heading.append(toggle);
+    const body = node('div');
+    body.id = 'corner-guide-body';
     const list = node('div', 'corner-guide-rooms');
     list.id = 'corner-guide-rooms';
-    guide.append(heading, node('p', '', '地图上的编号与右侧选项一致；每个编号代表一个可放标志的位置。'), list);
+    body.append(node('p', '', '地图上的编号与右侧选项一致；每个编号代表一个可放标志的位置。'), list);
+    guide.append(heading, body);
     $('board-section').append(guide);
   }
   guide.hidden = !placements.length;
+  updateCornerGuide();
   const fragment = document.createDocumentFragment();
   for (const placement of placements) {
     for (const room of getTile(placement.tileId).rooms) {
@@ -336,13 +350,25 @@ function renderCornerGuide(placements, extraCorners) {
   $('corner-guide-rooms').replaceChildren(fragment);
 }
 
+function updateCornerGuide() {
+  if (!$('corner-guide')) return;
+  $('corner-guide').classList.toggle('expanded', guideExpanded);
+  $('corner-guide-toggle').textContent = `${guideExpanded ? '收起' : '展开'}角落位置对照`;
+  $('corner-guide-toggle').setAttribute('aria-expanded', String(guideExpanded));
+  $('corner-guide-body').hidden = !guideExpanded;
+}
+
+compactScreen.addEventListener('change', () => { guideExpanded = !compactScreen.matches; updateCornerGuide(); });
+
 function renderBoard() {
   const setup = state.setup;
   const showTargets = canPlace() && Boolean(setup.drawnTileId);
   const targets = showTargets ? legalForRotation().filter(p => p.floor === activeFloor) : [];
   const placements = setup.placements.filter(p => p.floor === activeFloor);
   const extraCorners = state.round?.extraCorners || [];
-  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners]);
+  const players = mapPlayers(state);
+  renderMapPositions(players);
+  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players]);
   if (key === boardKey) return;
   boardKey = key;
   const board = $('tile-board');
@@ -370,7 +396,7 @@ function renderBoard() {
       cell.dataset.rotation = placement.rotation;
       cell.style.gridColumn = placement.x - minX + 1;
       cell.style.gridRow = placement.y - minY + 1;
-      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners));
+      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners, players));
       fragment.append(cell);
     }
     for (const position of targets) {
@@ -397,11 +423,63 @@ function renderBoard() {
   renderCornerGuide(placements, extraCorners);
 }
 
+function renderMapPositions(players) {
+  const strip = $('map-positions');
+  const fragment = document.createDocumentFragment();
+  for (const player of players) {
+    const room = player.roomId === 'entrance' ? { name: '正门', tileId: 'hall' }
+      : state.setup.placements.map(placement => getTile(placement.tileId))
+        .flatMap(tile => tile.rooms.map(room => ({ ...room, tileId: tile.id }))).find(room => room.id === player.roomId);
+    const floor = state.setup.placements.find(placement => placement.tileId === room?.tileId)?.floor;
+    const entry = node('button', `map-position seat-color-${player.seat}${player.self ? ' self-player' : ''}`);
+    entry.type = 'button';
+    entry.dataset.playerId = player.id;
+    entry.dataset.roomId = player.roomId;
+    entry.setAttribute('aria-label', `查看${player.name}${player.self ? '（你）' : ''}所在位置：${room?.name || '正门'}${player.cornerId ? `，角落${cornerNumber(player.cornerId)}，仅自己可见` : ''}`);
+    entry.append(node('span', 'player-number', String(player.seat + 1)),
+      node('span', '', `${player.name}${player.self ? '（你）' : ''} · ${room?.name || '正门'}${player.cornerId ? ` ${cornerNumber(player.cornerId)}（仅自己可见）` : ''}`));
+    entry.addEventListener('click', () => {
+      if (floor === undefined) return;
+      activeFloor = floor;
+      renderSetup();
+      const marker = [...$('tile-board').querySelectorAll('.map-player-marker')].find(marker => marker.dataset.playerId === player.id);
+      const tile = marker?.closest('.placed-tile');
+      if (!tile) return;
+      const viewport = $('board-viewport');
+      const view = viewport.getBoundingClientRect();
+      const target = tile.getBoundingClientRect();
+      // Centre its board tile, leaving room context around the player's token.
+      viewport.scrollTo({ left: viewport.scrollLeft + target.left - view.left - (viewport.clientWidth - target.width) / 2,
+        top: viewport.scrollTop + target.top - view.top - (viewport.clientHeight - target.height) / 2 });
+    });
+    fragment.append(entry);
+  }
+  strip.replaceChildren(fragment);
+  strip.hidden = !players.length;
+}
+
+function compactPracticePanel() {
+  const panel = $('practice-panel');
+  if (panel.hidden) return;
+  // Keep the current decision ahead of history and repeated player summaries.
+  const controls = [...panel.children].find(child => child.classList.contains('practice-controls'));
+  const silent = [...panel.children].find(child => child.classList.contains('silent-section'));
+  const status = panel.querySelector(':scope > .practice-status');
+  if (!status) return;
+  let anchor = status;
+  const primary = state.round?.phase === 'visitor_reveal' ? [silent, controls] : [controls, silent];
+  for (const element of primary.filter(Boolean)) {
+    anchor.after(element);
+    anchor = element;
+  }
+}
+
 function renderSetup() {
   const setup = state.setup;
   renderDraft({ state, pending, online, action });
   renderOpening({ state, pending, online, action });
   renderPractice({ state, pending, online, action });
+  compactPracticePanel();
   $('board-section').hidden = !setup;
   $('map-progress').hidden = !setup;
   $('setup-view').classList.toggle('has-round', Boolean(state.round || state.opening));
@@ -460,7 +538,7 @@ function renderSetup() {
   $('prepare-opening').hidden = state.hostId !== state.you;
   $('prepare-opening').disabled = pending || !online;
   $('opening-start-hint').textContent = state.hostId === state.you ? '准备好后，配置角落标志并由箱娃选择开局秘密。' : '等待房主开始开局配置。';
-  $('board-help').textContent = round ? '玩家所在房间见清单 · 可切换楼层' : state.opening ? '角落标志保持盖放 · 访问者在正门待入场' : complete ? '九块地图已完成配置' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
+  $('board-help').textContent = round ? '圆标为玩家座位号 · 潜伏位置仅本人可见' : state.opening ? '访问者在正门待入场 · 标志保持盖放' : complete ? '访问者在正门等待入场' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
   for (const button of $('floor-tabs').querySelectorAll('button')) {
     const floor = Number(button.dataset.floor);
     button.setAttribute('aria-selected', String(floor === activeFloor));
@@ -476,6 +554,7 @@ function render() {
   $('room-view').hidden = false;
   $('room-code-display').textContent = state.code;
   const lobby = state.phase === 'lobby' || state.phase === 'hako_selection';
+  $('room-view').classList.toggle('in-game', !lobby);
   $('lobby-view').hidden = !lobby;
   $('setup-view').hidden = lobby;
   const phaseName = state.phase === 'lobby' ? '等待入席' : state.phase === 'hako_selection' ? '抢选箱娃' : state.round ? state.round.result ? '本局结束' : state.round.mode === 'exploration' ? '旧宅探索' : '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
@@ -483,9 +562,15 @@ function render() {
   $('room-phase-label').textContent = `箱娃 · ${phaseName}`;
   if (lobby) renderLobby();
   else renderSetup();
+  renderUndo({ state, pending, online, action });
 }
 
 $('entry-form').addEventListener('submit', event => { event.preventDefault(); enterRoom(false); });
+$('map-focus').addEventListener('click', () => {
+  const focused = $('setup-view').classList.toggle('map-focused');
+  $('map-focus').textContent = focused ? '返回操作' : '专看地图';
+  $('map-focus').setAttribute('aria-pressed', String(focused));
+});
 $('join-room').addEventListener('click', () => enterRoom(true));
 $('room-code').addEventListener('input', event => { event.target.value = event.target.value.toUpperCase(); });
 $('room-code').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); enterRoom(true); } });
