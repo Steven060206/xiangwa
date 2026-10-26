@@ -31,7 +31,7 @@ export function createRoomStore(filePath) {
               || !Number.isSafeInteger(room.version) || room.version < 0 || !Array.isArray(room.log)
               || room.log.some(entry => typeof entry !== 'string')
               || !Array.isArray(room.players) || !room.players.length || room.players.length > 4
-              || !room.players.some(player => player.id === room.hostId)
+              || !room.players.some(player => player.id === room.hostId && !player.isBot)
               || new Set(room.players.map(player => player.id)).size !== room.players.length
               || new Set(room.players.map(player => player.seat)).size !== room.players.length
               || (room.selectingHako !== undefined && typeof room.selectingHako !== 'boolean')
@@ -45,6 +45,7 @@ export function createRoomStore(filePath) {
             if (typeof player.id !== 'string' || !player.id || typeof player.name !== 'string'
                 || !player.name.trim() || typeof player.token !== 'string' || !player.token
                 || !['hako', 'visitor'].includes(player.role) || typeof player.ready !== 'boolean'
+                || (player.isBot !== undefined && typeof player.isBot !== 'boolean')
                 || !Number.isInteger(player.seat) || player.seat < 0 || player.seat > 3) {
               throw new Error('玩家数据无效');
             }

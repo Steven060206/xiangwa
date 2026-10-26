@@ -54,7 +54,7 @@ async function checkRestart(saved, people) {
     const recovered = await snapshot(saved.request, people[i]);
     assert.equal(recovered.status, 200);
     assert.deepEqual(recovered.body, { ...before[i],
-      players: before[i].players.map(player => ({ ...player, connected: false })),
+      players: before[i].players.map(player => ({ ...player, connected: !!player.isBot })),
     });
   }
 }
@@ -82,6 +82,19 @@ function snapshot(request, identity, { poll = false } = {}) {
     playerId: identity.playerId, token: identity.token,
     ...(poll ? { poll: '1' } : {}),
   })}`);
+}
+
+async function waitForSnapshot(request, identity, predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let state;
+  do {
+    const response = await snapshot(request, identity);
+    assert.equal(response.status, 200);
+    state = response.body;
+    if (predicate(state)) return state;
+    await delay(10);
+  } while (Date.now() < deadline);
+  assert.fail(`Room did not reach the expected state: phase=${state.phase}, round=${state.round?.phase}, version=${state.version}`);
 }
 
 async function preparePlay(request, people) {
@@ -375,6 +388,225 @@ test('offline seat removal saves atomically and remains removed after restarting
   assert.equal(replacement.status, 201);
   assert.equal(replacement.body.state.players.length, 2);
   assert.equal(replacement.body.state.players.find(player => player.id === replacement.body.playerId).seat, 1);
+});
+
+test('bot seats fill the lobby securely, can be removed online, and never inherit human host authority', async t => {
+  const saved = await persistentServer(t, { botDelayMs: 10 });
+  const { request } = saved;
+  const host = (await request('/api/rooms', { name: '真人房主', isBot: true })).body;
+  assert.equal(host.state.players[0].isBot, undefined, 'A client cannot create a bot by supplying its flag');
+  assert.equal((await action(request, host, 'bot_claim_hako')).status, 409);
+  const filled = await action(request, host, 'add_bots');
+  assert.equal(filled.status, 200);
+  assert.equal(filled.body.you, host.playerId);
+  assert.equal(filled.body.players.length, 4);
+  const bots = filled.body.players.filter(player => player.isBot);
+  assert.equal(bots.length, 3);
+  assert.ok(bots.every(bot => bot.ready && bot.connected && bot.role === 'visitor'));
+  assert.deepEqual(filled.body.players.map(player => player.seat), [0, 1, 2, 3]);
+  assert.equal((await action(request, host, 'add_bots')).status, 409);
+  assert.equal((await request(`/api/rooms/${host.roomCode}/join`, { name: '第五席' })).status, 409);
+  const disk = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  for (const bot of disk.rooms[0].players.filter(player => player.isBot)) {
+    assert.equal(JSON.stringify(filled.body).includes(bot.token), false, 'A bot credential must not reach a client');
+    const forged = { ...host, playerId: bot.id, token: bot.token };
+    assert.equal((await snapshot(request, forged)).status, 403);
+    assert.equal((await snapshot(request, forged, { poll: true })).status, 403);
+    assert.equal((await action(request, forged, 'ready', { ready: false })).status, 403);
+    assert.equal((await request(`/api/rooms/${host.roomCode}/events?${new URLSearchParams({ playerId: bot.id, token: bot.token })}`)).status, 403);
+  }
+  assert.equal(JSON.stringify(filled.body).includes('"token"'), false);
+  const removed = await action(request, host, 'remove_player', { targetId: bots[1].id });
+  assert.equal(removed.status, 200, 'A bot can be removed while displayed as online');
+  assert.ok(removed.body.players.filter(player => player.isBot).every(bot => bot.ready));
+  assert.equal(removed.body.players.find(player => player.id === host.playerId).ready, false);
+  const guest = (await request(`/api/rooms/${host.roomCode}/join`, { name: '真人来客' })).body;
+  assert.equal(guest.state.players.find(player => player.id === guest.playerId).seat, 2);
+  assert.equal((await action(request, guest, 'add_bots')).status, 403);
+  assert.equal((await action(request, guest, 'bot_claim_hako')).status, 403);
+  assert.equal((await action(request, guest, 'remove_player', { targetId: bots[0].id })).status, 403);
+  assert.equal((await action(request, host, 'leave')).status, 200);
+  const transferred = (await snapshot(request, guest)).body;
+  assert.equal(transferred.hostId, guest.playerId, 'Host authority skips an earlier bot seat');
+  assert.ok(transferred.players[0].isBot);
+  assert.equal((await action(request, guest, 'leave')).status, 200);
+  assert.equal((await snapshot(request, guest)).status, 404, 'The last human leaving removes the remaining bots and room');
+  assert.equal(JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms.length, 0);
+});
+
+test('a human hako gets three automatic bot visitors through drafting and maps, then controls opening and reactions', async t => {
+  const { base, request } = await startServer(t, { botDelayMs: 10 });
+  const host = (await request('/api/rooms', { name: '真人箱娃' })).body;
+  const live = await stream(t, base, host);
+  await live.state();
+  const added = await action(request, host, 'add_bots');
+  const bots = added.body.players.filter(player => player.isBot);
+  await action(request, host, 'ready', { ready: true });
+  const started = await action(request, host, 'start');
+  assert.equal(started.body.phase, 'hako_selection');
+  assert.equal((await action(request, host, 'add_bots')).status, 409);
+  assert.equal((await action(request, host, 'remove_player', { targetId: bots[0].id })).status, 409);
+  const claimed = await action(request, host, 'claim_hako');
+  assert.equal(claimed.status, 200);
+  assert.equal(claimed.body.players.find(player => player.role === 'hako').id, host.playerId);
+  assert.equal((await action(request, host, 'bot_claim_hako')).status, 409);
+  const mapped = await live.state(state => state.phase === 'map_ready');
+  assert.equal(mapped.initialItems.length, 3);
+  assert.ok(mapped.initialItems.every(choice => bots.some(bot => bot.id === choice.playerId)));
+  assert.equal(mapped.setup.placements.length, 9);
+  await delay(40);
+  assert.equal((await snapshot(request, host)).body.version, mapped.version, 'Bots wait for the human host to prepare opening');
+  for (const [type, values] of [
+    ['prepare_opening', {}], ['choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' }],
+    ['place_remains', { cornerId: 'living_sofa' }], ['inspect_initial_room', { roomId: 'children_room' }],
+    ['choose_initial_hiding', { cornerId: 'children_cabinet' }], ['choose_initial_power', { powerId: 1 }],
+  ]) assert.equal((await action(request, host, type, values)).status, 200);
+  const pending = await live.state(state => state.round?.phase === 'visitor_reaction');
+  assert.equal(pending.round.pendingAction.playerId, bots[0].id);
+  await delay(40);
+  assert.equal((await snapshot(request, host)).body.version, pending.version, 'Bots wait for the human hako to confirm their declared action');
+  const resolved = await action(request, host, 'resolve_visitor_action');
+  assert.equal(resolved.status, 200);
+  const continued = await live.state(state => state.version > resolved.body.version
+    && state.round.silent.turnPlayerId !== bots[0].id);
+  assert.ok(continued.round);
+});
+
+test('a human visitor plays beside two bot visitors and receives automatic private responses from a bot hako', async t => {
+  const { base, request } = await startServer(t, { botDelayMs: 10 });
+  const host = (await request('/api/rooms', { name: '真人访问者' })).body;
+  const live = await stream(t, base, host);
+  await live.state();
+  const added = await action(request, host, 'add_bots');
+  const hako = added.body.players.find(player => player.isBot);
+  await action(request, host, 'ready', { ready: true });
+  await action(request, host, 'start');
+  const claimed = await action(request, host, 'bot_claim_hako');
+  assert.equal(claimed.status, 200);
+  assert.equal(claimed.body.you, host.playerId, 'Choosing a bot hako must keep the human HTTP identity');
+  assert.equal(claimed.body.players.find(player => player.role === 'hako').id, hako.id);
+  let state = await live.state(update => update.phase === 'item_draft' && update.draft.turnPlayerId === host.playerId);
+  assert.equal(state.initialItems.length, 2);
+  await delay(40);
+  assert.equal((await snapshot(request, host)).body.version, state.version, 'Bots wait for the human item choice');
+  const chosen = await action(request, host, 'choose_item', { itemId: 'spirit_pen' });
+  assert.equal(chosen.status, 200);
+  state = chosen.body;
+  while (state.phase === 'map_setup') {
+    if (state.setup.turnPlayerId !== host.playerId) {
+      const version = state.version;
+      state = await live.state(update => update.version > version
+        && (update.phase !== 'map_setup' || update.setup.turnPlayerId === host.playerId));
+      continue;
+    }
+    const drawn = await action(request, host, 'draw');
+    assert.equal(drawn.status, 200);
+    const placed = await action(request, host, 'place', drawn.body.setup.legalPlacements[0]);
+    assert.equal(placed.status, 200);
+    state = placed.body;
+  }
+  assert.equal(state.phase, 'map_ready');
+  assert.equal(state.setup.placements.length, 9);
+  assert.equal((await action(request, host, 'prepare_opening')).status, 200);
+  const opened = await live.state(update => update.phase === 'practice');
+  assert.equal(opened.initialPower.id, 1);
+  const visitorText = JSON.stringify(opened);
+  for (const field of ['password', 'weakness', 'hidingCornerId', 'cornerTokens', 'powerDeck']) {
+    assert.equal(visitorText.includes(`"${field}":`), false, `The human visitor must not see bot hako ${field}`);
+  }
+  state = await live.state(update => update.phase === 'practice' && update.round.phase === 'visitor_reveal'
+    && update.round.silent.turnPlayerId === host.playerId);
+  await delay(40);
+  assert.equal((await snapshot(request, host)).body.version, state.version, 'Bots leave the human silent-card decision untouched');
+  const lowestDown = [4, 2, 3, 5, 1, 0].find(index => state.round.silent.cards[index].status === 'down');
+  const revealed = await action(request, host, 'silent_reveal', { index: lowestDown });
+  assert.equal(revealed.status, 200);
+  assert.equal(revealed.body.round.phase, 'visitor_action');
+  const questioned = await action(request, host, 'use_item', {
+    itemId: 'spirit_pen', roomId: revealed.body.round.items.roomOptions[0].id,
+  });
+  assert.equal(questioned.status, 200);
+  const waiting = await live.state(update => update.round?.resolution?.kind === 'waiting'
+    && update.round.resolution.playerId === hako.id);
+  assert.deepEqual(waiting.round.resolution, { kind: 'waiting', playerId: hako.id });
+  const answered = await live.state(update => update.round?.items.events.some(event => event.itemId === 'spirit_pen'
+    && event.userId === host.playerId));
+  const answer = answered.round.items.events.find(event => event.itemId === 'spirit_pen' && event.userId === host.playerId);
+  assert.equal(typeof answer.answer, 'boolean');
+  assert.equal(Object.hasOwn(answer, 'truth'), false);
+});
+
+test('bot seats and paused progress survive restart and resume only when a human reconnects', async t => {
+  const saved = await persistentServer(t, { botDelayMs: 25 });
+  const { request } = saved;
+  const host = (await request('/api/rooms', { name: '暂停测试' })).body;
+  const added = await action(request, host, 'add_bots');
+  const botSeats = added.body.players.filter(player => player.isBot).map(({ id, seat }) => ({ id, seat }));
+  await action(request, host, 'ready', { ready: true });
+  await action(request, host, 'start');
+  const claimed = await action(request, host, 'claim_hako');
+  await delay(75);
+  assert.deepEqual((await snapshot(request, host)).body, claimed.body, 'Ordinary GETs and connected-looking bots cannot start bot timers');
+  const live = await stream(t, saved.base, host);
+  await live.state(state => state.initialItems.length === 1);
+  await live.close();
+  const paused = await waitForSnapshot(request, host, state => !state.players.find(player => player.id === host.playerId).connected);
+  await delay(75);
+  assert.deepEqual((await snapshot(request, host)).body, paused, 'Bot timers stop after the last human disconnects');
+  await checkRestart(saved, [host]);
+  const restored = (await snapshot(request, host)).body;
+  assert.deepEqual(restored.players.filter(player => player.isBot).map(({ id, seat }) => ({ id, seat })), botSeats);
+  assert.ok(restored.players.filter(player => player.isBot).every(player => player.connected && player.ready));
+  await delay(75);
+  assert.deepEqual((await snapshot(request, host)).body, restored, 'Restoring a room does not run bots without a human');
+  assert.equal((await snapshot(request, host, { poll: true })).status, 200);
+  const resumed = await waitForSnapshot(request, host, state => state.phase === 'map_ready');
+  assert.equal(resumed.initialItems.length, 3);
+  assert.equal(resumed.setup.placements.length, 9);
+});
+
+test('bot seat changes and scheduled bot actions commit only after successful storage and retry safely', async t => {
+  const saved = await persistentServer(t, { botDelayMs: 10 });
+  const { request } = saved;
+  const host = (await request('/api/rooms', { name: '人机存档测试' })).body;
+  const before = (await snapshot(request, host)).body;
+  const originalBytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, host, 'add_bots')).status, 503);
+    assert.deepEqual((await snapshot(request, host)).body, before);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), originalBytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  assert.equal((await action(request, host, 'add_bots')).status, 200);
+  await action(request, host, 'ready', { ready: true });
+  const selection = await action(request, host, 'start');
+  const selectionBytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, host, 'bot_claim_hako')).status, 503);
+    assert.deepEqual((await snapshot(request, host)).body, selection.body);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), selectionBytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const claimed = await action(request, host, 'bot_claim_hako');
+  assert.equal(claimed.status, 200);
+  const claimedBytes = await readFile(saved.dataFile, 'utf8');
+  const errors = [];
+  t.mock.method(console, 'error', (...values) => errors.push(values.join(' ')));
+  await mkdir(`${saved.dataFile}.tmp`);
+  let live;
+  try {
+    live = await stream(t, saved.base, host);
+    const connected = await live.state();
+    const deadline = Date.now() + 2000;
+    while (!errors.some(message => message.includes('人机行动失败')) && Date.now() < deadline) await delay(10);
+    assert.ok(errors.some(message => message.includes('人机行动失败') && message.includes('本次操作未生效')),
+      'A scheduled bot action must actually attempt the blocked write');
+    assert.deepEqual((await snapshot(request, host)).body, connected);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), claimedBytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const retried = await live.state(state => state.version > claimed.body.version, 4000);
+  assert.equal(retried.initialItems.length, 1, 'The same pending bot draft choice succeeds once storage is repaired');
+  assert.equal(retried.version, claimed.body.version + 1);
 });
 
 test('authenticated polling expires despite ordinary GETs and shares transient presence with SSE', { timeout: 25000 }, async t => {
@@ -1015,8 +1247,12 @@ test('corrupt or unsupported storage refuses startup and preserves the original 
   invalidRoom.rooms[0].players[0].seat = 8;
   const invalidGame = JSON.parse(valid);
   invalidGame.rooms[0].game = { phase: 'map_setup', placements: null };
+  const botHost = JSON.parse(valid);
+  botHost.rooms[0].players[0].isBot = true;
+  const invalidBotFlag = JSON.parse(valid);
+  invalidBotFlag.rooms[0].players[0].isBot = 'true';
   for (const content of ['{', JSON.stringify({ format: 2, rooms: [] }),
-    JSON.stringify(invalidRoom), JSON.stringify(invalidGame)]) {
+    JSON.stringify(invalidRoom), JSON.stringify(invalidGame), JSON.stringify(botHost), JSON.stringify(invalidBotFlag)]) {
     await writeFile(saved.dataFile, content);
     assert.throws(() => createGameServer({ dataFile: saved.dataFile }), /存档/);
     assert.equal(await readFile(saved.dataFile, 'utf8'), content);

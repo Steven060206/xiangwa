@@ -232,21 +232,26 @@ function renderSeats(container, compact = false) {
     const meta = node('div', 'seat-meta');
     if (player) {
       meta.append(node('span', '', player.role === 'hako' ? '箱娃' : isGhost ? '箱人' : isBanished ? '已被消灭' : '访问者'));
+      if (player.isBot) {
+        const label = node('span', 'bot-tag', '人机');
+        label.dataset.testid = 'bot-label';
+        meta.append(label);
+      }
       if (player.id === state.you) meta.append(node('span', 'self-tag', '你'));
       if (player.id === state.hostId) meta.append(node('span', '', '房主'));
-    } else meta.append(node('span', '', '分享房间码，邀请朋友'));
+    } else meta.append(node('span', '', '等待朋友或人机'));
     info.append(meta);
     item.append(info);
     if (player) {
       const preparationStatus = state.draft ? state.draft.choices.some(choice => choice.playerId === player.id) ? '已领道具' : active ? '选择道具' : '等待' : state.opening ? player.role === 'hako' ? '配置中' : '正门等候' : null;
       const status = !player.connected ? '暂离' : compact ? roundSeatStatus(state, player) || preparationStatus || (active ? state.setup?.drawnTileId ? '摆放中' : '当前轮次' : player.role === 'hako' ? '观图' : '等待') : player.ready ? '已准备' : '未准备';
       item.append(node('span', `seat-status${!player.connected ? ' disconnected' : player.ready ? ' ready' : ''}`, status));
-      if (!compact && state.phase === 'lobby' && state.hostId === state.you && player.id !== state.you && !player.connected) {
+      if (!compact && state.phase === 'lobby' && state.hostId === state.you && player.id !== state.you && (player.isBot || !player.connected)) {
         const remove = node('button', 'text-button', '移除');
         remove.type = 'button';
-        remove.dataset.testid = 'remove-offline-player';
+        remove.dataset.testid = player.isBot ? 'remove-bot-player' : 'remove-offline-player';
         remove.dataset.playerId = player.id;
-        remove.setAttribute('aria-label', `移除暂离玩家 ${player.name}`);
+        remove.setAttribute('aria-label', `移除${player.isBot ? '人机' : '暂离玩家'} ${player.name}`);
         remove.disabled = pending || !online;
         remove.addEventListener('click', () => action('remove_player', { targetId: player.id }));
         item.append(remove);
@@ -261,6 +266,7 @@ function renderLobby() {
   const you = state.players.find(p => p.id === state.you);
   const selecting = state.phase === 'hako_selection';
   const host = state.hostId === state.you;
+  const hasBots = state.players.some(player => player.isBot);
   const locked = pending || !online;
   renderSeats($('lobby-seats'));
   $('lobby-title').textContent = selecting ? '谁来扮演箱娃？' : '人齐，便可进宅。';
@@ -270,10 +276,15 @@ function renderLobby() {
   $('ready-button').hidden = selecting;
   $('start-setup').hidden = !host || selecting;
   $('start-setup').disabled = locked || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
+  $('add-bots').hidden = !host || selecting || state.players.length === 4;
+  $('add-bots').disabled = locked || !host || selecting || state.players.length === 4;
   $('start-hint').hidden = selecting;
-  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始游戏，一起抢箱娃。' : host ? '都已准备，开始游戏后一起抢箱娃。' : '都已准备，等待房主开始游戏后一起抢箱娃。';
+  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 席，可邀请朋友${host ? '，或点击补齐人机一起试玩' : '，也可由房主补齐人机'}。` : !state.players.every(p => p.ready) ? hasBots ? '人机已自动准备，其他玩家准备后，房主即可开始游戏。' : '四人都准备后，房主即可开始游戏，一起抢箱娃。' : host ? '都已准备，开始游戏后一起抢箱娃。' : '都已准备，等待房主开始游戏后一起抢箱娃。';
   $('hako-claim-controls').hidden = !selecting;
-  $('claim-hako').disabled = locked || !you;
+  $('claim-hako').disabled = locked || !you || !selecting;
+  $('bot-claim-hako').hidden = !selecting || !host || !hasBots;
+  $('bot-claim-hako').disabled = locked || !you || !selecting || !host || !hasBots;
+  $('hako-claim-status').textContent = hasBots ? '四人已准备，可抢当箱娃，也可由房主让人机扮演箱娃。' : '四人已准备，点击按钮抢当箱娃，先抢先得。';
   $('leave-room').disabled = locked;
   $('leave-room').hidden = selecting;
 }
@@ -447,6 +458,8 @@ $('ready-button').addEventListener('click', () => action('ready', { ready: !stat
 $('start-setup').addEventListener('click', () => action('start'));
 $('prepare-opening').addEventListener('click', () => action('prepare_opening'));
 $('claim-hako').addEventListener('click', () => action('claim_hako'));
+$('add-bots').addEventListener('click', () => action('add_bots'));
+$('bot-claim-hako').addEventListener('click', () => action('bot_claim_hako'));
 $('leave-room').addEventListener('click', () => action('leave'));
 $('draw-tile').addEventListener('click', () => action('draw'));
 $('rotate-tile').addEventListener('click', () => {

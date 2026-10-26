@@ -97,6 +97,7 @@ button.silent-card-face:hover:not(:disabled){background:#ebdcc1;border-color:var
 .game-result>p{font-size:13px;line-height:1.85}
 .game-result>.small-note{font-size:12px;margin-top:7px}
 .seat.banished .seat-mark{background:none;color:var(--muted)}
+.claim-actions{display:flex;flex-wrap:wrap;gap:12px}.claim-actions>.button{flex:1;min-width:140px;white-space:normal}.bot-tag{color:var(--green)}
 ::selection{background:#dec2a6;color:var(--ink)}
 input,select{caret-color:var(--accent)}
 @media(max-width:720px){.private-resolution{padding:16px 13px}.action-group .button,.decision-actions .button{min-height:44px}.inventory-list li{padding-block:10px}.exploration-section{margin-top:22px}.inline-check{padding-block:4px}.free-actions summary,.inventory-item summary,.initial-items summary{min-height:34px}.game-result h2{font-size:28px}}

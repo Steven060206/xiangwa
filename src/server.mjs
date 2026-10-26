@@ -8,6 +8,7 @@ import {
 } from './preparation.mjs';
 import { createPlay, applyPlayAction, getPlayView } from './play.mjs';
 import { copyRoom, createRoomStore } from './storage.mjs';
+import { chooseBotAction } from './bots.mjs';
 
 const BODY_LIMIT = 64 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -85,11 +86,13 @@ function sameToken(candidate, token) {
 }
 
 /** Each action saves its detached state before publishing it to HTTP/SSE clients. */
-export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile } = {}) {
+export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile, botDelayMs = 700 } = {}) {
   const store = createRoomStore(dataFile);
   const rooms = store.load();
   const streams = new Set();
   const polling = new Map();
+  const botTimers = new Map();
+  const botFailures = new Map();
   let closing = false;
   try {
     for (const room of rooms.values()) {
@@ -107,7 +110,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
 
   function authorize(room, credentials) {
     const player = room.players.find(player => player.id === credentials.playerId);
-    if (!player || !sameToken(credentials.token, player.token)) fail(403, '身份验证失败，请重新加入房间。');
+    if (!player || player.isBot || !sameToken(credentials.token, player.token)) fail(403, '身份验证失败，请重新加入房间。');
     return player;
   }
 
@@ -118,8 +121,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       hostId: room.hostId,
       phase: room.play ? round.result ? 'game_over' : 'practice' : room.opening ? 'opening_setup'
         : room.game?.phase ?? (room.draft ? 'item_draft' : room.selectingHako ? 'hako_selection' : 'lobby'),
-      players: room.players.map(({ id, name, role, ready, connections, seat }) => ({
-        id, name, role, ready, connected: connections.size > 0 || polling.has(id), seat,
+      players: room.players.map(({ id, name, role, ready, connections, seat, isBot }) => ({
+        id, name, role, ready, connected: !!isBot || connections.size > 0 || polling.has(id), seat,
+        ...(isBot ? { isBot: true } : {}),
       })),
       you: playerId,
       setup: room.game ? getSetupView(room.game) : null,
@@ -134,6 +138,33 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       log: [...room.log],
       version: room.version,
     };
+  }
+
+  function scheduleBots(room, delay = botDelayMs) {
+    const canRun = candidate => candidate && candidate.players.some(player => player.isBot)
+      && candidate.players.some(player => !player.isBot && (player.connections.size || polling.has(player.id)))
+      && !candidate.play?.result && botFailures.get(candidate.code) !== candidate.version;
+    if (closing || botTimers.has(room.code) || !canRun(room)) return;
+    const timer = setTimeout(() => {
+      botTimers.delete(room.code);
+      const current = rooms.get(room.code);
+      if (closing || !canRun(current)) return;
+      try {
+        for (const bot of current.players.filter(player => player.isBot)) {
+          const input = chooseBotAction(snapshot(current, bot.id));
+          if (!input) continue;
+          const next = copyRoom(current);
+          runAction(next, next.players.find(player => player.id === bot.id), input);
+          break;
+        }
+      } catch (error) {
+        console.error(`人机行动失败（房间 ${room.code}）：${error.message}`);
+        if (error.status === 503) scheduleBots(current, 2500);
+        else botFailures.set(room.code, current.version);
+      }
+    }, delay);
+    timer.unref();
+    botTimers.set(room.code, timer);
   }
 
   function publish(room, message, persist = true) {
@@ -152,27 +183,39 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         fail(503, '房间保存失败，本次操作未生效。请检查服务端存档目录后重试。');
       }
       if (room.players.length) rooms.set(room.code, room);
-      else rooms.delete(room.code);
+      else {
+        rooms.delete(room.code);
+        clearTimeout(botTimers.get(room.code));
+        botTimers.delete(room.code);
+        botFailures.delete(room.code);
+      }
     }
     for (const player of room.players) {
       const event = `event: state\ndata: ${JSON.stringify(snapshot(room, player.id))}\n\n`;
       for (const response of player.connections) response.write(event);
     }
+    scheduleBots(room);
   }
 
-  function addPlayer(room, name) {
+  function createPlayer(room, name, isBot = false) {
     const occupied = new Set(room.players.map(player => player.seat));
     const player = {
       id: randomUUID(), name,
       token: randomBytes(32).toString('base64url'),
       role: 'visitor',
-      ready: false,
+      ready: isBot,
       seat: [0, 1, 2, 3].find(seat => !occupied.has(seat)),
       connections: new Set(),
+      ...(isBot ? { isBot: true } : {}),
     };
     room.players.push(player);
     room.players.sort((a, b) => a.seat - b.seat);
     if (!room.hostId) room.hostId = player.id;
+    return player;
+  }
+
+  function addPlayer(room, name) {
+    const player = createPlayer(room, name);
     publish(room, `${name} 加入了房间。`);
     return { roomCode: room.code, playerId: player.id, token: player.token, state: snapshot(room, player.id) };
   }
@@ -194,21 +237,40 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     };
     let message;
     switch (input.type) {
+      case 'add_bots': {
+        hostOnly();
+        inLobby();
+        if (room.players.length >= 4) fail(409, '房间已经满员。');
+        while (room.players.length < 4) {
+          const occupied = new Set(room.players.map(candidate => candidate.seat));
+          const seat = [0, 1, 2, 3].find(index => !occupied.has(index));
+          createPlayer(room, `人机${seat + 1}号`, true);
+        }
+        message = `${player.name} 补齐了人机，人机已准备。`;
+        break;
+      }
       case 'ready':
         inLobby();
         if (typeof input.ready !== 'boolean') fail(400, '准备状态必须为 true 或 false。');
         player.ready = input.ready;
         message = `${player.name}${player.ready ? ' 已准备。' : ' 取消了准备。'}`;
         break;
-      case 'claim_hako': {
+      case 'claim_hako':
+      case 'bot_claim_hako': {
+        let claimant = player;
+        if (input.type === 'bot_claim_hako') {
+          hostOnly();
+          claimant = room.players.find(candidate => candidate.isBot);
+          if (!claimant) fail(409, '房间中没有人机。');
+        }
         if (room.draft) fail(409, '箱娃角色已确定，无法再次抢选。');
         if (!room.selectingHako) fail(409, '只有四人准备并开始游戏后，才可以抢当箱娃。');
-        player.role = 'hako';
-        const hakoSeat = room.players.findIndex(candidate => candidate.id === player.id);
+        claimant.role = 'hako';
+        const hakoSeat = room.players.findIndex(candidate => candidate.id === claimant.id);
         const ordered = [...room.players.slice(hakoSeat + 1), ...room.players.slice(0, hakoSeat)];
         room.draft = createItemDraft(ordered.map(candidate => candidate.id));
         room.selectingHako = false;
-        message = `${player.name} 抢到了箱娃，访问者开始依次选择初始道具。`;
+        message = `${claimant.name} 抢到了箱娃，访问者开始依次选择初始道具。`;
         break;
       }
       case 'start': {
@@ -367,17 +429,18 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const target = room.players.find(candidate => candidate.id === input.targetId);
         if (!target) fail(404, '该玩家已不在房间。');
         if (target.id === player.id) fail(409, '请使用离开房间退出自己的座位。');
-        if (target.connections.size || polling.has(target.id)) fail(409, '该玩家已经在线，不能移除。');
+        if (!target.isBot && (target.connections.size || polling.has(target.id))) fail(409, '该玩家已经在线，不能移除。');
         room.players = room.players.filter(candidate => candidate.id !== target.id);
-        for (const candidate of room.players) candidate.ready = false;
-        message = `${player.name} 移除了暂离玩家 ${target.name} 的座位。`;
+        for (const candidate of room.players) candidate.ready = !!candidate.isBot;
+        message = `${player.name} 移除了${target.isBot ? '人机' : '暂离玩家'} ${target.name} 的座位。`;
         break;
       }
       case 'leave': {
         inLobby();
         room.players = room.players.filter(candidate => candidate.id !== player.id);
-        if (room.hostId === player.id) room.hostId = room.players[0]?.id ?? null;
-        for (const candidate of room.players) candidate.ready = false;
+        if (!room.players.some(candidate => !candidate.isBot)) room.players = [];
+        if (room.hostId === player.id) room.hostId = room.players.find(candidate => !candidate.isBot)?.id ?? null;
+        for (const candidate of room.players) candidate.ready = !!candidate.isBot;
         message = `${player.name} 离开了房间。`;
         break;
       }
@@ -508,6 +571,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   const close = server.close.bind(server);
   server.close = callback => {
     closing = true;
+    for (const timeout of botTimers.values()) clearTimeout(timeout);
+    botTimers.clear();
+    botFailures.clear();
     for (const timeout of polling.values()) clearTimeout(timeout);
     polling.clear();
     for (const response of streams) response.end();
