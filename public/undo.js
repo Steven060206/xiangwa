@@ -5,6 +5,13 @@ const node = (tag, className, text) => {
   return element;
 };
 
+export function applyUndoLock(state) {
+  if (!state.undo?.pending) return;
+  for (const element of document.querySelectorAll('#lobby-view button, #setup-view button, #setup-view select, #setup-view input')) {
+    if (!element.closest('#floor-tabs, #map-positions') && !['map-focus', 'corner-guide-toggle'].includes(element.id)) element.disabled = true;
+  }
+}
+
 export function renderUndo({ state, pending, online, action }) {
   const panel = document.getElementById('undo-panel');
   if (!panel) return;
@@ -43,7 +50,5 @@ export function renderUndo({ state, pending, online, action }) {
   panel.hidden = false;
   for (const hint of controls.querySelectorAll('p, .undo-hint')) hint.title = hint.textContent;
   panel.replaceChildren(controls);
-  for (const element of document.querySelectorAll('#lobby-view button, #setup-view button, #setup-view select, #setup-view input')) {
-    if (undo?.pending && !element.closest('#floor-tabs, #map-positions') && !['map-focus', 'corner-guide-toggle'].includes(element.id)) element.disabled = true;
-  }
+  applyUndoLock(state);
 }

@@ -244,6 +244,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       return snapshot(room, player.id);
     }
     if (room.undoPending) fail(409, '正在等待撤销确认，请先同意、拒绝或取消撤销。');
+    if (input.expectedVersion !== undefined && input.expectedVersion !== room.version) {
+      fail(409, '页面进度已更新，请查看最新进度后重新操作。');
+    }
     const before = checkpoint(room);
     const inLobby = () => {
       if (room.selectingHako || room.draft) fail(409, '游戏已经开始，无法进行此房间操作。');

@@ -162,6 +162,31 @@ test('undo directly restores only the owner readiness and caps private history a
   assert.equal(Object.hasOwn(recent.undo, 'before'), false);
 });
 
+test('ordinary actions reject stale versions and accept only one concurrent action without treating presence as a game change', async t => {
+  const { request } = await service(t);
+  const first = (await request('/api/rooms', { name: '甲' })).body;
+  const second = (await request(`/api/rooms/${first.roomCode}/join`, { name: '乙' })).body;
+  const beforePresence = await state(request, first);
+  assert.equal(beforePresence.players.find(player => player.id === second.playerId).connected, false);
+  const connected = await state(request, second, true);
+  assert.equal(connected.players.find(player => player.id === second.playerId).connected, true);
+  assert.equal(connected.version, beforePresence.version, 'Presence updates cannot make an otherwise current action stale');
+  const ready = await action(request, first, 'ready', { ready: true, expectedVersion: beforePresence.version });
+  assert.equal(ready.status, 200);
+  const concurrent = await Promise.all([
+    action(request, first, 'ready', { ready: false, expectedVersion: ready.body.version }),
+    action(request, second, 'ready', { ready: true, expectedVersion: ready.body.version }),
+  ]);
+  assert.deepEqual(concurrent.map(result => result.status).sort(), [200, 409]);
+  const winner = concurrent.find(result => result.status === 200).body;
+  const rejected = concurrent.find(result => result.status === 409);
+  assert.match(rejected.body.error, /最新进度/);
+  const final = await state(request, first);
+  assert.equal(final.version, ready.body.version + 1);
+  assert.equal(final.undo.steps, ready.body.undo.steps + 1, 'A stale request must not add a history entry');
+  assert.deepEqual(final.players, winner.players);
+});
+
 test('shared role selection requires online human consent, freezes actions and rejects stale or duplicate votes', async t => {
   const { request } = await service(t);
   const people = await four(request);
@@ -233,7 +258,9 @@ test('joining cannot cancel a pending lobby undo or change its history', async t
   const joined = await request(`/api/rooms/${host.roomCode}/join`, { name: '第三位' });
   assert.equal(joined.status, 409);
   assert.deepEqual(await state(request, second), before, 'A rejected join preserves the vote, history, seats and version');
-  const approved = await action(request, host, 'undo_respond', { requestId: pending.id, accept: true });
+  const approved = await action(request, host, 'undo_respond', {
+    requestId: pending.id, accept: true, expectedVersion: before.version - 1,
+  });
   assert.equal(approved.status, 200);
   assert.equal(approved.body.undo.pending, null);
   assert.equal(approved.body.players.find(player => player.id === host.playerId).ready, false);
@@ -292,13 +319,17 @@ test('undoing draw and placement restores the same deck order and pending map wi
   }
   const visitor = people.find(person => person.playerId === result.body.setup.turnPlayerId);
   const before = await state(request, visitor);
-  const drawn = await action(request, visitor, 'draw');
+  const drawn = await action(request, visitor, 'draw', { expectedVersion: before.version });
   assert.equal(drawn.status, 200);
   let proposed = await requestUndo(request, visitor, drawn.body);
   assert.equal(proposed.status, 200);
   await consent(request, people, proposed.body.undo.pending);
-  assert.deepEqual(position(await state(request, visitor)), position(before));
-  const sameDraw = await action(request, visitor, 'draw');
+  const restoredDraw = await state(request, visitor);
+  assert.deepEqual(position(restoredDraw), position(before));
+  const staleDraw = await action(request, visitor, 'draw', { expectedVersion: before.version });
+  assert.equal(staleDraw.status, 409, 'A delayed request from before undo cannot replay the undone draw');
+  assert.deepEqual(await state(request, visitor), restoredDraw, 'The old draw changes neither the board, version nor undo history');
+  const sameDraw = await action(request, visitor, 'draw', { expectedVersion: restoredDraw.version });
   assert.equal(sameDraw.status, 200);
   assert.deepEqual(sameDraw.body.setup, drawn.body.setup, 'An undone draw cannot reroll the map deck');
   const placed = await action(request, visitor, 'place', sameDraw.body.setup.legalPlacements[0]);

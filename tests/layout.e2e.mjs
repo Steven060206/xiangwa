@@ -178,6 +178,14 @@ test('compact desktop and mobile boards show public players and only the viewer 
   assert.equal(await pages[0].getByTestId('undo-accept').isVisible(), true);
   assert.equal(await pages[1].getByTestId('surrender').isDisabled(), true,
     'Ordinary game controls freeze while the table considers an undo');
+  await pages[1].getByTestId('floor-2').click();
+  assert.equal(await pages[1].getByTestId('surrender').isDisabled(), true,
+    'Changing floors must keep newly rendered game controls frozen');
+  await pages[1].locator(`#map-positions [data-player-id="${people[1].playerId}"]`).click();
+  assert.equal(await pages[1].getByTestId('surrender').isDisabled(), true,
+    'Locating a player must preserve the undo lock while allowing map navigation');
+  assert.equal((await snapshot(people[1])).undo.pending.id, requested.undo.pending.id,
+    'Local map navigation does not change the pending vote');
   let continued = await undoClick(pages[0], 'undo_respond', 'undo-reject');
   assert.equal(continued.undo.pending, null);
   assert.equal(continued.round.visitors.find(visitor => visitor.id === people[1].playerId).roomId, destination);
@@ -201,4 +209,28 @@ test('compact desktop and mobile boards show public players and only the viewer 
   assert.equal(restored.round.visitors.find(visitor => visitor.id === people[1].playerId).roomId, 'hall_room');
   await verifyPage(pages[0], people[0]);
   await verifyPage(pages[1], people[1]);
+
+  for (const viewport of [{ width: 667, height: 375 }, { width: 375, height: 667 }, { width: 844, height: 390 }]) {
+    await pages[0].setViewportSize(viewport);
+    const geometry = await pages[0].evaluate(() => ({
+      fitsWidth: document.documentElement.scrollWidth <= innerWidth,
+      fitsHeight: document.documentElement.scrollHeight <= innerHeight + 1,
+      boardHeight: document.getElementById('board-viewport').clientHeight,
+      boardSectionHeight: document.getElementById('board-section').clientHeight,
+      controlsHeight: document.querySelector('.setup-sidebar').clientHeight,
+    }));
+    const size = `${viewport.width}×${viewport.height}`;
+    assert.equal(geometry.fitsWidth, true, `${size}: the layout does not overflow horizontally`);
+    assert.ok(geometry.boardHeight >= 150, `${size}: the actual map remains usable (${JSON.stringify(geometry)})`);
+    assert.ok(geometry.controlsHeight >= 160, `${size}: operations do not collapse to zero height`);
+    if (viewport.height > 600) assert.equal(geometry.fitsHeight, true, `${size}: portrait play keeps the compact layout`);
+    await pages[0].getByTestId('resolve-action').click({ trial: true });
+    if (viewport.width === 667) {
+      await pages[0].evaluate(() => window.scrollTo(0, 0));
+      await pages[0].screenshot({ path: 'test-results/audit-short-mobile.png', fullPage: true });
+    }
+  }
+  const resolved = await undoClick(pages[0], 'resolve_visitor_action', 'resolve-action');
+  assert.equal(resolved.round.pendingAction, null, 'A short landscape viewport can complete the pending action');
+  assert.equal(resolved.round.visitors.find(visitor => visitor.id === people[1].playerId).roomId, destination);
 });

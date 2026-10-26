@@ -274,3 +274,17 @@ input,select{caret-color:var(--accent)}
   .undo-controls .button{flex:none;white-space:nowrap}
   .undo-controls>.undo-hint,.undo-controls>p{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
 }
+@media(max-width:720px) and (max-height:720px){
+  .in-game .setup-heading{padding-block:6px}
+  .in-game .game-layout,.in-game .has-round .game-layout{grid-template-rows:minmax(280px,50%) minmax(0,1fr)}
+  .in-game .board-caption{display:none}
+}
+@media(max-height:600px){
+  .room-view.in-game{height:auto;min-height:100dvh}
+  .in-game #setup-view{flex:none}
+  .in-game .game-layout,.in-game .has-round .game-layout{flex:none;grid-template-rows:auto;align-items:start}
+  .in-game .board-section{height:clamp(360px,80dvh,480px)}
+  .in-game .board-viewport{min-height:150px}
+  .in-game .setup-sidebar{height:auto;min-height:200px;overflow:visible}
+  .in-game .draft-panel{height:auto;overflow:visible}
+}

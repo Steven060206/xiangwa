@@ -1,5 +1,5 @@
 import { getTile } from '/shared/maps.mjs';
-import { renderUndo } from './undo.js';
+import { applyUndoLock, renderUndo } from './undo.js';
 import { createTileSvg, cornerNumber, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
@@ -200,7 +200,9 @@ async function action(type, payload = {}) {
   $('error-banner').hidden = true;
   render();
   try {
-    const next = await api(`/api/rooms/${identity.roomCode}/actions`, { playerId: identity.playerId, token: identity.token, type, ...payload });
+    const next = await api(`/api/rooms/${identity.roomCode}/actions`, {
+      playerId: identity.playerId, token: identity.token, type, expectedVersion: state.version, ...payload,
+    });
     if (type === 'leave') {
       disconnect();
       state = null;
@@ -491,6 +493,7 @@ function renderSetup() {
     $('turn-description').textContent = preparationDescription(state);
     $('drawn-title').closest('.turn-panel').hidden = true;
     $('map-complete').hidden = true;
+    applyUndoLock(state);
     return;
   }
   const mine = setup.turnPlayerId === state.you;
@@ -546,6 +549,7 @@ function renderSetup() {
     $(`floor-count-${floor}`).textContent = setup.placements.filter(p => p.floor === floor).length || '';
   }
   renderBoard();
+  applyUndoLock(state);
 }
 
 function render() {
