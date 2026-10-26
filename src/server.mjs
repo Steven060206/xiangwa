@@ -164,7 +164,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     const player = {
       id: randomUUID(), name,
       token: randomBytes(32).toString('base64url'),
-      role: room.players.length ? 'visitor' : 'hako',
+      role: 'visitor',
       ready: false,
       seat: [0, 1, 2, 3].find(seat => !occupied.has(seat)),
       connections: new Set(),
@@ -199,22 +199,27 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         player.ready = input.ready;
         message = `${player.name}${player.ready ? ' 已准备。' : ' 取消了准备。'}`;
         break;
-      case 'set_hako': {
-        hostOnly();
+      case 'claim_hako': {
         inLobby();
-        const target = room.players.find(candidate => candidate.id === input.targetId);
-        if (!target) fail(400, '请选择房间内的玩家。');
-        if (target.role === 'hako') return snapshot(room, player.id);
-        for (const candidate of room.players) {
-          candidate.role = candidate.id === target.id ? 'hako' : 'visitor';
-          candidate.ready = false;
-        }
-        message = `${target.name} 将扮演箱娃，请重新准备。`;
+        if (player.role === 'hako') return snapshot(room, player.id);
+        if (room.players.some(candidate => candidate.role === 'hako')) fail(409, '箱娃已被其他玩家抢到，请等待对方放弃。');
+        player.role = 'hako';
+        for (const candidate of room.players) candidate.ready = false;
+        message = `${player.name} 抢到了箱娃，请重新准备。`;
+        break;
+      }
+      case 'release_hako': {
+        inLobby();
+        if (player.role !== 'hako') fail(403, '只有当前扮演箱娃的玩家可以放弃角色。');
+        player.role = 'visitor';
+        for (const candidate of room.players) candidate.ready = false;
+        message = `${player.name} 放弃了箱娃，大家可以重新抢选，请重新准备。`;
         break;
       }
       case 'start': {
         hostOnly();
         inLobby();
+        if (!room.players.some(candidate => candidate.role === 'hako')) fail(409, '请先由一位玩家抢当箱娃。');
         if (room.players.length !== 4 || !room.players.every(candidate => candidate.ready)) {
           fail(409, '需要四名玩家全部准备后才能开始。');
         }
@@ -365,10 +370,8 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       }
       case 'leave': {
         inLobby();
-        const wasHako = player.role === 'hako';
         room.players = room.players.filter(candidate => candidate.id !== player.id);
         if (room.hostId === player.id) room.hostId = room.players[0]?.id ?? null;
-        if (wasHako && room.players.length) room.players[0].role = 'hako';
         for (const candidate of room.players) candidate.ready = false;
         message = `${player.name} 离开了房间。`;
         break;

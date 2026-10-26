@@ -15,7 +15,6 @@ let rotation = 0;
 let selected = null;
 let tileTurnKey = '';
 let boardKey = '';
-let selectOptionsKey = '';
 
 function node(tag, className, value) {
   const result = document.createElement(tag);
@@ -187,6 +186,7 @@ function renderSeats(container, compact = false) {
 
 function renderLobby() {
   const you = state.players.find(p => p.id === state.you);
+  const hako = state.players.find(p => p.role === 'hako');
   const host = state.hostId === state.you;
   const locked = pending || !online;
   renderSeats($('lobby-seats'));
@@ -194,24 +194,12 @@ function renderLobby() {
   $('ready-button').textContent = you?.ready ? '取消准备' : '准备';
   $('ready-button').disabled = locked || !you;
   $('start-setup').hidden = !host;
-  $('start-setup').disabled = locked || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
-  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始准备流程。' : host ? '都已准备，可以开始领取道具。' : '都已准备，等待房主开始准备流程。';
-  $('host-controls').hidden = !host;
+  $('start-setup').disabled = locked || !hako || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
+  $('start-hint').textContent = !hako ? '先由一位玩家抢当箱娃，四人准备后即可开始。' : state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始准备流程。' : host ? '都已准备，可以开始领取道具。' : '都已准备，等待房主开始准备流程。';
+  $('claim-hako').textContent = !hako ? '抢当箱娃' : hako.id === state.you ? '放弃箱娃' : '箱娃已有人扮演';
+  $('claim-hako').disabled = locked || !you || Boolean(hako && hako.id !== state.you);
+  $('hako-claim-status').textContent = hako ? `${hako.name} 已抢到箱娃。` : '箱娃尚未有人扮演，先抢先得。';
   $('leave-room').disabled = locked;
-  $('assign-hako').disabled = locked;
-  $('hako-select').disabled = locked;
-  const optionsKey = JSON.stringify(state.players.map(p => [p.id, p.name]));
-  if (selectOptionsKey !== optionsKey) {
-    const currentValue = $('hako-select').value;
-    $('hako-select').replaceChildren(...state.players.map(player => {
-      const option = node('option', '', player.name);
-      option.value = player.id;
-      return option;
-    }));
-    if (state.players.some(p => p.id === currentValue)) $('hako-select').value = currentValue;
-    selectOptionsKey = optionsKey;
-  }
-  if (document.activeElement !== $('hako-select')) $('hako-select').value = state.players.find(p => p.role === 'hako')?.id || '';
 }
 
 function canPlace() {
@@ -381,7 +369,7 @@ $('dismiss-error').addEventListener('click', () => { $('error-banner').hidden = 
 $('ready-button').addEventListener('click', () => action('ready', { ready: !state.players.find(p => p.id === state.you)?.ready }));
 $('start-setup').addEventListener('click', () => action('start'));
 $('prepare-opening').addEventListener('click', () => action('prepare_opening'));
-$('assign-hako').addEventListener('click', () => action('set_hako', { targetId: $('hako-select').value }));
+$('claim-hako').addEventListener('click', () => action(state.players.find(p => p.id === state.you)?.role === 'hako' ? 'release_hako' : 'claim_hako'));
 $('leave-room').addEventListener('click', () => action('leave'));
 $('draw-tile').addEventListener('click', () => action('draw'));
 $('rotate-tile').addEventListener('click', () => {

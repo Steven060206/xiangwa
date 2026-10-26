@@ -58,7 +58,7 @@ async function checkRestart(saved, people) {
   }
 }
 
-async function createFour(request) {
+async function createFour(request, { claimHako = true } = {}) {
   const first = await request('/api/rooms', { name: '箱娃' });
   assert.equal(first.status, 201);
   const identities = [first.body];
@@ -67,6 +67,7 @@ async function createFour(request) {
     assert.equal(joined.status, 201);
     identities.push(joined.body);
   }
+  if (claimHako) assert.equal((await action(request, identities[0], 'claim_hako')).status, 200);
   return identities;
 }
 
@@ -169,12 +170,13 @@ test('four HTTP identities enforce lobby capacity, roles, readiness and authoriz
   assert.equal((await request(`/api/rooms/${host.roomCode}/join`, { name: '第五人' })).status, 409);
   assert.equal((await action(request, { ...visitor, token: host.token }, 'ready', { ready: true })).status, 403);
   assert.equal((await request(`/api/rooms/${host.roomCode}`)).status, 403);
-  assert.equal((await action(request, visitor, 'set_hako', { targetId: third.playerId })).status, 403);
+  assert.equal((await action(request, visitor, 'release_hako')).status, 403);
   assert.equal((await action(request, visitor, 'start')).status, 403);
   assert.equal((await action(request, host, 'start')).status, 409);
   assert.equal((await action(request, visitor, 'ready', { ready: 'yes' })).status, 400);
   assert.equal((await action(request, visitor, 'ready', { ready: true })).status, 200);
-  assert.equal((await action(request, host, 'set_hako', { targetId: third.playerId })).status, 200);
+  assert.equal((await action(request, host, 'release_hako')).status, 200);
+  assert.equal((await action(request, third, 'claim_hako')).status, 200);
   const reassigned = (await snapshot(request, third)).body;
   assert.equal(reassigned.players.find(player => player.role === 'hako').id, third.playerId);
   assert.ok(reassigned.players.every(player => player.ready === false));
@@ -186,9 +188,77 @@ test('four HTTP identities enforce lobby capacity, roles, readiness and authoriz
   assert.equal(started.body.draft.availableItems.length, 12);
   assert.equal((await action(request, third, 'choose_item', { itemId: 'spirit_pen' })).status, 409);
   assert.equal((await action(request, host, 'start')).status, 409);
-  assert.equal((await action(request, host, 'set_hako', { targetId: host.playerId })).status, 409);
+  assert.equal((await action(request, host, 'claim_hako')).status, 409);
+  assert.equal((await action(request, third, 'release_hako')).status, 409);
   assert.equal((await action(request, fourth, 'leave')).status, 409);
   assert.equal((await action(request, third, 'draw')).status, 409);
+});
+
+test('players claim hako first come first served, cannot override others, and reset readiness', async t => {
+  const { base, request } = await startServer(t);
+  const people = await createFour(request, { claimHako: false });
+  const [host, first, second] = people;
+  assert.ok(people.every(person => person.state.players.every(player => player.role === 'visitor')),
+    'Creating and joining a room must not assign hako automatically');
+  const streams = await Promise.all(people.map(person => stream(t, base, person)));
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  const before = (await snapshot(request, host)).body;
+  const noHako = await action(request, host, 'start');
+  assert.equal(noHako.status, 409);
+  assert.match(noHako.body.error, /抢当箱娃/);
+  assert.deepEqual((await snapshot(request, host)).body, before);
+  assert.equal((await action(request, { ...first, token: host.token }, 'claim_hako')).status, 403);
+  const contenders = [first, second];
+  const attempts = await Promise.all(contenders.map(person => action(request, person, 'claim_hako', {
+    targetId: host.playerId, // An extra target must never let someone claim on another player's behalf.
+  })));
+  assert.deepEqual(attempts.map(result => result.status).sort(), [200, 409]);
+  const winner = contenders[attempts.findIndex(result => result.status === 200)];
+  const state = (await snapshot(request, host)).body;
+  assert.deepEqual(state.players.filter(player => player.role === 'hako').map(player => player.id), [winner.playerId]);
+  assert.equal(state.hostId, host.playerId, 'Claiming a role does not transfer host authority');
+  assert.ok(state.players.every(player => !player.ready));
+  for (let i = 0; i < people.length; i++) {
+    assert.deepEqual(await streams[i].state(update => update.version >= state.version), { ...state, you: people[i].playerId });
+  }
+  for (const person of people.filter(person => person !== winner)) {
+    assert.equal((await action(request, person, 'claim_hako')).status, 409);
+    assert.equal((await action(request, person, 'release_hako', { targetId: winner.playerId })).status, 403);
+  }
+  assert.equal((await action(request, host, 'set_hako', { targetId: host.playerId })).status, 400);
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  const ready = (await snapshot(request, winner)).body;
+  assert.deepEqual((await action(request, winner, 'claim_hako')).body, ready, 'Repeating an existing claim is a no-op');
+  const released = await action(request, winner, 'release_hako');
+  assert.equal(released.status, 200);
+  assert.ok(released.body.players.every(player => player.role === 'visitor' && !player.ready));
+  assert.equal((await action(request, host, 'claim_hako')).status, 200);
+});
+
+test('unclaimed and claimed roles survive restart, disconnects keep the role and leaving releases it', async t => {
+  const saved = await persistentServer(t);
+  const { request } = saved;
+  const people = await createFour(request, { claimHako: false });
+  await checkRestart(saved, people);
+  const claimant = people[1];
+  assert.equal((await action(request, claimant, 'claim_hako')).status, 200);
+  const live = await stream(t, saved.base, claimant);
+  await live.state();
+  await live.close();
+  await checkRestart(saved, people);
+  assert.equal((await snapshot(request, people[0])).body.players.find(player => player.role === 'hako').id, claimant.playerId);
+  assert.equal((await action(request, people[2], 'claim_hako')).status, 409);
+  assert.equal((await action(request, claimant, 'release_hako')).status, 200);
+  await checkRestart(saved, people);
+  assert.equal((await action(request, people[2], 'claim_hako')).status, 200);
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  assert.equal((await action(request, people[2], 'leave')).status, 200);
+  const remaining = people.filter((_, i) => i !== 2);
+  await checkRestart(saved, remaining);
+  const released = (await snapshot(request, remaining[0])).body;
+  assert.ok(released.players.every(player => player.role === 'visitor' && !player.ready));
+  const newcomer = (await request(`/api/rooms/${released.code}/join`, { name: '新来者' })).body;
+  assert.equal((await action(request, newcomer, 'claim_hako')).status, 200);
 });
 
 test('leaving the lobby frees a seat and transfers host authority', async t => {
@@ -198,7 +268,8 @@ test('leaving the lobby frees a seat and transfers host authority', async t => {
   const state = (await snapshot(request, next)).body;
   assert.equal(state.hostId, next.playerId);
   assert.equal(state.players.length, 3);
-  assert.equal(state.players.find(player => player.role === 'hako').id, next.playerId);
+  assert.equal(state.players.some(player => player.role === 'hako'), false);
+  assert.equal((await action(request, next, 'claim_hako')).status, 200);
   assert.equal((await snapshot(request, host)).status, 403);
   const replacement = await request(`/api/rooms/${next.roomCode}/join`, { name: '替补' });
   assert.equal(replacement.status, 201);
@@ -600,7 +671,8 @@ test('stored lobbies recover identities, roles, presence and multiple rooms; lea
   const saved = await persistentServer(t);
   const people = await createFour(saved.request);
   const other = (await saved.request('/api/rooms', { name: '另一房间' })).body;
-  await action(saved.request, people[0], 'set_hako', { targetId: people[2].playerId });
+  await action(saved.request, people[0], 'release_hako');
+  await action(saved.request, people[2], 'claim_hako');
   await action(saved.request, people[1], 'ready', { ready: true });
   const live = await stream(t, saved.base, people[0]);
   assert.equal((await live.state()).players[0].connected, true);
@@ -712,6 +784,7 @@ test('failed disk writes leave actions, joins, departures and SSE unchanged and 
   await mkdir(`${saved.dataFile}.tmp`);
   try {
     for (const attempt of [
+      () => action(request, host, 'claim_hako'),
       () => action(request, host, 'ready', { ready: true }),
       () => request(`/api/rooms/${host.roomCode}/join`, { name: '未入席' }),
       () => action(request, host, 'leave'),
@@ -728,6 +801,14 @@ test('failed disk writes leave actions, joins, departures and SSE unchanged and 
   assert.equal(retry.status, 200);
   assert.equal(retry.body.version, before.version + 1);
   assert.deepEqual(await live.state(), retry.body, 'No uncommitted state may have entered the SSE stream');
+  const claimed = await action(request, host, 'claim_hako');
+  assert.equal(claimed.status, 200);
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, host, 'release_hako')).status, 503);
+    assert.deepEqual((await snapshot(request, host)).body, claimed.body);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  assert.equal((await action(request, host, 'release_hako')).status, 200);
   await checkRestart(saved, [host]);
 });
 
