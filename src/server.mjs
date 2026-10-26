@@ -2,6 +2,12 @@ import http from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createSetup, drawTile, placeTile, getSetupView } from './game.mjs';
+import {
+  createItemDraft, chooseItem, getItemDraftView, createOpening, getOpeningView,
+  chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding, chooseInitialPower,
+} from './preparation.mjs';
+import { createRound, applyRoundAction, getRoundView } from './round.mjs';
+import { getCornerRoom, getRoom } from './movement.mjs';
 
 const BODY_LIMIT = 64 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -11,6 +17,7 @@ const staticFiles = new Map([
   ['/style.css', ['../public/style.css', 'text/css; charset=utf-8']],
   ['/app.js', ['../public/app.js', 'text/javascript; charset=utf-8']],
   ['/tile.js', ['../public/tile.js', 'text/javascript; charset=utf-8']],
+  ['/practice.js', ['../public/practice.js', 'text/javascript; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
@@ -76,7 +83,7 @@ function sameToken(candidate, token) {
 }
 
 /** In-memory rooms. Each successful action is synchronous after its JSON body arrives. */
-export function createGameServer({ deck } = {}) {
+export function createGameServer({ deck, silentNumbers } = {}) {
   const rooms = new Map();
   const streams = new Set();
   let closing = false;
@@ -94,15 +101,44 @@ export function createGameServer({ deck } = {}) {
   }
 
   function snapshot(room, playerId) {
+    let round = null;
+    if (room.round) {
+      round = { mode: 'baseline', ...getRoundView(room.round, playerId) };
+      if (playerId === room.round.hakoId && round.phase === 'hako_phase') {
+        const targets = round.hako.hidingTargets;
+        round.hako.hidingRooms = [...new Set(targets.map(id => getCornerRoom(id).id))]
+          .map(id => ({ id, name: getRoom(id).name }));
+        const inspected = room.round.hidingInspection;
+        round.hako.hidingTargets = inspected ? targets.filter(id => getCornerRoom(id).id === inspected) : [];
+        if (inspected) {
+          round.hako.inspectedRoom = {
+            id: inspected,
+            corners: getRoom(inspected).corners.map(({ id }) => ({
+              id, token: structuredClone(id === room.opening.hidingCornerId
+                ? room.opening.hidingUnderToken : room.opening.cornerTokens[id]),
+            })),
+          };
+        }
+      }
+    }
     return {
       code: room.code,
       hostId: room.hostId,
-      phase: room.game?.phase ?? 'lobby',
+      phase: room.round ? 'practice' : room.opening ? 'opening_setup'
+        : room.game?.phase ?? (room.draft ? 'item_draft' : 'lobby'),
       players: room.players.map(({ id, name, role, ready, connections, seat }) => ({
         id, name, role, ready, connected: connections.size > 0, seat,
       })),
       you: playerId,
       setup: room.game ? getSetupView(room.game) : null,
+      draft: room.draft?.phase === 'item_draft' ? getItemDraftView(room.draft) : null,
+      initialItems: room.draft ? getItemDraftView(room.draft).choices : [],
+      opening: room.opening && !room.round ? getOpeningView(room.opening, playerId) : null,
+      round,
+      initialPower: room.opening?.initialPowerId ? {
+        id: room.opening.initialPowerId,
+        name: getOpeningView(room.opening, playerId).initialPowerName,
+      } : null,
       log: [...room.log],
       version: room.version,
     };
@@ -147,7 +183,7 @@ export function createGameServer({ deck } = {}) {
 
   function runAction(room, player, input) {
     const inLobby = () => {
-      if (room.game) fail(409, '地图准备已经开始，无法进行此房间操作。');
+      if (room.draft) fail(409, '游戏准备已经开始，无法进行此房间操作。');
     };
     const hostOnly = () => {
       if (room.hostId !== player.id) fail(403, '只有房主可以进行此操作。');
@@ -181,8 +217,20 @@ export function createGameServer({ deck } = {}) {
         }
         const hakoSeat = room.players.findIndex(candidate => candidate.role === 'hako');
         const ordered = [...room.players.slice(hakoSeat + 1), ...room.players.slice(0, hakoSeat)];
-        room.game = createSetup(ordered.map(candidate => candidate.id), { deck });
-        message = '四人已就座，访问者开始轮流配置地图。';
+        room.draft = createItemDraft(ordered.map(candidate => candidate.id));
+        message = '四人已就座，访问者先依次选择初始道具。';
+        break;
+      }
+      case 'choose_item': {
+        if (!room.draft) fail(409, '请先由房主开始准备。');
+        try {
+          chooseItem(room.draft, player.id, input.itemId);
+          if (room.draft.phase === 'items_ready') {
+            room.game = createSetup(room.draft.visitorIds, { deck });
+          }
+        } catch (error) { fail(409, error.message); }
+        message = room.game ? '初始道具已选好，访问者开始轮流配置地图。'
+          : `${player.name} 选择了初始道具。`;
         break;
       }
       case 'draw':
@@ -202,6 +250,100 @@ export function createGameServer({ deck } = {}) {
           fail(409, error.message);
         }
         break;
+      case 'prepare_opening': {
+        hostOnly();
+        if (room.game?.phase !== 'map_ready' || room.opening || room.round) {
+          fail(409, '请先完成地图；开局配置只能开始一次。');
+        }
+        try {
+          room.opening = createOpening(room.game, {
+            hakoId: room.players.find(candidate => candidate.role === 'hako').id,
+            itemChoices: room.draft.choices,
+          });
+        } catch (error) { fail(409, error.message); }
+        message = '访问者在正门等待，箱娃开始秘密配置。';
+        break;
+      }
+      case 'choose_secrets':
+      case 'place_remains':
+      case 'inspect_initial_room':
+      case 'choose_initial_hiding':
+      case 'choose_initial_power': {
+        if (!room.opening || room.round) fail(409, '当前不在开局配置阶段。');
+        try {
+          if (input.type === 'choose_secrets') {
+            chooseSecrets(room.opening, player.id, { password: input.password, weakness: input.weakness });
+          } else if (input.type === 'place_remains') {
+            placeRemains(room.opening, player.id, input.cornerId);
+          } else if (input.type === 'inspect_initial_room') {
+            inspectInitialRoom(room.opening, player.id, input.roomId);
+          } else if (input.type === 'choose_initial_hiding') {
+            chooseInitialHiding(room.opening, player.id, input.cornerId);
+          } else {
+            chooseInitialPower(room.opening, player.id, input.powerId);
+            room.round = createRound(room.game, {
+              hakoId: room.opening.hakoId,
+              hidingCornerId: room.opening.hidingCornerId,
+              numbers: silentNumbers,
+            });
+          }
+        } catch (error) { fail(409, error.message); }
+        message = {
+          choose_secrets: '箱娃已配置密码与弱点。',
+          place_remains: '箱娃已配置亡骸。',
+          inspect_initial_room: '箱娃正在查看初始潜伏房间。',
+          choose_initial_hiding: '箱娃已完成初始潜伏。',
+          choose_initial_power: '开局配置完成，访问者进入一楼大厅，开始基础回合。',
+        }[input.type];
+        break;
+      }
+      case 'silent_reveal':
+      case 'silent_skip':
+      case 'move':
+      case 'resolve_visitor_action':
+      case 'pass_noise_reaction':
+      case 'inspect_hiding_room':
+      case 'hako_hide': {
+        if (!room.round) fail(409, '请先完成开局配置。');
+        try {
+          if (input.type === 'inspect_hiding_room') {
+            if (player.id !== room.round.hakoId || room.round.silent.phase !== 'hako_phase') {
+              throw new Error('只有箱娃可以在箱娃阶段查看潜伏目标房间。');
+            }
+            if (room.round.hidingInspection) throw new Error('请在已查看的房间选择角落，不能再次查看其他房间。');
+            const allowed = getRoundView(room.round, player.id).hako.hidingTargets;
+            if (!allowed.some(id => getCornerRoom(id).id === input.roomId)) {
+              throw new Error('只能查看当前或相邻房间的角落。');
+            }
+            room.round.hidingInspection = input.roomId;
+          } else {
+            if (input.type === 'hako_hide' && (!room.round.hidingInspection
+                || getCornerRoom(input.cornerId)?.id !== room.round.hidingInspection)) {
+              throw new Error('请先查看目标房间，再选择该房间内的潜伏角落。');
+            }
+            applyRoundAction(room.round, player.id, input);
+            if (input.type === 'hako_hide') {
+              // Restore the old marker before taking the new one, including when staying put.
+              room.opening.cornerTokens[room.opening.hidingCornerId] = room.opening.hidingUnderToken;
+              room.opening.hidingUnderToken = room.opening.cornerTokens[input.cornerId];
+              room.opening.cornerTokens[input.cornerId] = { id: 'hako', type: 'hako' };
+              room.opening.hidingCornerId = input.cornerId;
+              room.round.hidingInspection = null;
+            }
+          }
+        }
+        catch (error) { fail(409, error.message); }
+        message = {
+          silent_reveal: `${player.name} 翻开了一枚无声标志。`,
+          silent_skip: `${player.name} 暂持一枚无声标志并跳过本回合。`,
+          move: `${player.name} 声明了移动，等待箱娃确认。`,
+          resolve_visitor_action: '箱娃确认，访问者完成移动。',
+          pass_noise_reaction: '进入箱娃阶段。',
+          inspect_hiding_room: '箱娃正在查看潜伏目标房间。',
+          hako_hide: '箱娃完成潜伏，无声标志已重新洗混。',
+        }[input.type];
+        break;
+      }
       case 'leave': {
         inLobby();
         const wasHako = player.role === 'hako';
@@ -238,7 +380,8 @@ export function createGameServer({ deck } = {}) {
         const input = await readJson(request);
         const name = nickname(input.name);
         const code = newRoomCode();
-        const room = { code, hostId: null, players: [], game: null, log: [], version: 0 };
+        const room = { code, hostId: null, players: [], draft: null, game: null,
+          opening: null, round: null, log: [], version: 0 };
         rooms.set(code, room);
         sendJson(response, 201, addPlayer(room, name));
         return;
@@ -252,7 +395,7 @@ export function createGameServer({ deck } = {}) {
         if (endpoint === 'join') {
           const input = await readJson(request);
           const name = nickname(input.name);
-          if (room.game) fail(409, '地图准备已开始，无法加入新玩家。');
+          if (room.draft) fail(409, '游戏准备已开始，无法加入新玩家。');
           if (room.players.length >= 4) fail(409, '房间已满，最多四名玩家。');
           sendJson(response, 201, addPlayer(room, name));
           return;

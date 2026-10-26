@@ -1,5 +1,6 @@
 import { getTile } from '/shared/maps.mjs';
 import { createTileSvg } from './tile.js';
+import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
 const SESSION_KEY = 'hako.room.session.v1';
@@ -90,8 +91,8 @@ function receiveState(next) {
     tileTurnKey = key;
     rotation = 0;
     selected = null;
-    const first = next.setup?.legalPlacements.find(p => p.rotation === rotation);
-    if (first && next.setup.turnPlayerId === identity.playerId) {
+    const first = next.setup?.legalPlacements?.find(p => p.rotation === rotation);
+    if (first && next.setup.turnPlayerId === next.you) {
       selected = { ...first };
       activeFloor = first.floor;
     }
@@ -155,7 +156,8 @@ function renderSeats(container, compact = false) {
   const fragment = document.createDocumentFragment();
   for (let seat = 0; seat < 4; seat++) {
     const player = state.players.find(p => p.seat === seat);
-    const active = player && state.setup?.turnPlayerId === player.id;
+    const roundActive = state.round && (state.round.silent?.turnPlayerId === player?.id || ['initial_hiding', 'visitor_reaction', 'hako_reaction', 'hako_phase'].includes(state.round.phase) && state.round.hako.playerId === player?.id);
+    const active = player && (state.round ? roundActive : state.draft ? state.draft.turnPlayerId === player.id : state.opening ? state.opening.hakoId === player.id : state.setup?.turnPlayerId === player.id);
     const item = node('li', `seat${!player ? ' empty' : player.role === 'hako' ? ' hako' : ''}${active ? ' active' : ''}`);
     const mark = node('span', 'seat-mark', !player ? '候' : player.role === 'hako' ? '箱' : '访');
     mark.setAttribute('aria-hidden', 'true');
@@ -165,13 +167,14 @@ function renderSeats(container, compact = false) {
     const meta = node('div', 'seat-meta');
     if (player) {
       meta.append(node('span', '', player.role === 'hako' ? '箱娃' : '访问者'));
-      if (player.id === identity.playerId) meta.append(node('span', 'self-tag', '你'));
+      if (player.id === state.you) meta.append(node('span', 'self-tag', '你'));
       if (player.id === state.hostId) meta.append(node('span', '', '房主'));
     } else meta.append(node('span', '', '分享房间码，邀请朋友'));
     info.append(meta);
     item.append(info);
     if (player) {
-      const status = !player.connected ? '暂离' : compact ? active ? state.setup.drawnTileId ? '摆放中' : '当前轮次' : player.role === 'hako' ? '观图' : '等待' : player.ready ? '已准备' : '未准备';
+      const preparationStatus = state.draft ? state.draft.choices.some(choice => choice.playerId === player.id) ? '已领道具' : active ? '选择道具' : '等待' : state.opening ? player.role === 'hako' ? '配置中' : '正门等候' : null;
+      const status = !player.connected ? '暂离' : compact ? roundSeatStatus(state, player) || preparationStatus || (active ? state.setup?.drawnTileId ? '摆放中' : '当前轮次' : player.role === 'hako' ? '观图' : '等待') : player.ready ? '已准备' : '未准备';
       item.append(node('span', `seat-status${!player.connected ? ' disconnected' : player.ready ? ' ready' : ''}`, status));
     }
     fragment.append(item);
@@ -180,8 +183,8 @@ function renderSeats(container, compact = false) {
 }
 
 function renderLobby() {
-  const you = state.players.find(p => p.id === identity.playerId);
-  const host = state.hostId === identity.playerId;
+  const you = state.players.find(p => p.id === state.you);
+  const host = state.hostId === state.you;
   const locked = pending || !online;
   renderSeats($('lobby-seats'));
   $('lobby-count').textContent = `${state.players.length} / 4 人入席`;
@@ -189,7 +192,7 @@ function renderLobby() {
   $('ready-button').disabled = locked || !you;
   $('start-setup').hidden = !host;
   $('start-setup').disabled = locked || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
-  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始拼图。' : host ? '都已准备，可以开始拼图。' : '都已准备，等待房主开始拼图。';
+  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 位朋友，复制上方邀请链接即可入席。` : !state.players.every(p => p.ready) ? '四人都准备后，房主即可开始准备流程。' : host ? '都已准备，可以开始领取道具。' : '都已准备，等待房主开始准备流程。';
   $('host-controls').hidden = !host;
   $('leave-room').disabled = locked;
   $('assign-hako').disabled = locked;
@@ -209,7 +212,7 @@ function renderLobby() {
 }
 
 function canPlace() {
-  return online && !pending && state.phase === 'map_setup' && state.setup.turnPlayerId === identity.playerId;
+  return online && !pending && state.phase === 'map_setup' && state.setup.turnPlayerId === state.you;
 }
 
 function legalForRotation() {
@@ -281,14 +284,31 @@ function renderBoard() {
 
 function renderSetup() {
   const setup = state.setup;
-  if (!setup) return;
-  const mine = setup.turnPlayerId === identity.playerId;
-  const complete = state.phase === 'map_ready';
+  renderDraft({ state, pending, online, action });
+  renderOpening({ state, pending, online, action });
+  renderPractice({ state, pending, online, action });
+  $('board-section').hidden = !setup;
+  $('map-progress').hidden = !setup;
+  $('setup-view').classList.toggle('has-round', Boolean(state.round || state.opening));
+  $('setup-view').classList.toggle('has-draft', Boolean(state.draft));
+  renderSeats($('setup-seats'), true);
+  $('activity-log').replaceChildren(...state.log.slice(-8).map(message => node('li', '', typeof message === 'string' ? message : message.message || message.text || '房间状态已更新')));
+  if (!setup) {
+    $('setup-title').textContent = '挑选你的初始道具';
+    $('turn-description').textContent = preparationDescription(state);
+    $('drawn-title').closest('.turn-panel').hidden = true;
+    $('map-complete').hidden = true;
+    return;
+  }
+  const mine = setup.turnPlayerId === state.you;
+  const complete = setup.phase === 'map_ready';
+  const round = state.round;
   const turnPlayer = state.players.find(p => p.id === setup.turnPlayerId);
   const drawn = setup.drawnTileId ? getTile(setup.drawnTileId) : null;
   const locked = !canPlace();
   $('map-count').replaceChildren(document.createTextNode(setup.placements.length), node('span', '', '/ 9'));
-  $('turn-description').textContent = complete ? '九块地图已就位。访问者在正门等待后续配置。' : mine ? drawn ? '轮到你摆放地图。旋转方向，选择位置，再确认。' : '轮到你了。抽取一块地图，开启新的房间。' : `${turnPlayer?.name || '访问者'}正在${drawn ? '摆放地图' : '抽取地图'}，请稍候。`;
+  $('setup-title').textContent = round ? '基础回合' : state.opening ? '入宅之前，藏好秘密' : '拼出这座旧宅';
+  $('turn-description').textContent = round ? roundDescription(state) : state.opening ? preparationDescription(state) : complete ? '九块地图已就位。由房主开始配置角落标志与开局秘密。' : mine ? drawn ? '轮到你摆放地图。旋转方向，选择位置，再确认。' : '轮到你了。抽取一块地图，开启新的房间。' : `${turnPlayer?.name || '访问者'}正在${drawn ? '摆放地图' : '抽取地图'}，请稍候。`;
   $('turn-seat').textContent = complete ? '九块齐备' : mine ? '你的轮次' : '等待访问者';
   $('drawn-title').textContent = complete ? '宅邸已现' : drawn ? '本次抽到' : '轮流抽板';
   const previewKey = `${setup.drawnTileId}:${rotation}:${complete}`;
@@ -321,17 +341,18 @@ function renderSetup() {
   $('confirm-placement').disabled = locked || !selected;
   $('selection-description').textContent = drawn && mine && selected ? `${floorName(selected.floor)} · 位置 ${selected.x}, ${selected.y} · ${rotation * 90}°` : '';
   $('drawn-title').closest('.turn-panel').hidden = complete;
-  $('map-complete').hidden = !complete;
-  $('board-help').textContent = complete ? '九块地图已完成配置' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
+  $('map-complete').hidden = !complete || Boolean(round || state.opening);
+  $('prepare-opening').hidden = state.hostId !== state.you;
+  $('prepare-opening').disabled = pending || !online;
+  $('opening-start-hint').textContent = state.hostId === state.you ? '准备好后，配置角落标志并由箱娃选择开局秘密。' : '等待房主开始开局配置。';
+  $('board-help').textContent = round ? '玩家所在房间见清单 · 可切换楼层' : state.opening ? '角落标志保持盖放 · 访问者在正门待入场' : complete ? '九块地图已完成配置' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
   for (const button of $('floor-tabs').querySelectorAll('button')) {
     const floor = Number(button.dataset.floor);
     button.setAttribute('aria-selected', String(floor === activeFloor));
     button.tabIndex = floor === activeFloor ? 0 : -1;
     $(`floor-count-${floor}`).textContent = setup.placements.filter(p => p.floor === floor).length || '';
   }
-  renderSeats($('setup-seats'), true);
   renderBoard();
-  $('activity-log').replaceChildren(...state.log.slice(-8).map(message => node('li', '', typeof message === 'string' ? message : message.message || message.text || '房间状态已更新')));
 }
 
 function render() {
@@ -341,7 +362,9 @@ function render() {
   $('room-code-display').textContent = state.code;
   $('lobby-view').hidden = state.phase !== 'lobby';
   $('setup-view').hidden = state.phase === 'lobby';
-  document.title = `箱娃 · ${state.code} · ${state.phase === 'lobby' ? '等待入席' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接'}`;
+  const phaseName = state.phase === 'lobby' ? '等待入席' : state.round ? '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
+  document.title = `箱娃 · ${state.code} · ${phaseName}`;
+  $('room-phase-label').textContent = `箱娃 · ${phaseName}`;
   if (state.phase === 'lobby') renderLobby();
   else renderSetup();
 }
@@ -351,8 +374,9 @@ $('join-room').addEventListener('click', () => enterRoom(true));
 $('room-code').addEventListener('input', event => { event.target.value = event.target.value.toUpperCase(); });
 $('room-code').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); enterRoom(true); } });
 $('dismiss-error').addEventListener('click', () => { $('error-banner').hidden = true; });
-$('ready-button').addEventListener('click', () => action('ready', { ready: !state.players.find(p => p.id === identity.playerId)?.ready }));
+$('ready-button').addEventListener('click', () => action('ready', { ready: !state.players.find(p => p.id === state.you)?.ready }));
 $('start-setup').addEventListener('click', () => action('start'));
+$('prepare-opening').addEventListener('click', () => action('prepare_opening'));
 $('assign-hako').addEventListener('click', () => action('set_hako', { targetId: $('hako-select').value }));
 $('leave-room').addEventListener('click', () => action('leave'));
 $('draw-tile').addEventListener('click', () => action('draw'));

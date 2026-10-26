@@ -36,14 +36,16 @@ $boardPhotos = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'references/
 $cardPhotos = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'references/cards') -Filter '*.jpg' -File)
 $tokenPhotos = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'references/tokens') -Filter '*.jpg' -File)
 $mapSupplementPhotos = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'references/map-supplements') -Filter '*.jpg' -File)
+$rulebookPhotos = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'references/rules') -Filter '*.jpg' -File)
 Assert-Check ($mapPhotos.Count -eq 9) 'Expected exactly nine map reference photos.'
 Assert-Check ($boardPhotos.Count -eq 2) 'Expected exactly two auxiliary board photos; update this check when adding references.'
 Assert-Check ($cardPhotos.Count -eq 7) 'Expected seven visitor-item and hako-power photo sheets.'
 Assert-Check ($tokenPhotos.Count -eq 2) 'Expected two token guide photos.'
 Assert-Check ($mapSupplementPhotos.Count -eq 3) 'Expected three supplementary map photos, including the complete first-floor hall.'
+Assert-Check ($rulebookPhotos.Count -eq 16) 'Expected sixteen original rulebook photos, including two quick-reference photos.'
 
 Add-Type -AssemblyName System.Drawing
-$referencePhotos = $mapPhotos + $boardPhotos + $cardPhotos + $tokenPhotos + $mapSupplementPhotos
+$referencePhotos = $mapPhotos + $boardPhotos + $cardPhotos + $tokenPhotos + $mapSupplementPhotos + $rulebookPhotos
 foreach ($photo in $referencePhotos) {
     $referenceImage = [System.Drawing.Image]::FromFile($photo.FullName)
     try {

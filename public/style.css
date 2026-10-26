@@ -4,4 +4,66 @@
 @media(min-width:1500px){.room-view{margin:24px auto;min-height:calc(100dvh - 48px)}}
 @media(max-width:1050px){:root{--tile-size:124px}.entry-view{margin:20px;min-height:calc(100dvh - 40px);padding:28px 32px}.entry-layout{gap:34px;padding:65px 0 50px}.entry-copy h1{font-size:38px}.entry-form{padding-left:28px}.room-view{padding:20px 24px 0}.lobby-layout{gap:40px}.game-layout{grid-template-columns:minmax(0,1fr) 222px;gap:20px}.board-viewport{min-height:420px;padding:18px}.lobby-heading h1{font-size:29px}.drawn-preview{width:124px;height:124px}}
 @media(max-width:720px){:root{--tile-size:120px}.entry-view{margin:0;padding:25px 25px 20px;min-height:100dvh}.entry-header .wordmark{font-size:24px}.edition{font-size:12px;letter-spacing:.03em}.entry-layout{grid-template-columns:1fr;gap:0;padding:44px 0 36px}.entry-copy h1{font-size:38px;line-height:1.4}.entry-intro{font-size:13px;line-height:1.9;margin-top:18px}.entry-drawing{display:none}.entry-form{border-left:0;border-top:1px solid var(--rule);padding:28px 0 0;margin-top:30px}.entry-form h2{font-size:23px}.form-description{font-size:12px;margin-bottom:24px}.entry-note{margin-top:20px}.entry-footer{flex-direction:column;gap:4px;font-size:12px}.room-view{padding:16px 16px 0}.room-header{gap:12px;flex-wrap:wrap;padding-bottom:14px}.room-header .wordmark{font-size:22px;gap:7px}.room-header .seal{width:28px;height:31px;font-size:19px}.room-identity{gap:8px}.room-identity strong{font-size:15px;letter-spacing:.07em}.room-identity .text-button{font-size:12px;margin:0}.room-code-label{display:none}.connection-state{width:100%;text-align:right;margin-top:-5px;font-size:12px}.lobby-layout{display:flex;flex-direction:column;gap:42px;padding:32px 0 35px;min-height:0}.lobby-heading{align-items:center;margin-bottom:23px}.lobby-heading h1{font-size:28px}.lobby-heading p{font-size:12px}.lobby-seats .seat{padding:19px 3px}.seat-mark{width:36px;height:41px;font-size:20px}.seat-name{font-size:13px;max-width:170px}.seat-meta{font-size:12px}.seat-status{font-size:12px}.lobby-action{margin-top:23px}.lobby-action .button{flex:1;padding:11px 15px}.lobby-aside{border-top:1px solid var(--rule);padding-top:25px}.lobby-aside>p{max-width:none;font-size:12px}.role-guide{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin:24px 0}.role-guide>div{margin:0}.role-guide dt{font-size:16px}.role-guide dd{font-size:12px}.host-controls{padding-top:20px}.leave-button{margin-top:20px}.room-footer{font-size:12px;gap:10px;flex-wrap:wrap}.setup-heading{padding:22px 0 20px;gap:12px;align-items:flex-start}.setup-heading h1{font-size:27px}.setup-heading p{font-size:12px;max-width:240px;line-height:1.8}.map-progress{min-width:82px;gap:6px;padding-top:3px}.map-progress strong{font-size:31px}.map-progress strong span{font-size:15px;margin-left:4px}.map-progress>span{font-size:12px}.game-layout{grid-template-columns:1fr;gap:24px}.board-toolbar{padding:0 13px;min-height:48px}.floor-tabs{gap:23px}.floor-tab{font-size:12px;min-height:48px}.board-viewport{min-height:360px;max-height:430px;padding:18px;align-items:flex-start}.board-caption{font-size:12px;padding:10px 11px;gap:6px}.north-mark{font-size:12px}.setup-sidebar{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px}.turn-panel{border-bottom:0;padding-bottom:0}.panel-heading{align-items:baseline;flex-wrap:wrap;gap:2px}.panel-heading h2{font-size:17px}.panel-heading>span{font-size:12px}.drawn-preview{width:112px;height:112px;margin:15px auto 10px}.drawn-preview .tile-back{width:91px;height:101px}.drawn-name{font-size:15px;min-height:24px}.action-instruction{font-size:12px;margin-bottom:13px;min-height:36px}.tile-actions .button{width:100%;min-height:41px;padding:9px 6px;font-size:12px;gap:8px}.selection-description{font-size:12px}.table-players h2{font-size:16px;margin-bottom:8px}.setup-seats .seat{gap:8px;padding:12px 0;flex-wrap:wrap;position:relative}.setup-seats .seat-mark{width:25px;height:29px;font-size:14px}.setup-seats .seat-info{max-width:calc(100% - 35px)}.setup-seats .seat-name{max-width:100px;font-size:12px}.setup-seats .seat-meta{font-size:12px;gap:5px}.setup-seats .seat-status{font-size:12px;display:block;width:100%;margin-left:33px;margin-top:-7px}.completion-panel{grid-column:auto;padding:0;border:0}.completion-panel h2{font-size:23px}.activity-details{margin:20px 0}.empty-floor{min-width:230px;height:260px;font-size:19px}}
+.completion-panel>.button{margin-top:18px;width:100%;padding-inline:10px}
+.has-round .game-layout{grid-template-columns:minmax(0,1fr) 340px}
+.practice-panel{border-bottom:1px solid var(--rule);padding-bottom:24px;min-width:0}
+.practice-panel h2{font-size:23px}
+.practice-panel h3{margin:0;font-family:var(--serif);font-size:16px;font-weight:600}
+.practice-scope{margin-top:8px}
+.practice-status{font-size:13px;line-height:1.85;margin-top:18px}
+.round-positions{margin:18px 0;font-size:12px}
+.round-positions>div{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px solid #d5cbb8}
+.round-positions dt{min-width:0;overflow-wrap:anywhere}
+.round-positions dd{margin:0;flex-shrink:0;color:var(--muted)}
+.hako-location{margin:16px 0;font-size:12px;color:var(--accent);line-height:1.8}
+.practice-controls{display:flex;flex-direction:column;gap:10px}
+.practice-controls:empty{display:none}
+.practice-controls label{font-size:12px;margin-bottom:-4px}
+.practice-controls select{font-size:12px;padding-inline:10px}
+.practice-controls .button{font-size:12px;white-space:normal;padding:10px 12px}
+.pending-move{font-size:12px;line-height:1.85}
+.silent-section{margin-top:24px}
+.silent-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+.silent-heading p{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.silent-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 10px;margin-bottom:12px}
+.silent-card-cell{display:flex;flex-direction:column;gap:7px;min-width:0}
+.silent-card-face{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;min-height:102px;width:100%;padding:10px 5px;background:#e2d4b8;color:#6b5131;border:1px solid #9b825f;border-radius:2px;text-align:center}
+button.silent-card-face:hover:not(:disabled){background:#ebdcc1;border-color:var(--accent);color:var(--accent)}
+.silent-card-value{font-family:var(--serif);font-size:20px;line-height:1.3}
+.silent-card-caption{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.up .silent-card-face{background:var(--paper-light);color:var(--ink);border-color:#c1b396}
+.up .silent-card-value{font-size:32px;font-variant-numeric:tabular-nums}
+.held .silent-card-face{background:#e7e1d3;color:#5d624e;border-color:#a4a48e}
+.button.silent-skip{padding:7px 2px;min-height:36px;font-size:12px;gap:0}
+.draft-panel{min-width:0;border-top:1px solid var(--rule);padding-top:22px}
+.draft-panel h2{font-size:25px}
+.draft-description{margin-top:10px;font-size:13px;color:var(--muted)}
+.draft-choices{list-style:none;margin:22px 0;padding:0;border-block:1px solid var(--rule)}
+.draft-choices li{display:flex;justify-content:space-between;gap:20px;padding:9px 0;font-size:12px}
+.draft-choices li span:last-child{color:var(--muted);text-align:right}
+.item-list{list-style:none;margin:0 0 22px;padding:0}
+.item-list>li{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 0;border-bottom:1px solid var(--rule)}
+.item-copy{min-width:0}
+.item-copy h3{margin:0 0 6px;font-family:var(--serif);font-size:19px;font-weight:600}
+.item-copy p{font-size:12px;color:var(--muted);line-height:1.9;max-width:65ch;white-space:pre-line}
+.item-list .button{flex-shrink:0;min-width:72px;padding-inline:14px}
+.opening-progress{list-style:none;display:flex;flex-wrap:wrap;gap:8px 14px;margin:16px 0 18px;padding:0;font-size:12px;color:var(--muted)}
+.opening-progress .done{color:var(--green)}
+.opening-progress .current{color:var(--accent);font-weight:600;text-decoration:underline;text-underline-offset:5px}
+.opening-controls{margin-top:22px}
+.password-options{margin:0;padding:0;border:0;min-width:0}
+.password-options legend{font-size:12px;margin-bottom:9px;padding:0}
+.password-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.password-choices label{display:flex;align-items:center;justify-content:center;gap:10px;min-height:44px;margin:0;border:1px solid #b9ac96;background:var(--paper-light);font-variant-numeric:tabular-nums;cursor:pointer}
+.password-choices label:has(input:checked){border-color:var(--accent);color:var(--accent);background:#ead9c8}
+.password-choices input{width:18px;height:18px;margin:0;padding:0;accent-color:var(--accent)}
+.password-choices input:disabled{cursor:not-allowed}
+.inspected-tokens{margin:0;font-size:12px}
+.inspected-tokens>div{padding:10px 0;border-bottom:1px solid var(--rule)}
+.inspected-tokens dt{color:var(--muted)}
+.inspected-tokens dd{margin:4px 0 0;color:var(--accent)}
+.initial-power-public{font-size:12px;line-height:1.8;color:var(--accent);margin-top:16px}
+@media(max-width:1050px){.has-round .game-layout{grid-template-columns:minmax(0,1fr) 302px}.silent-heading{flex-wrap:wrap;gap:2px}}
+@media(max-width:720px){.has-round .game-layout{grid-template-columns:1fr}.has-round .setup-sidebar{display:flex;flex-direction:column;gap:24px}.practice-panel{padding-bottom:24px}.practice-panel h2{font-size:23px}.practice-status{margin-top:14px}.round-positions{margin-block:14px}.silent-heading{flex-wrap:nowrap;gap:10px}.silent-card-face{min-height:104px}.practice-controls .button{min-height:44px}.has-round .table-players{max-width:none}.has-round .setup-seats .seat{flex-wrap:nowrap}.has-round .setup-seats .seat-info{max-width:none}.has-round .setup-seats .seat-name{max-width:160px}.has-round .setup-seats .seat-status{width:auto;margin:0}.completion-panel>.button{white-space:normal}}
+@media(max-width:720px){.has-draft .setup-sidebar{display:block}.draft-panel{padding-top:18px}.draft-panel h2{font-size:23px}.item-list>li{gap:14px;padding-block:18px}.item-copy h3{font-size:18px}.item-list .button{min-width:64px;padding-inline:10px}.draft-choices{margin-block:18px}.opening-progress{gap:8px 12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
