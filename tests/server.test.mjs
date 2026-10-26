@@ -2,11 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createGameServer } from '../src/server.mjs';
+import { createPlay } from '../src/play.mjs';
 
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
+const underlyingTokens = corners => corners.map(({ id, token }) => ({
+  id, token: token ? Object.fromEntries(Object.entries(token).filter(([key]) => key !== 'name')) : null,
+}));
 
-async function startServer(t) {
-  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3] });
+async function startServer(t, options = {}) {
+  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], ...options });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -44,6 +48,28 @@ function snapshot(request, identity) {
   return request(`/api/rooms/${identity.roomCode}?${new URLSearchParams({
     playerId: identity.playerId, token: identity.token,
   })}`);
+}
+
+async function preparePlay(request, people) {
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  let state = (await action(request, people[0], 'start')).body;
+  for (let index = 0; index < 3; index += 1) {
+    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
+    state = (await action(request, person, 'choose_item', { itemId: state.draft.availableItems[0].id })).body;
+  }
+  while (state.phase === 'map_setup') {
+    const person = people.find(person => person.playerId === state.setup.turnPlayerId);
+    state = (await action(request, person, 'draw')).body;
+    state = (await action(request, person, 'place', state.setup.legalPlacements[0])).body;
+  }
+  await action(request, people[0], 'prepare_opening');
+  await action(request, people[0], 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
+  await action(request, people[0], 'place_remains', { cornerId: 'living_sofa' });
+  await action(request, people[0], 'inspect_initial_room', { roomId: 'children_room' });
+  await action(request, people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
+  const result = await action(request, people[0], 'choose_initial_power', { powerId: 1 });
+  assert.equal(result.status, 200);
+  return result.body;
 }
 
 async function stream(t, base, identity) {
@@ -283,7 +309,7 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   assert.equal((await action(request, hako, 'hako_hide', { cornerId: initialCorner })).status, 409);
   assert.equal((await action(request, firstVisitor, 'inspect_hiding_room', { roomId: 'children_room' })).status, 409);
   state = (await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).body;
-  assert.deepEqual(state.round.hako.inspectedRoom.corners, initialContents);
+  assert.deepEqual(underlyingTokens(state.round.hako.inspectedRoom.corners), initialContents);
   assert.equal((await action(request, hako, 'inspect_hiding_room', { roomId: 'dark_room' })).status, 409);
   await assertPrivateViews();
   const nextHiding = state.round.hako.hidingTargets.find(id => id !== initialCorner);
@@ -302,11 +328,120 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   assert.equal(state.round.silent.trigger, 'one_hidden');
   assert.equal(state.round.silent.cards.filter(card => card.status === 'held').length, 5);
   state = (await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).body;
-  assert.deepEqual(state.round.hako.inspectedRoom.corners, initialContents,
+  assert.deepEqual(underlyingTokens(state.round.hako.inspectedRoom.corners), initialContents,
     'Moving hiding markers restores the old corner and preserves the marker held beneath the new one');
   state = (await action(request, hako, 'hako_hide', { cornerId: nextHiding })).body;
   assert.equal(state.round.silent.cycle, 3);
   assert.equal(state.round.silent.cards.every(card => card.status === 'down'), true);
+});
+
+test('HTTP and SSE isolate peeks, inventories, deliberate sharing and consensual transfers', async t => {
+  let firstId;
+  const { base, request } = await startServer(t, {
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      firstId = setup.visitorIds[0];
+      const found = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'password' && play.tokens[id].number === 4);
+      [play.tokens.hall_clock, play.tokens[found]] = [play.tokens[found], play.tokens.hall_clock];
+      return play;
+    },
+  });
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const [hako, first, second, third] = people;
+  assert.equal(first.playerId, firstId);
+  const streams = await Promise.all(people.map(person => stream(t, base, person)));
+  await action(request, first, 'silent_reveal', { index: 0 });
+  const declared = await action(request, first, 'peek', { cornerId: 'hall_clock', useNightVision: false });
+  assert.equal(declared.status, 200);
+  assert.equal(declared.body.round.resolution, null);
+  assert.equal((await action(request, second, 'resolve_visitor_action')).status, 409);
+  const confirmed = await action(request, hako, 'resolve_visitor_action');
+  assert.equal(confirmed.status, 200);
+  for (let index = 0; index < people.length; index += 1) {
+    const view = (await snapshot(request, people[index])).body;
+    const pushed = await streams[index].state(update => update.version >= confirmed.body.version);
+    assert.deepEqual(pushed, view);
+    if (index === 1) {
+      assert.equal(view.round.resolution.token.number, 4);
+      assert.equal(view.round.resolution.token.type, 'password');
+    } else {
+      assert.deepEqual(view.round.resolution, { kind: 'waiting', playerId: firstId });
+      assert.equal(JSON.stringify(view.round).includes('password_4'), false);
+    }
+  }
+  const before = (await snapshot(request, first)).body;
+  assert.equal((await action(request, second, 'resolve_peek', { take: true, replacement: 'empty_box' })).status, 409);
+  assert.equal((await action(request, first, 'resolve_peek', { take: true, replacement: 'none' })).status, 409);
+  assert.deepEqual((await snapshot(request, first)).body, before);
+  const taken = await action(request, first, 'resolve_peek', { take: true, replacement: 'empty_box' });
+  assert.equal(taken.status, 200);
+  const tokenId = taken.body.round.inventory.tokens[0].id;
+  assert.equal(taken.body.round.inventory.tokens[0].number, 4);
+  assert.equal(taken.body.round.silent.turnPlayerId, second.playerId);
+  assert.equal((await snapshot(request, hako)).body.round.inventory.tokens.length, 0);
+  await action(request, first, 'show_token', { tokenId, targetId: second.playerId });
+  assert.equal((await snapshot(request, second)).body.round.sharedTokens.token.id, tokenId);
+  assert.equal((await snapshot(request, third)).body.round.sharedTokens, null);
+  let offered = await action(request, first, 'offer_exchange', {
+    targetId: second.playerId, giveTokenIds: [tokenId],
+  });
+  assert.equal(offered.status, 200);
+  const offerId = offered.body.round.exchangeOffers[0].id;
+  const recipient = (await snapshot(request, second)).body;
+  assert.equal(recipient.round.exchangeOffers[0].giveTokens[0].number, 4);
+  assert.equal((await snapshot(request, third)).body.round.exchangeOffers.length, 0);
+  assert.equal((await action(request, third, 'respond_exchange', { offerId, accept: true })).status, 409);
+  assert.equal((await action(request, second, 'respond_exchange', { offerId, accept: true })).status, 200);
+  assert.equal((await snapshot(request, first)).body.round.inventory.tokens.length, 0);
+  assert.equal((await snapshot(request, second)).body.round.inventory.tokens[0].id, tokenId);
+  assert.equal((await action(request, second, 'respond_exchange', { offerId, accept: true })).status, 409);
+  for (const requested of [[tokenId], ['unknown_secret_id']]) {
+    offered = await action(request, third, 'offer_exchange', { targetId: second.playerId, requestTokenIds: requested });
+    assert.equal(offered.status, 200, 'The sender must not learn whether a guessed private id exists');
+    const requestOffer = offered.body.round.exchangeOffers.at(-1);
+    assert.equal(Object.hasOwn(requestOffer, 'requestTokens'), false);
+  }
+  const logs = (await snapshot(request, hako)).body.log.join('\n');
+  assert.equal(logs.includes(tokenId), false);
+  assert.equal(logs.includes('密码4'), false);
+});
+
+test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a declared result', async t => {
+  const { request } = await startServer(t, {
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      play.round.hidingCornerId = 'hall_clock';
+      return play;
+    },
+  });
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const [hako, ...visitors] = people;
+  for (let index = 0; index < 2; index += 1) {
+    const person = visitors[index];
+    await action(request, person, 'silent_reveal', { index });
+    await action(request, person, 'peek', { cornerId: 'hall_clock' });
+    assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
+    const owner = (await snapshot(request, person)).body;
+    assert.equal(owner.round.ghost.cornerId, 'hall_clock');
+    assert.equal(owner.round.visitors.find(player => player.id === person.playerId).status, 'box_person');
+    const living = (await snapshot(request, visitors[2])).body;
+    assert.equal(Object.hasOwn(living.round.visitors[index], 'roomId'), false);
+    assert.equal(Object.hasOwn(living.round, 'ghost'), false);
+    assert.equal(living.round.hako.cornerId, undefined);
+    assert.equal((await action(request, person, 'silent_reveal', { index: index + 1 })).status, 409);
+  }
+  let state = (await snapshot(request, visitors[2])).body;
+  assert.equal(state.round.silent.turnPlayerId, visitors[2].playerId);
+  const voted = await action(request, visitors[2], 'surrender');
+  assert.equal(voted.status, 200);
+  assert.equal(voted.body.phase, 'game_over');
+  assert.equal(voted.body.round.result.winner, 'hako');
+  assert.equal((await action(request, visitors[2], 'silent_reveal', { index: 2 })).status, 409);
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
+  state = (await snapshot(request, visitors[2])).body;
+  assert.deepEqual(state, voted.body);
 });
 
 test('HTTP boundary rejects malformed requests and only exposes intended static resources', async t => {

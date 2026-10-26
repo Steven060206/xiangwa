@@ -48,7 +48,7 @@ function getDownCard(state, index) {
 }
 
 function endVisitorTurn(state, playerId) {
-  const nextPlayerId = state.visitorIds[(state.visitorIds.indexOf(playerId) + 1) % 3];
+  const nextPlayerId = state.visitorIds[(state.visitorIds.indexOf(playerId) + 1) % state.visitorIds.length];
   if (state.cards.filter(card => card.status === 'down').length === 1) {
     state.phase = 'hako_phase';
     state.turnPlayerId = null;
@@ -92,6 +92,18 @@ export function skipSilent(state, playerId, index) {
 export function finishVisitorAction(state, playerId) {
   assertVisitorTurn(state, playerId, 'visitor_action');
   endVisitorTurn(state, playerId);
+  return getSilentView(state);
+}
+
+/** Keep the original circular seat order when a visitor becomes a box person. */
+export function removeSilentVisitor(state, playerId) {
+  const index = state.visitorIds.indexOf(playerId);
+  if (index < 0) throw new Error('该玩家不在存活访问者的行动顺序中。');
+  const successor = state.visitorIds.length > 1
+    ? state.visitorIds[(index + 1) % state.visitorIds.length] : null;
+  state.visitorIds = state.visitorIds.filter(id => id !== playerId);
+  if (state.turnPlayerId === playerId) state.turnPlayerId = successor;
+  if (state.resumePlayerId === playerId) state.resumePlayerId = successor;
   return getSilentView(state);
 }
 

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createSilentRound, revealSilent, skipSilent, finishVisitorAction,
-  passNoiseReaction, finishHakoPhase, getSilentView,
+  passNoiseReaction, finishHakoPhase, getSilentView, removeSilentVisitor,
 } from '../src/silent.mjs';
 
 const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
@@ -28,6 +28,43 @@ function skipToHako(state) {
   }
   assert.equal(getSilentView(state).phase, 'hako_phase');
 }
+
+test('deaths preserve circular seats with two visitors and a lone survivor', () => {
+  const state = round([5, 4, 1, 2, 0, 3]);
+  revealSilent(state, visitors[0], 0);
+  finishVisitorAction(state, visitors[0]);
+  removeSilentVisitor(state, visitors[0]);
+  assert.deepEqual(state.visitorIds, visitors.slice(1));
+  revealAndFinish(state, visitors[1], 1);
+  assert.equal(state.turnPlayerId, visitors[2]);
+  revealAndFinish(state, visitors[2], 2);
+  assert.equal(state.turnPlayerId, visitors[1]);
+  removeSilentVisitor(state, visitors[2]);
+  revealSilent(state, visitors[1], 3);
+  assert.equal(state.phase, 'hako_reaction');
+  assert.equal(state.resumePlayerId, visitors[1]);
+  passNoiseReaction(state);
+  finishHakoPhase(state, { numbers });
+  assert.equal(state.turnPlayerId, visitors[1]);
+  revealAndFinish(state, visitors[1], 0);
+  assert.equal(state.turnPlayerId, visitors[1]);
+  rejectsWithoutMutation(state, () => removeSilentVisitor(state, visitors[0]));
+});
+
+test('removing a pending resume seat selects its living successor', () => {
+  const state = round();
+  skipToHako(state);
+  assert.equal(state.resumePlayerId, visitors[2]);
+  removeSilentVisitor(state, visitors[2]);
+  assert.equal(state.resumePlayerId, visitors[0]);
+  finishHakoPhase(state, { numbers });
+  assert.equal(state.turnPlayerId, visitors[0]);
+  removeSilentVisitor(state, visitors[0]);
+  assert.equal(state.turnPlayerId, visitors[1]);
+  removeSilentVisitor(state, visitors[1]);
+  assert.equal(state.turnPlayerId, null);
+  assert.deepEqual(state.visitorIds, []);
+});
 
 test('silent round starts with six secret slots and the first visitor in seat order', () => {
   const state = round();

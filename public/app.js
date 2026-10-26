@@ -156,17 +156,20 @@ function renderSeats(container, compact = false) {
   const fragment = document.createDocumentFragment();
   for (let seat = 0; seat < 4; seat++) {
     const player = state.players.find(p => p.seat === seat);
-    const roundActive = state.round && (state.round.silent?.turnPlayerId === player?.id || ['initial_hiding', 'visitor_reaction', 'hako_reaction', 'hako_phase'].includes(state.round.phase) && state.round.hako.playerId === player?.id);
+    const visitorStatus = state.round?.visitors.find(visitor => visitor.id === player?.id)?.status;
+    const isGhost = visitorStatus === 'box_person';
+    const isBanished = visitorStatus === 'banished';
+    const roundActive = state.round && !state.round.result && (state.round.silent?.turnPlayerId === player?.id && !isGhost && !isBanished || ['initial_hiding', 'visitor_reaction', 'hako_reaction', 'hako_phase'].includes(state.round.phase) && state.round.hako.playerId === player?.id && !state.round.hako.finished || state.round.phase === 'hako_phase' && player?.id === state.you && isGhost && !state.round.ghost?.finished);
     const active = player && (state.round ? roundActive : state.draft ? state.draft.turnPlayerId === player.id : state.opening ? state.opening.hakoId === player.id : state.setup?.turnPlayerId === player.id);
-    const item = node('li', `seat${!player ? ' empty' : player.role === 'hako' ? ' hako' : ''}${active ? ' active' : ''}`);
-    const mark = node('span', 'seat-mark', !player ? '候' : player.role === 'hako' ? '箱' : '访');
+    const item = node('li', `seat${!player ? ' empty' : player.role === 'hako' || isGhost ? ' hako' : ''}${isBanished ? ' banished' : ''}${active ? ' active' : ''}`);
+    const mark = node('span', 'seat-mark', !player ? '候' : player.role === 'hako' || isGhost ? '箱' : isBanished ? '离' : '访');
     mark.setAttribute('aria-hidden', 'true');
     item.append(mark);
     const info = node('div', 'seat-info');
     info.append(node('span', 'seat-name', player ? player.name : '静候来客'));
     const meta = node('div', 'seat-meta');
     if (player) {
-      meta.append(node('span', '', player.role === 'hako' ? '箱娃' : '访问者'));
+      meta.append(node('span', '', player.role === 'hako' ? '箱娃' : isGhost ? '箱人' : isBanished ? '已被消灭' : '访问者'));
       if (player.id === state.you) meta.append(node('span', 'self-tag', '你'));
       if (player.id === state.hostId) meta.append(node('span', '', '房主'));
     } else meta.append(node('span', '', '分享房间码，邀请朋友'));
@@ -307,7 +310,7 @@ function renderSetup() {
   const drawn = setup.drawnTileId ? getTile(setup.drawnTileId) : null;
   const locked = !canPlace();
   $('map-count').replaceChildren(document.createTextNode(setup.placements.length), node('span', '', '/ 9'));
-  $('setup-title').textContent = round ? '基础回合' : state.opening ? '入宅之前，藏好秘密' : '拼出这座旧宅';
+  $('setup-title').textContent = round ? round.result ? '今夜已有结局' : round.mode === 'exploration' ? '探索这座旧宅' : '基础回合' : state.opening ? '入宅之前，藏好秘密' : '拼出这座旧宅';
   $('turn-description').textContent = round ? roundDescription(state) : state.opening ? preparationDescription(state) : complete ? '九块地图已就位。由房主开始配置角落标志与开局秘密。' : mine ? drawn ? '轮到你摆放地图。旋转方向，选择位置，再确认。' : '轮到你了。抽取一块地图，开启新的房间。' : `${turnPlayer?.name || '访问者'}正在${drawn ? '摆放地图' : '抽取地图'}，请稍候。`;
   $('turn-seat').textContent = complete ? '九块齐备' : mine ? '你的轮次' : '等待访问者';
   $('drawn-title').textContent = complete ? '宅邸已现' : drawn ? '本次抽到' : '轮流抽板';
@@ -362,7 +365,7 @@ function render() {
   $('room-code-display').textContent = state.code;
   $('lobby-view').hidden = state.phase !== 'lobby';
   $('setup-view').hidden = state.phase === 'lobby';
-  const phaseName = state.phase === 'lobby' ? '等待入席' : state.round ? '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
+  const phaseName = state.phase === 'lobby' ? '等待入席' : state.round ? state.round.result ? '本局结束' : state.round.mode === 'exploration' ? '旧宅探索' : '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
   document.title = `箱娃 · ${state.code} · ${phaseName}`;
   $('room-phase-label').textContent = `箱娃 · ${phaseName}`;
   if (state.phase === 'lobby') renderLobby();

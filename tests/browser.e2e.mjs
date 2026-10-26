@@ -5,12 +5,27 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { createGameServer } from '../src/server.mjs';
+import { createPlay } from '../src/play.mjs';
 
 const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
-test('four browser sessions complete private opening and synchronized silent rounds', { timeout: 180000 }, async t => {
-  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3] });
+test('four browser sessions complete private opening, exploration, exchanges and surrender', { timeout: 180000 }, async t => {
+  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
+    const play = createPlay(setup, opening, options);
+    const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_2');
+    assert.ok(source, 'The unused password 2 must be in the initial token pool');
+    const before = Object.values(play.tokens).filter(Boolean).map(token => token.id).sort();
+    [play.tokens.dark_wardrobe, play.tokens[source]] = [play.tokens[source], play.tokens.dark_wardrobe];
+    assert.deepEqual(Object.values(play.tokens).filter(Boolean).map(token => token.id).sort(), before,
+      'The trusted fixture swaps existing pieces without creating or removing them');
+    // Arrange a previously cleared corner with an X from the real reserve so the
+    // browser must exercise the optional face-down control during hiding.
+    assert.notEqual(play.round.hidingCornerId, 'children_toys');
+    play.removedTokens.push(play.tokens.children_toys);
+    play.tokens.children_toys = { ...play.opening.emptyBoxTokens.shift(), faceUp: true };
+    return play;
+  } });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -52,12 +67,22 @@ test('four browser sessions complete private opening and synchronized silent rou
   const privateKeys = new Set(['password', 'weakness', 'passwordOptions', 'weaknessOptions',
     'remainsCornerId', 'remainsTargets', 'inspectedRoom', 'hidingRooms', 'hidingTargets',
     'hidingCornerId', 'hidingUnderToken', 'initialPowerOptions', 'cornerTokens', 'powerDeck']);
+  // A declared target's cornerId is public. Hako/ghost locations and unrevealed contents
+  // remain private; rejecting every cornerId would also reject a valid peek declaration.
   function assertNoPrivateKeys(value) {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {
       assert.equal(privateKeys.has(key), false, `Visitor payload must not contain ${key}`);
       assertNoPrivateKeys(child);
     }
+  }
+
+  function assertNoPasswordTwo(value) {
+    assert.notEqual(value, 'password_2', 'Private token IDs must not reach an uninvited player');
+    if (!value || typeof value !== 'object') return;
+    assert.notEqual(value.id, 'password_2', 'An uninvited player must not receive the private password token');
+    assert.equal(value.type === 'password' && value.number === 2, false);
+    for (const child of Object.values(value)) assertNoPasswordTwo(child);
   }
 
   async function assertVisitorPrivacy(openingPhase) {
@@ -305,12 +330,18 @@ test('four browser sessions complete private opening and synchronized silent rou
   state = await performAction(hakoPage, 'pass_noise_reaction', () => hakoPage.getByTestId('pass-noise-reaction').click());
   assert.equal(state.round.phase, 'hako_phase');
   assert.deepEqual(state.round.hako.hidingTargets, [], 'Hako must inspect a room before selecting its corner');
-  const hidingRoom = state.round.hako.hidingRooms[0].id;
+  const hidingRoom = 'children_room';
+  assert.ok(state.round.hako.hidingRooms.some(room => room.id === hidingRoom));
   await hakoPage.getByTestId('hiding-room-select').selectOption(hidingRoom);
   state = await performAction(hakoPage, 'inspect_hiding_room', () => hakoPage.getByTestId('inspect-hiding-room').click());
   assert.equal(state.round.hako.inspectedRoom.id, hidingRoom);
   assert.ok(state.round.hako.inspectedRoom.corners.length > 0);
   await assertVisitorPrivacy();
+  const faceDown = hakoPage.locator('[data-testid="hide-face-down"][data-corner-id="children_toys"]');
+  await faceDown.check();
+  assert.equal((await getState(identities[1])).round.cornerState.find(corner => corner.id === 'children_toys').faceUp, true,
+    'Selecting the checkbox must wait for hiding confirmation before covering the public X');
+  for (const page of pages.slice(1)) assert.equal(await page.getByTestId('hide-face-down').count(), 0);
   const nextHiding = state.round.hako.hidingTargets[0];
   await hakoPage.getByTestId('hiding-select').selectOption(nextHiding);
   state = await performAction(hakoPage, 'hako_hide', () => hakoPage.getByTestId('confirm-hiding').click());
@@ -322,12 +353,124 @@ test('four browser sessions complete private opening and synchronized silent rou
   assert.ok(state.round.silent.cards.every(card => card.status === 'down'));
   assert.deepEqual(state.round.visitors, beforeOverflow);
   await assertVisitorPrivacy();
+  const coveredX = (await getState(identities[1])).round.cornerState.find(corner => corner.id === 'children_toys');
+  assert.equal(coveredX.occupied, true);
+  assert.equal(coveredX.faceUp, undefined);
+  assert.equal(coveredX.token, undefined, 'The covered X must disappear from other players’ payloads');
   for (const page of pages) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
       'Opening and round controls must fit desktop and mobile viewports');
   }
   await hakoPage.screenshot({ path: 'test-results/round-desktop.png', fullPage: true });
   await pages[1].screenshot({ path: 'test-results/round-mobile.png', fullPage: true });
+
+  const explorerPage = pages[interruptedIndex];
+  const recipientIndex = identities.findIndex((person, index) => index > 0 && index !== interruptedIndex);
+  const recipient = identities[recipientIndex];
+  const recipientPage = pages[recipientIndex];
+  const bystanderIndices = [0, identities.findIndex((person, index) => index > 0 && index !== interruptedIndex && index !== recipientIndex)];
+  assert.ok(state.round.visitors.every(visitor => visitor.roomId === 'dark_room'), 'The three visitors can use same-room free actions');
+  state = await performAction(explorerPage, 'silent_reveal', () => explorerPage.getByTestId('silent-card-0').click());
+  assert.equal(state.round.phase, 'visitor_action');
+  const peek = explorerPage.locator('[data-testid="peek-target"][data-corner-id="dark_wardrobe"]');
+  state = await performAction(explorerPage, 'peek', () => peek.click());
+  assert.deepEqual(state.round.pendingAction, { type: 'peek', playerId: interruptedVisitorId, cornerId: 'dark_wardrobe' });
+  assert.equal(state.round.resolution, null, 'Peeking waits for hako confirmation');
+  for (let i = 0; i < pages.length; i++) {
+    assert.equal(await pages[i].getByTestId('peek-result').count(), 0);
+    assertNoPasswordTwo(await pages[i].evaluate(() => window.__hakoLastState));
+  }
+  state = await performAction(hakoPage, 'resolve_visitor_action', () => hakoPage.getByTestId('resolve-action').click());
+  let snapshots = await Promise.all(identities.map(getState));
+  assert.equal(snapshots[interruptedIndex].round.resolution.token.id, 'password_2');
+  assert.equal(snapshots[interruptedIndex].round.resolution.token.number, 2);
+  assert.equal(snapshots[interruptedIndex].round.resolution.canUseEmptyBox, true);
+  assert.match(await explorerPage.getByTestId('peek-result').innerText(), /密码.*2/);
+  for (let i = 0; i < pages.length; i++) {
+    if (i === interruptedIndex) continue;
+    assert.deepEqual(snapshots[i].round.resolution, { kind: 'waiting', playerId: interruptedVisitorId });
+    assertNoPasswordTwo(snapshots[i]);
+    assertNoPasswordTwo(await pages[i].evaluate(() => window.__hakoLastState));
+    assert.equal(await pages[i].getByTestId('peek-result').count(), 0);
+  }
+  await explorerPage.getByTestId('resolve-peek-take').click();
+  await explorerPage.getByTestId('replacement-select').selectOption('empty_box');
+  state = await performAction(explorerPage, 'resolve_peek', () => explorerPage.getByTestId('resolve-peek').click());
+  assert.equal(state.round.resolution, null);
+  assert.equal(state.round.inventory.tokens[0].id, 'password_2');
+  assert.equal(state.round.cornerState.find(corner => corner.id === 'dark_wardrobe').occupied, true,
+    'Taking the password replaces it with a covered empty box');
+  assert.equal(state.round.cornerState.find(corner => corner.id === 'dark_wardrobe').token, undefined,
+    'The replacement remains covered');
+  await explorerPage.reload();
+  await explorerPage.locator('[data-testid="inventory-token"][data-token-id="password_2"]').waitFor();
+  state = await getState(identities[interruptedIndex]);
+  await waitForSSE(state.version);
+  assert.equal(state.you, interruptedVisitorId);
+  assert.equal(state.round.inventory.tokens[0].number, 2, 'Refreshing restores the private inventory');
+  await explorerPage.screenshot({ path: 'test-results/exploration-mobile.png', fullPage: true });
+
+  await explorerPage.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
+  await explorerPage.getByTestId('exchange-target').selectOption(recipient.playerId);
+  await explorerPage.getByTestId('show-token-select').selectOption('password_2');
+  state = await performAction(explorerPage, 'show_token', () => explorerPage.getByTestId('show-token').click());
+  snapshots = await Promise.all(identities.map(getState));
+  assert.equal(snapshots[recipientIndex].round.sharedTokens.token.id, 'password_2');
+  assert.match(await recipientPage.getByTestId('shared-token').innerText(), /密码.*2/);
+  for (const index of [interruptedIndex, ...bystanderIndices]) {
+    assert.equal(snapshots[index].round.sharedTokens, null, 'Only the invited recipient receives the private display');
+    assert.equal(await pages[index].getByTestId('shared-token').count(), 0);
+  }
+  for (const index of bystanderIndices) {
+    assertNoPasswordTwo(snapshots[index]);
+    assertNoPasswordTwo(await pages[index].evaluate(() => window.__hakoLastState));
+  }
+
+  await explorerPage.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
+  await explorerPage.getByTestId('exchange-target').selectOption(recipient.playerId);
+  await explorerPage.locator('[data-testid="gift-item"][data-item-id="password_2"]').check();
+  state = await performAction(explorerPage, 'offer_exchange', () => explorerPage.getByTestId('offer-gift').click());
+  assert.equal(state.round.exchangeOffers[0].giveTokens[0].id, 'password_2');
+  assert.match(await recipientPage.getByTestId('exchange-offer').innerText(), /密码.*2/,
+    'The recipient sees the offered piece before deciding');
+  for (const index of bystanderIndices) {
+    assert.equal(await pages[index].getByTestId('exchange-offer').count(), 0);
+    assertNoPasswordTwo(await pages[index].evaluate(() => window.__hakoLastState));
+  }
+  state = await performAction(recipientPage, 'respond_exchange', () => recipientPage.getByTestId('exchange-accept').click());
+  assert.equal(state.round.inventory.tokens[0].id, 'password_2');
+  snapshots = await Promise.all(identities.map(getState));
+  assert.equal(snapshots[interruptedIndex].round.inventory.tokens.length, 0);
+  assert.equal(snapshots[recipientIndex].round.inventory.tokens[0].id, 'password_2');
+  assert.equal(await explorerPage.getByTestId('inventory-token').count(), 0);
+  assert.equal(await recipientPage.locator('[data-testid="inventory-token"][data-token-id="password_2"]').count(), 1);
+  for (const index of bystanderIndices) {
+    assertNoPasswordTwo(snapshots[index]);
+    assertNoPasswordTwo(await pages[index].evaluate(() => window.__hakoLastState));
+  }
+  await recipientPage.screenshot({ path: 'test-results/exploration-desktop.png', fullPage: true });
+  await assertVisitorPrivacy();
+
+  for (let index = 1; index < pages.length; index++) {
+    const page = pages[index];
+    await page.getByText('访问者投降', { exact: true }).click();
+    state = await performAction(page, 'surrender', () => page.getByTestId('surrender').click());
+    assert.equal(state.round.surrenderVotes.length, index);
+    if (index < 3) assert.equal(state.round.result, null, 'A single visitor cannot surrender for the whole team');
+  }
+  assert.equal(state.phase, 'game_over');
+  assert.equal(state.round.result.winner, 'hako');
+  assert.equal(state.round.result.reason, '访问者全体投降');
+  for (const page of pages) {
+    await page.getByTestId('game-result').waitFor();
+    assert.match(await page.getByTestId('game-result').innerText(), /箱娃胜利/);
+    assert.equal(await page.getByTestId('practice-panel').locator('button:not(:disabled)').count(), 0,
+      'All round actions are locked after the result');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'Exploration and result controls must fit desktop and mobile viewports');
+  }
+  await hakoPage.screenshot({ path: 'test-results/result-desktop.png', fullPage: true });
+  await pages[1].screenshot({ path: 'test-results/result-mobile.png', fullPage: true });
 
   await pages[3].evaluate(() => {
     const saved = JSON.parse(sessionStorage.getItem('hako.room.session.v1'));

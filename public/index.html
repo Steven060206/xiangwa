@@ -27,7 +27,7 @@
           <button id="create-room" data-testid="create-room" class="button primary" type="submit">创建房间<span aria-hidden="true">↗</span></button>
           <div class="form-divider"><span>已有朋友在等你？</span></div>
           <label for="room-code">房间码</label><div class="join-row"><input id="room-code" data-testid="room-code" name="roomCode" type="text" placeholder="输入房间码" maxlength="10" autocapitalize="characters" autocomplete="off" spellcheck="false"><button id="join-room" data-testid="join-room" class="button secondary" type="button">加入房间</button></div>
-          <p class="entry-note">领取道具、拼接地图，完成开局准备。<br>随后体验无声翻牌、移动与潜伏的基础回合。</p>
+          <p class="entry-note">领取道具、拼接地图，完成开局准备。<br>进入旧宅，寻找逃脱、讨伐或超度的机会。</p>
         </form>
       </div>
       <footer class="entry-footer"><span>先取出一楼大厅，再由访问者轮流抽板。</span><span>无声模式规则 · 资料整理中</span></footer>
@@ -44,7 +44,7 @@
           <section id="draft-panel" data-testid="draft-panel" class="draft-panel" hidden aria-label="领取初始道具"></section>
           <section id="board-section" class="board-section" aria-label="宅邸地图"><div class="board-toolbar"><div id="floor-tabs" class="floor-tabs" role="tablist" aria-label="查看楼层"><button type="button" class="floor-tab" role="tab" data-floor="1" aria-selected="true">一楼<span id="floor-count-1"></span></button><button type="button" class="floor-tab" role="tab" data-floor="2" aria-selected="false">二楼<span id="floor-count-2"></span></button><button type="button" class="floor-tab" role="tab" data-floor="-1" aria-selected="false">地下室<span id="floor-count--1"></span></button></div><span class="north-mark" aria-label="上方为北">北 ↑</span></div><div id="board-viewport" class="board-viewport"><div id="tile-board" data-testid="tile-board" class="tile-board"></div></div><div class="board-caption"><span class="legend-door"><i></i>门与门相接，方可通行</span><span id="board-help">选择虚线位置预览摆放</span></div></section>
           <aside class="setup-sidebar">
-            <section id="practice-panel" data-testid="practice-panel" class="practice-panel" hidden aria-label="基础回合操作"></section>
+            <section id="practice-panel" data-testid="practice-panel" class="practice-panel" hidden aria-label="回合操作"></section>
             <section id="opening-panel" data-testid="opening-panel" class="opening-panel practice-panel" hidden aria-label="开局准备"></section>
             <section class="turn-panel" aria-labelledby="drawn-title"><div class="panel-heading"><h2 id="drawn-title">轮流抽板</h2><span id="turn-seat"></span></div><div id="drawn-preview" class="drawn-preview"></div><p id="drawn-name" class="drawn-name"></p><p id="action-instruction" class="action-instruction"></p><div class="tile-actions"><button id="draw-tile" data-testid="draw-tile" class="button primary">抽取地图</button><button id="rotate-tile" data-testid="rotate-tile" class="button secondary" hidden>旋转地图<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.4 7a6 6 0 1 0 .3 5M15.5 2v5h-5"/></svg></button><button id="confirm-placement" data-testid="confirm-placement" class="button primary" hidden>确认摆放</button></div><p id="selection-description" class="selection-description"></p></section>
             <section class="table-players" aria-labelledby="players-heading"><h2 id="players-heading">同席的人</h2><ol id="setup-seats" class="seats setup-seats"></ol></section>
@@ -52,7 +52,7 @@
           </aside>
         </div><details class="activity-details"><summary>宅邸记事</summary><ol id="activity-log"></ol></details>
       </section>
-      <footer class="room-footer"><span id="room-phase-label">箱娃 · 准备阶段</span><span>窥探、道具、能力与完整胜负将在后续开放</span></footer>
+      <footer class="room-footer"><span id="room-phase-label">箱娃 · 准备阶段</span><span>主动道具、哭喊与箱娃之力仍在开发</span></footer>
     </section>
   </main>
 </body>

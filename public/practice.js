@@ -1,4 +1,5 @@
 import { MAP_TILES } from '/shared/maps.mjs';
+import { renderExploration, explorationDescription, explorationSeatStatus } from './exploration.js';
 
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
@@ -39,6 +40,7 @@ function playerName(state, id) {
 export function roundDescription(state) {
   const round = state.round;
   if (!round) return '';
+  if (round.mode === 'exploration') return explorationDescription(state);
   const isHako = round.hako.playerId === state.you;
   const mine = round.silent?.turnPlayerId === state.you;
   const turnName = playerName(state, round.silent?.turnPlayerId);
@@ -126,12 +128,16 @@ export function renderPractice({ state, pending, online, action }) {
   const round = state.round;
   panel.hidden = !round;
   if (!round) { panel.replaceChildren(); return; }
+  if (round.mode === 'exploration') {
+    renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens });
+    return;
+  }
   panel.dataset.phase = round.phase;
   const locked = pending || !online;
   const isHako = round.hako.playerId === state.you;
   const fragment = document.createDocumentFragment();
   fragment.append(node('h2', '', '基础回合'));
-  fragment.append(node('p', 'practice-scope small-note', '基础回合 · 无声翻牌、移动与潜伏。窥探、道具、能力与胜负尚未开放。'));
+  fragment.append(node('p', 'practice-scope small-note', '基础回合 · 无声翻牌、移动与潜伏。'));
   if (state.initialPower) {
     const power = node('p', 'initial-power-public', `初始箱娃之力：${state.initialPower.name}`);
     power.dataset.testid = 'initial-power';
@@ -209,6 +215,7 @@ export function renderPractice({ state, pending, online, action }) {
 export function roundSeatStatus(state, player) {
   const round = state.round;
   if (!round) return null;
+  if (round.mode === 'exploration') return explorationSeatStatus(state, player);
   if (player.id === round.hako.playerId) return round.phase === 'hako_phase' ? '潜伏中' : ['visitor_reaction', 'hako_reaction'].includes(round.phase) ? '等待确认' : '潜伏';
   if (round.silent.turnPlayerId === player.id) return round.phase === 'visitor_reveal' ? '翻牌中' : round.phase === 'visitor_reaction' ? '等待结算' : '行动中';
   return roomName(round.visitors.find(visitor => visitor.id === player.id)?.roomId);
@@ -260,7 +267,7 @@ export function renderDraft({ state, pending, online, action }) {
     }
     items.append(line);
   }
-  fragment.append(items, node('p', 'small-note', '三名访问者领完道具后，开始轮流抽板拼图。道具使用将在后续开放。'));
+  fragment.append(items, node('p', 'small-note', '三名访问者领完道具后，开始轮流抽板拼图。听诊器、夜视仪、归纳推理法与遗物戒指可按对应情形使用。'));
   panel.replaceChildren(fragment);
 }
 

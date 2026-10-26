@@ -63,6 +63,42 @@ button.silent-card-face:hover:not(:disabled){background:#ebdcc1;border-color:var
 .inspected-tokens dt{color:var(--muted)}
 .inspected-tokens dd{margin:4px 0 0;color:var(--accent)}
 .initial-power-public{font-size:12px;line-height:1.8;color:var(--accent);margin-top:16px}
+.action-group{display:flex;flex-direction:column;gap:9px;padding-block:16px;border-top:1px solid var(--rule)}
+.action-group:first-child{padding-top:0;border-top:0}
+.action-group h3{margin-bottom:2px}
+.exploration-section{margin-top:24px;padding-top:19px;border-top:1px solid var(--rule);min-width:0}
+.exploration-section h3{margin-bottom:9px}
+.private-resolution{padding:18px 14px;background:#e9dfcc;border-block:1px solid #b9a887;margin-bottom:16px}
+.private-token{font-family:var(--serif);font-size:21px;line-height:1.55;color:var(--accent);overflow-wrap:anywhere}
+.decision-actions{display:flex;gap:8px;flex-wrap:wrap}
+.decision-actions .button{flex:1;min-width:90px}
+.decision-actions .button[aria-pressed=true]{background:#ead1bf;border-color:var(--accent);color:#6d2c22}
+.replacement-controls{padding-top:8px}
+.practice-controls .inline-check,.inline-check{display:flex;align-items:flex-start;gap:9px;margin:0;font-size:12px;line-height:1.85;cursor:pointer}
+.inline-check input{width:18px;height:18px;flex-shrink:0;margin:2px 0 0;padding:0;accent-color:var(--accent)}
+.inline-check:has(input:disabled){cursor:default}
+.inventory-list{list-style:none;margin:0;padding:0}
+.inventory-list li{padding:8px 0;border-bottom:1px solid #d5cbb8;font-size:12px;line-height:1.8;overflow-wrap:anywhere}
+.inventory-list li:last-child{border-bottom:0}
+.inventory-item{padding-block:9px;border-bottom:1px solid #d5cbb8;font-size:12px}
+.inventory-item p{margin-top:7px}
+.initial-items{font-size:12px;margin-top:16px}
+.initial-items .round-positions{margin-block:10px}
+.free-actions{margin-top:16px;font-size:12px;line-height:1.8}
+.inventory-item summary,.initial-items summary,.free-actions summary{cursor:pointer;min-height:28px}
+.free-action-controls{margin-top:12px}
+.gift-options{border:0;margin:6px 0 0;padding:0;min-width:0}
+.gift-options legend{font-size:12px;padding:0;margin-bottom:8px}
+.gift-options .inline-check{padding-block:5px}
+.game-result{padding:20px 0;border-block:1px solid var(--accent);margin-bottom:18px;color:var(--accent)}
+.game-result.visitors-win{border-color:var(--green);color:var(--green)}
+.game-result h2{font-size:30px;margin-bottom:9px}
+.game-result>p{font-size:13px;line-height:1.85}
+.game-result>.small-note{font-size:12px;margin-top:7px}
+.seat.banished .seat-mark{background:none;color:var(--muted)}
+::selection{background:#dec2a6;color:var(--ink)}
+input,select{caret-color:var(--accent)}
+@media(max-width:720px){.private-resolution{padding:16px 13px}.action-group .button,.decision-actions .button{min-height:44px}.inventory-list li{padding-block:10px}.exploration-section{margin-top:22px}.inline-check{padding-block:4px}.free-actions summary,.inventory-item summary,.initial-items summary{min-height:34px}.game-result h2{font-size:28px}}
 @media(max-width:1050px){.has-round .game-layout{grid-template-columns:minmax(0,1fr) 302px}.silent-heading{flex-wrap:wrap;gap:2px}}
 @media(max-width:720px){.has-round .game-layout{grid-template-columns:1fr}.has-round .setup-sidebar{display:flex;flex-direction:column;gap:24px}.practice-panel{padding-bottom:24px}.practice-panel h2{font-size:23px}.practice-status{margin-top:14px}.round-positions{margin-block:14px}.silent-heading{flex-wrap:nowrap;gap:10px}.silent-card-face{min-height:104px}.practice-controls .button{min-height:44px}.has-round .table-players{max-width:none}.has-round .setup-seats .seat{flex-wrap:nowrap}.has-round .setup-seats .seat-info{max-width:none}.has-round .setup-seats .seat-name{max-width:160px}.has-round .setup-seats .seat-status{width:auto;margin:0}.completion-panel>.button{white-space:normal}}
 @media(max-width:720px){.has-draft .setup-sidebar{display:block}.draft-panel{padding-top:18px}.draft-panel h2{font-size:23px}.item-list>li{gap:14px;padding-block:18px}.item-copy h3{font-size:18px}.item-list .button{min-width:64px;padding-inline:10px}.draft-choices{margin-block:18px}.opening-progress{gap:8px 12px}}
