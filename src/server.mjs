@@ -89,6 +89,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   const store = createRoomStore(dataFile);
   const rooms = store.load();
   const streams = new Set();
+  const polling = new Map();
   let closing = false;
   try {
     for (const room of rooms.values()) {
@@ -118,7 +119,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       phase: room.play ? round.result ? 'game_over' : 'practice' : room.opening ? 'opening_setup'
         : room.game?.phase ?? (room.draft ? 'item_draft' : room.selectingHako ? 'hako_selection' : 'lobby'),
       players: room.players.map(({ id, name, role, ready, connections, seat }) => ({
-        id, name, role, ready, connected: connections.size > 0, seat,
+        id, name, role, ready, connected: connections.size > 0 || polling.has(id), seat,
       })),
       you: playerId,
       setup: room.game ? getSetupView(room.game) : null,
@@ -425,6 +426,19 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const room = roomFor(code);
         const player = authorize(room, Object.fromEntries(url.searchParams));
         if (endpoint !== 'events') {
+          if (url.searchParams.get('poll') === '1') {
+            const wasConnected = player.connections.size > 0 || polling.has(player.id);
+            clearTimeout(polling.get(player.id));
+            const timeout = setTimeout(() => {
+              polling.delete(player.id);
+              const current = rooms.get(room.code);
+              const present = current?.players.find(candidate => candidate.id === player.id);
+              if (!closing && present && !present.connections.size) publish(current, undefined, false);
+            }, 15000);
+            timeout.unref();
+            polling.set(player.id, timeout);
+            if (!wasConnected) publish(room, undefined, false);
+          }
           sendJson(response, 200, snapshot(room, player.id));
           return;
         }
@@ -482,6 +496,8 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   const close = server.close.bind(server);
   server.close = callback => {
     closing = true;
+    for (const timeout of polling.values()) clearTimeout(timeout);
+    polling.clear();
     for (const response of streams) response.end();
     return close(callback);
   };

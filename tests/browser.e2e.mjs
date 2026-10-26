@@ -687,3 +687,214 @@ test('four browser sessions complete private opening, powers, exploration, item 
     'A confirmed invalid identity should clear unusable credentials');
   assert.deepEqual(browserErrors, []);
 });
+
+test('four polling browsers retain identity, recover connections and complete first-come role selection', { timeout: 60000 }, async t => {
+  const server = createGameServer({ deck });
+  let browser;
+  t.after(async () => {
+    await browser?.close();
+    if (server.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
+  const contexts = [];
+  const pages = [];
+  const identities = [];
+  const pollRequests = [0, 0, 0, 0];
+  const browserErrors = [];
+  let streamRequests = 0;
+
+  async function getState(person) {
+    const response = await fetch(`${base}/api/rooms/${person.roomCode}?${new URLSearchParams({ playerId: person.playerId, token: person.token })}`);
+    assert.equal(response.status, 200);
+    return response.json();
+  }
+
+  async function waitForPoll(version) {
+    await Promise.all(pages.map(page => page.waitForFunction(
+      expected => window.__hakoPollState?.version >= expected, version,
+    )));
+  }
+
+  async function performAction(page, type, trigger) {
+    const pendingResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname.endsWith('/actions')
+      && response.request().postDataJSON()?.type === type);
+    await trigger();
+    const response = await pendingResponse;
+    assert.equal(response.status(), 200, `${type} should succeed over polling`);
+    const snapshot = await response.json();
+    if (type !== 'leave') await waitForPoll(snapshot.version);
+    return snapshot;
+  }
+
+  async function postAction(person, type, payload = {}) {
+    const response = await fetch(`${base}/api/rooms/${person.roomCode}/actions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId: person.playerId, token: person.token, type, ...payload }),
+    });
+    assert.equal(response.status, 200, `${type} should succeed in the setup fixture`);
+    return response.json();
+  }
+
+  async function joinPage(index, create = false) {
+    const page = pages[index];
+    await page.getByTestId('nickname').fill(`轮询玩家${index + 1}`);
+    if (!create) await page.getByTestId('room-code').fill(identities[0].roomCode);
+    const endpoint = create ? '/api/rooms' : `/api/rooms/${identities[0].roomCode}/join`;
+    const joined = page.waitForResponse(response => new URL(response.url()).pathname === endpoint && response.request().method() === 'POST');
+    await page.getByTestId(create ? 'create-room' : 'join-room').click();
+    const response = await joined;
+    assert.equal(response.status(), 201);
+    identities[index] = await response.json();
+    await page.getByTestId('room-code-display').waitFor();
+    await page.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
+    assert.equal(new URL(page.url()).searchParams.get('sync'), 'poll');
+  }
+
+  for (let index = 0; index < 4; index++) {
+    const context = await browser.newContext({ viewport: index === 1 ? { width: 390, height: 844 } : { width: 1440, height: 1000 } });
+    contexts.push(context);
+    await context.addInitScript(() => {
+      window.__hakoPollCount = 0;
+      window.__hakoEventSourceCalls = 0;
+      window.EventSource = class {
+        constructor() {
+          window.__hakoEventSourceCalls++;
+          throw new Error('Polling mode must not construct EventSource');
+        }
+      };
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const response = await nativeFetch(...args);
+        if (new URL(response.url).searchParams.get('poll') === '1' && response.ok) {
+          window.__hakoPollState = await response.clone().json();
+          window.__hakoPollCount++;
+        }
+        return response;
+      };
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        async writeText(value) { window.__copiedInvite = value; },
+      } });
+    });
+    const page = await context.newPage();
+    pages.push(page);
+    page.on('pageerror', error => browserErrors.push(error.message));
+    page.on('request', request => {
+      const url = new URL(request.url());
+      if (url.searchParams.get('poll') === '1') pollRequests[index]++;
+      if (url.pathname.endsWith('/events')) streamRequests++;
+    });
+    await page.goto(`${base}/?sync=poll${index ? `&room=${identities[0].roomCode}` : ''}`);
+    await joinPage(index, index === 0);
+  }
+  await Promise.all(pages.map(page => page.waitForFunction(
+    () => window.__hakoPollState?.players.length === 4 && window.__hakoPollState.players.every(player => player.connected),
+  )));
+
+  await pages[0].locator('#copy-invite').click();
+  const invitation = new URL(await pages[0].evaluate(() => window.__copiedInvite));
+  assert.equal(invitation.searchParams.get('sync'), 'poll');
+  assert.equal(invitation.searchParams.get('room'), identities[0].roomCode);
+  const mobileIdentity = identities[1].playerId;
+  await pages[1].reload();
+  await pages[1].waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
+  assert.equal(new URL(pages[1].url()).searchParams.get('sync'), 'poll');
+  assert.equal(await pages[1].evaluate(() => JSON.parse(sessionStorage.getItem('hako.room.session.v1')).playerId), mobileIdentity);
+  assert.equal((await getState(identities[1])).you, mobileIdentity);
+  assert.equal((await getState(identities[1])).players.length, 4);
+
+  const pollRoute = url => url.pathname === `/api/rooms/${identities[0].roomCode}` && url.searchParams.get('poll') === '1';
+  await contexts[1].route(pollRoute, route => route.abort('connectionfailed'));
+  await pages[1].locator('#connection-banner').waitFor({ state: 'visible' });
+  assert.equal(await pages[1].getByTestId('ready-button').isEnabled(), false);
+  await pages[0].waitForFunction(playerId => window.__hakoPollState?.players.find(player => player.id === playerId)?.connected === false,
+    mobileIdentity, { timeout: 20000 });
+  await contexts[1].unroute(pollRoute);
+  await pages[1].locator('#connection-banner').waitFor({ state: 'hidden' });
+  await Promise.all(pages.map(page => page.waitForFunction(
+    () => window.__hakoPollState?.players.every(player => player.connected),
+  )));
+  assert.equal(await pages[1].getByTestId('ready-button').isEnabled(), true);
+
+  await performAction(pages[3], 'leave', () => pages[3].locator('#leave-room').click());
+  await pages[3].locator('#entry-view').waitFor({ state: 'visible' });
+  const requestsAfterLeave = pollRequests[3];
+  const observerPollCount = await pages[0].evaluate(() => window.__hakoPollCount);
+  await pages[0].waitForFunction(count => window.__hakoPollCount >= count + 2, observerPollCount);
+  assert.equal(pollRequests[3], requestsAfterLeave, 'Leaving a room cancels subsequent poll requests');
+  assert.equal(await pages[3].evaluate(() => sessionStorage.getItem('hako.room.session.v1')), null);
+  assert.equal(new URL(pages[3].url()).searchParams.get('sync'), 'poll');
+  await joinPage(3);
+  let state = await getState(identities[0]);
+  await waitForPoll(state.version);
+  for (const page of pages) state = await performAction(page, 'ready', () => page.getByTestId('ready-button').click());
+  state = await performAction(pages[0], 'start', () => pages[0].getByTestId('start-setup').click());
+  assert.equal(state.phase, 'hako_selection');
+  assert.equal(state.draft, null);
+  for (const page of pages) {
+    assert.equal(await page.getByTestId('claim-hako').isVisible(), true);
+    assert.equal(await page.getByTestId('claim-hako').isEnabled(), true);
+  }
+
+  let releaseClaims;
+  const claimsReady = new Promise(resolve => { releaseClaims = resolve; });
+  let arrivals = 0;
+  const claimRoute = async route => {
+    if (route.request().postDataJSON()?.type !== 'claim_hako') return route.continue();
+    if (++arrivals === 2) releaseClaims();
+    await claimsReady;
+    return route.continue();
+  };
+  for (const context of contexts.slice(0, 2)) await context.route('**/actions', claimRoute);
+  const pendingClaims = pages.slice(0, 2).map(page => page.waitForResponse(response => response.request().postDataJSON()?.type === 'claim_hako'));
+  await Promise.all(pages.slice(0, 2).map(page => page.getByTestId('claim-hako').click()));
+  const claims = await Promise.all(pendingClaims);
+  assert.deepEqual(claims.map(response => response.status()).sort(), [200, 409]);
+  for (const context of contexts.slice(0, 2)) await context.unroute('**/actions', claimRoute);
+  state = await getState(identities[0]);
+  await waitForPoll(state.version);
+  assert.equal(state.phase, 'item_draft');
+  assert.equal(state.players.filter(player => player.role === 'hako').length, 1);
+  assert.equal(state.players.filter(player => player.role === 'visitor').length, 3);
+  const hakoIndex = identities.findIndex(person => person.playerId === state.players.find(player => player.role === 'hako').id);
+  for (let choice = 0; choice < 3; choice++) {
+    const currentIndex = identities.findIndex(person => person.playerId === state.draft.turnPlayerId);
+    assert.equal(currentIndex, (hakoIndex + choice + 1) % 4);
+    const page = pages[currentIndex];
+    state = await performAction(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
+  }
+  assert.equal(state.phase, 'map_setup', 'The first successful claim starts the draft without another ready step');
+
+  // Move through the map fixture via the real API to reach editable opening controls.
+  for (let turn = 0; turn < deck.length; turn++) {
+    const person = identities.find(person => person.playerId === state.setup.turnPlayerId);
+    state = await postAction(person, 'draw');
+    state = await postAction(person, 'place', state.setup.legalPlacements[0]);
+  }
+  assert.equal(state.phase, 'map_ready');
+  state = await postAction(identities[0], 'prepare_opening');
+  await waitForPoll(state.version);
+  const hakoPage = pages[hakoIndex];
+  const passwordChoice = hakoPage.getByTestId('password-choice').first();
+  await passwordChoice.check();
+  const weakness = hakoPage.getByTestId('weakness-select');
+  const lastWeakness = await weakness.locator('option').last().getAttribute('value');
+  await weakness.selectOption(lastWeakness);
+  await weakness.focus();
+  const formPollCount = await hakoPage.evaluate(() => {
+    window.__openingFormControl = document.getElementById('weakness-select');
+    return window.__hakoPollCount;
+  });
+  await hakoPage.waitForFunction(count => window.__hakoPollCount >= count + 2, formPollCount);
+  assert.equal(await hakoPage.evaluate(() => window.__openingFormControl === document.getElementById('weakness-select')
+    && document.activeElement === window.__openingFormControl), true,
+  'Unchanged poll snapshots preserve the form control and its focus');
+  assert.equal(await weakness.inputValue(), lastWeakness);
+  assert.equal(await passwordChoice.isChecked(), true);
+  assert.equal(streamRequests, 0);
+  for (const page of pages) assert.equal(await page.evaluate(() => window.__hakoEventSourceCalls), 0);
+  assert.deepEqual(browserErrors, []);
+});

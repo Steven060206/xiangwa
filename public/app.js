@@ -8,6 +8,8 @@ const floorName = floor => ({ 1: '一楼', 2: '二楼', '-1': '地下室' })[flo
 let identity = null;
 let state = null;
 let stream = null;
+let pollTimer = null;
+let pollController = null;
 let pending = false;
 let online = false;
 let activeFloor = 1;
@@ -29,18 +31,19 @@ function showError(error) {
 }
 
 function setConnection(connected) {
+  const changed = online !== connected;
   online = connected;
   $('connection-state').textContent = connected ? '已连接' : '重新连接中';
   $('connection-state').classList.toggle('offline', !connected);
   $('connection-banner').hidden = connected || !identity;
   $('connection-banner').textContent = '连接已中断，正在自动重连。恢复后即可继续操作。';
-  if (state) render();
+  if (state && changed) render();
 }
 
-async function api(path, body) {
+async function api(path, body, signal) {
   let response;
   try {
-    response = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    response = await fetch(path, { signal, ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
   } catch {
     throw new Error('暂时无法连接房间，请检查网络后重试。');
   }
@@ -67,9 +70,41 @@ function saveSession(value) {
   }
 }
 
-function connect() {
+function disconnect() {
   stream?.close();
+  stream = null;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  pollController?.abort();
+  pollController = null;
+}
+
+function connect() {
+  disconnect();
   setConnection(false);
+  if (location.hostname.endsWith('.trycloudflare.com') || new URL(location.href).searchParams.get('sync') === 'poll') {
+    const controller = new AbortController();
+    pollController = controller;
+    const query = sessionQuery();
+    query.set('poll', '1');
+    const path = `/api/rooms/${identity.roomCode}?${query}`;
+    async function poll() {
+      try {
+        const next = await api(path, undefined, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]));
+        if (controller.signal.aborted) return;
+        // Do not rebuild form controls when only an unchanged snapshot arrives.
+        if (JSON.stringify(next) !== JSON.stringify(state)) receiveState(next);
+        setConnection(true);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setConnection(false);
+        if (error.status === 403 || error.status === 404) { showError(error); return; }
+      }
+      if (!controller.signal.aborted) pollTimer = setTimeout(poll, 1000);
+    }
+    poll();
+    return;
+  }
   stream = new EventSource(`/api/rooms/${identity.roomCode}/events?${sessionQuery()}`);
   stream.onopen = () => setConnection(true);
   stream.addEventListener('state', event => {
@@ -135,8 +170,7 @@ async function action(type, payload = {}) {
   try {
     const next = await api(`/api/rooms/${identity.roomCode}/actions`, { playerId: identity.playerId, token: identity.token, type, ...payload });
     if (type === 'leave') {
-      stream?.close();
-      stream = null;
+      disconnect();
       state = null;
       saveSession(null);
       online = false;

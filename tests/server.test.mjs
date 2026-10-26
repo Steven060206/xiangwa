@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -76,9 +77,10 @@ function action(request, identity, type, values = {}) {
   });
 }
 
-function snapshot(request, identity) {
+function snapshot(request, identity, { poll = false } = {}) {
   return request(`/api/rooms/${identity.roomCode}?${new URLSearchParams({
     playerId: identity.playerId, token: identity.token,
+    ...(poll ? { poll: '1' } : {}),
   })}`);
 }
 
@@ -119,7 +121,7 @@ async function stream(t, base, identity) {
   t.after(closed);
   return {
     close: closed,
-    async state(predicate = () => true) {
+    async state(predicate = () => true, timeoutMs = 3000) {
       const readState = async () => {
         while (true) {
           const boundary = buffer.indexOf('\n\n');
@@ -140,7 +142,7 @@ async function stream(t, base, identity) {
       try {
         return await Promise.race([
           readState(),
-          new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('SSE state timed out')), 3000); }),
+          new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('SSE state timed out')), timeoutMs); }),
         ]);
       } finally {
         clearTimeout(timeout);
@@ -305,6 +307,54 @@ test('leaving the lobby frees a seat and transfers host authority', async t => {
   assert.equal(replacement.status, 201);
   assert.equal(replacement.body.state.players.length, 4);
   assert.equal(replacement.body.state.players.find(player => player.id === replacement.body.playerId).seat, 0);
+});
+
+test('authenticated polling expires despite ordinary GETs and shares transient presence with SSE', { timeout: 25000 }, async t => {
+  const saved = await persistentServer(t);
+  const { request } = saved;
+  const people = await createFour(request);
+  const [host, pollingVisitor, mixedVisitor, offlineVisitor] = people;
+  const connected = (state, person) => state.players.find(player => player.id === person.playerId).connected;
+  const before = (await snapshot(request, host)).body;
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  assert.ok(before.players.every(player => !player.connected));
+  assert.equal((await request(`/api/rooms/${host.roomCode}?poll=1`)).status, 403);
+  assert.equal((await snapshot(request, { ...offlineVisitor, token: host.token }, { poll: true })).status, 403);
+  assert.equal(connected((await snapshot(request, offlineVisitor)).body, offlineVisitor), false,
+    'Neither an invalid poll nor an authenticated ordinary GET marks a player online');
+
+  const observer = await stream(t, saved.base, host);
+  await observer.state();
+  const mixedStream = await stream(t, saved.base, mixedVisitor);
+  await mixedStream.state();
+  await observer.state(state => connected(state, mixedVisitor));
+  const polled = await Promise.all([pollingVisitor, mixedVisitor].map(person => snapshot(request, person, { poll: true })));
+  const pollsFinished = Date.now();
+  for (let index = 0; index < polled.length; index++) {
+    assert.equal(polled[index].status, 200);
+    assert.equal(connected(polled[index].body, [pollingVisitor, mixedVisitor][index]), true);
+    assert.equal(polled[index].body.version, before.version);
+    assert.deepEqual(polled[index].body.log, before.log);
+  }
+  const online = await observer.state(state => connected(state, pollingVisitor));
+  assert.deepEqual(online, { ...polled[0].body, you: host.playerId }, 'SSE observes polling players joining');
+
+  await delay(8000);
+  assert.equal(connected((await snapshot(request, pollingVisitor)).body, pollingVisitor), true);
+  assert.equal(connected((await snapshot(request, offlineVisitor)).body, offlineVisitor), false);
+  const expired = await observer.state(state => !connected(state, pollingVisitor), 10000);
+  assert.equal(expired.version, before.version);
+  assert.deepEqual(expired.log, before.log);
+  await delay(Math.max(0, pollsFinished + 15100 - Date.now()));
+  const afterExpiry = (await snapshot(request, host)).body;
+  assert.equal(connected(afterExpiry, pollingVisitor), false, 'An ordinary GET must not extend the polling heartbeat');
+  assert.equal(connected(afterExpiry, mixedVisitor), true, 'An active SSE connection keeps a player online after polling expires');
+  assert.equal(connected(afterExpiry, offlineVisitor), false);
+  await mixedStream.close();
+  const disconnected = await observer.state(state => !connected(state, mixedVisitor));
+  assert.equal(disconnected.version, before.version);
+  assert.deepEqual(disconnected.log, before.log);
+  assert.equal(await readFile(saved.dataFile, 'utf8'), bytes, 'Online presence must not rewrite persistent game state');
 });
 
 test('SSE synchronizes all players, preserves disconnected seats and completes nine maps', async t => {
@@ -472,7 +522,7 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   assert.equal(state.round.silent.cards.every(card => card.status === 'down'), true);
 });
 
-test('HTTP and SSE isolate peeks, inventories, deliberate sharing and consensual transfers', async t => {
+test('HTTP, polling and SSE isolate peeks, inventories, deliberate sharing and consensual transfers', async t => {
   let firstId;
   const { base, request } = await startServer(t, {
     createPlayState(setup, opening, options) {
@@ -497,6 +547,9 @@ test('HTTP and SSE isolate peeks, inventories, deliberate sharing and consensual
   assert.equal(confirmed.status, 200);
   for (let index = 0; index < people.length; index += 1) {
     const view = (await snapshot(request, people[index])).body;
+    const polled = await snapshot(request, people[index], { poll: true });
+    assert.equal(polled.status, 200);
+    assert.deepEqual(polled.body, view, 'Polling uses the same authenticated private view as HTTP and SSE');
     const pushed = await streams[index].state(update => update.version >= confirmed.body.version);
     assert.deepEqual(pushed, view);
     if (index === 1) {
