@@ -1,8 +1,10 @@
 import { getTile } from './maps.mjs';
+import { getNoiseEffectsView } from './noise-effects.mjs';
 
 const ITEM_NAMES = {
   spirit_pen: '笔仙', ventriloquist_doll: '腹语人偶', nightmare_letter: '噩梦的来信',
   smartphone: '智能手机', suitcase: '行李箱', dowsing_rod: '占卜棒', amulet: '古怪护符',
+  shrine_bell: '深菱神社之铃',
 };
 const ACTIVE_ITEMS = new Set(Object.keys(ITEM_NAMES).filter(id => id !== 'amulet'));
 const SAME_ROOM_LETHAL = new Set(['spirit_pen', 'ventriloquist_doll', 'nightmare_letter', 'smartphone', 'dowsing_rod']);
@@ -39,6 +41,9 @@ function assertItem(play, id, action, ctx) {
   if (!ACTIVE_ITEMS.has(action.itemId)) throw new Error('该道具的主动使用尚未开放。');
   if (!ctx.hasItem(id, action.itemId)) throw new Error('你没有携带所选择的访问者道具。');
   switch (action.itemId) {
+    case 'shrine_bell':
+      if (!getNoiseEffectsView(play, id).canUseBell) throw new Error('本回合须先选择摇铃并完成额外翻牌，才能消耗行动使用铃。');
+      break;
     case 'spirit_pen': {
       assertRoom(play, action.roomId);
       const roomId = ctx.visitor(id).roomId;
@@ -107,6 +112,12 @@ export function resolveItem(play, pending, ctx) {
     return;
   }
   switch (pending.itemId) {
+    case 'shrine_bell':
+      play.noiseEffects.bell = { userId: id, cycle: play.round.silent.cycle };
+      play.noiseEffects.bellReady = null;
+      publicEvent(play, pending);
+      finish(play, id, ctx);
+      break;
     case 'amulet': {
       const held = ctx.inventory(id);
       const tokenIndex = held.tokens.findIndex(token => token.id === pending.tokenId);
@@ -201,6 +212,7 @@ export function getItemView(play, id, ctx) {
   const canUse = player?.status === 'alive' && play.round.silent.phase === 'visitor_action'
     && play.round.silent.turnPlayerId === id && !play.round.pendingAction && !play.resolution && !play.result;
   const usableItems = canUse ? ctx.inventory(id).items.filter(item => ACTIVE_ITEMS.has(item.id)).filter(item => {
+    if (item.id === 'shrine_bell') return getNoiseEffectsView(play, id).canUseBell;
     if (item.id === 'spirit_pen') return play.round.visitors.some(other => other.id !== id && other.status === 'alive' && other.roomId === player.roomId);
     if (item.id === 'nightmare_letter') return play.powers.deck.includes('despair');
     if (item.id === 'smartphone') return play.powers.hand.length > 0 || play.powers.slots.some(Boolean);

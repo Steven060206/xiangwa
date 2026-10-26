@@ -359,6 +359,75 @@ test('bots never initiate surrender and withdraw their vote when the person with
   assert.deepEqual(result.action, { type: 'surrender', agree: false });
 });
 
+test('bots use NO7 and NO8 through their own filtered interruption choices', () => {
+  for (const id of [7, 8]) {
+    let play = fixture();
+    if (id === 7) play.inventories[first].tokens.push(piece('bot-theft-key', 'key'));
+    else {
+      const cornerId = Object.keys(play.tokens).find(key => play.tokens[key]?.type === 'doll');
+      play.inventories[first].tokens.push(play.tokens[cornerId]);
+      play.tokens[cornerId] = null;
+    }
+    slot(play, id);
+    play = applyPlayAction(reveal(play), first, { type: 'peek', cornerId: 'hall_clock' });
+    const result = botAct(play, hakoId, () => 0);
+    assert.equal(result.action.type, 'activate_power');
+    if (id === 7) {
+      assert.equal(result.action.stealKind, 'token');
+      assert.equal(Object.hasOwn(result.action, 'tokenId'), false);
+      assert.equal(result.play.powers.stolen.piece.id, 'bot-theft-key');
+      assert.equal(result.play.round.pendingAction, null);
+    } else {
+      assert.equal(result.play.noiseEffects.mary.playerId, first);
+      assert.equal(result.play.round.pendingAction.type, 'peek');
+    }
+  }
+});
+
+test('bots finish bell reveals before accepting gifts and then spend their standard action to ring', () => {
+  let play = fixture('shrine_bell');
+  play.inventories[human].tokens.push(piece('bell-sequence-gift', 'key'));
+  play = applyPlayAction(play, human, { type: 'offer_exchange', targetId: first, giveTokenIds: ['bell-sequence-gift'] });
+  play = applyPlayAction(play, first, { type: 'silent_reveal', index: 0, useBell: true });
+  assert.equal(play.round.silent.revealsRemaining, 1);
+  assert.equal(decide(snapshot(play, human)), null);
+  let result = botAct(play, first, () => 0);
+  assert.equal(result.action.type, 'silent_reveal');
+  assert.equal(Object.hasOwn(result.action, 'useBell'), false);
+  play = result.play;
+  result = botAct(play, first);
+  assert.equal(result.action.type, 'respond_exchange');
+  play = result.play;
+  result = botAct(play, first);
+  assert.deepEqual(result.action, { type: 'use_item', itemId: 'shrine_bell' });
+  play = applyPlayAction(result.play, hakoId, { type: 'resolve_visitor_action' });
+  assert.equal(play.noiseEffects.bell.userId, first);
+});
+
+test('bots reject an existing offer that would transfer a newly cursed doll', () => {
+  for (const direction of ['incoming', 'outgoing']) {
+    let play = fixture();
+    const cornerId = Object.keys(play.tokens).find(key => play.tokens[key]?.type === 'doll');
+    const doll = play.tokens[cornerId];
+    play.tokens[cornerId] = null;
+    const owner = direction === 'incoming' ? human : first;
+    play.inventories[owner].tokens.push(doll);
+    play.inventories[human].tokens.push(piece('mary-trade-key', 'key'));
+    play = applyPlayAction(play, human, { type: 'offer_exchange', targetId: first,
+      giveTokenIds: [direction === 'incoming' ? doll.id : 'mary-trade-key'],
+      requestTokenIds: direction === 'outgoing' ? [doll.id] : [] });
+    slot(play, 8);
+    play.inventories[first].items.push(item('smartphone'));
+    play = applyPlayAction(reveal(play), first, { type: 'use_item', itemId: 'smartphone', targetZone: 'hand', index: 0 });
+    play = applyPlayAction(play, hakoId, { type: 'activate_power', slot: 0 });
+    play = applyPlayAction(play, hakoId, { type: 'resolve_visitor_action' });
+    const result = botAct(play, first);
+    assert.equal(result.action.type, 'respond_exchange');
+    assert.equal(result.action.accept, false);
+    assert.equal(result.play.exchangeOffers.length, 0);
+  }
+});
+
 test('hako bots cry, manage supported powers, begin their stage, activate and finish real hiding', () => {
   let play = stage(fixture());
   const actions = [];
@@ -414,7 +483,7 @@ test('NO2 paths, NO3 actual doors, NO5 victims, NO10 interruption, existing NO4 
 
 test('unsupported hand cards are skipped and a bot box person waits for hako before its own hiding', () => {
   let unsupported = stage(fixture());
-  unsupported.powers.hand = [7, 8].map(id => ({ id, ignoreThreshold: true }));
+  unsupported.powers.hand = [{ id: 12, ignoreThreshold: true }];
   unsupported = applyPlayAction(unsupported, hakoId, { type: 'hako_cry' });
   assert.deepEqual(botAct(unsupported, hakoId).action, { type: 'begin_hako_action' });
   let play = fixture();

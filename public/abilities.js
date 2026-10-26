@@ -230,6 +230,14 @@ function publicPowers(container, state, powers) {
     section.append(doors);
   }
   if (powers.ghostCall?.active) section.append(node('p', 'small-note', '鬼来电生效：访问者只能沿最短路径前往客厅，首位到达后全体解除。'));
+  if (isHako && powers.stolen) {
+    const stolen = node('div');
+    stolen.dataset.testid = 'power-stolen';
+    const { kind, piece } = powers.stolen;
+    stolen.append(node('h3', '', '抢来的东西 · 仅你可见'), node('p', 'private-token', kind === 'item' ? piece.name || itemNames[piece.id] || '访问者道具' : tokenName(piece)));
+    if (kind === 'item' && piece.description) stolen.append(node('p', 'small-note', piece.description));
+    section.append(stolen);
+  }
   container.append(section);
 }
 
@@ -245,7 +253,7 @@ function managePowers(container, state, powers, locked, action) {
       const row = node('div');
       row.dataset.testid = 'power-hand-card';
       row.dataset.powerId = card.id;
-      const description = [card.description, card.ignoreThreshold ? '此牌可绕过手记数量门槛。' : card.threshold ? `公开手记门槛：${card.threshold}片。` : '', card.supported === false ? card.reason || '规则待确认，暂不可设置或发动。' : ''].filter(Boolean).join(' ');
+      const description = [card.description, card.ignoreThreshold ? '此牌可绕过手记数量门槛。' : card.threshold ? `公开手记门槛：${card.threshold}片。` : '', card.supported === false ? card.reason || '规则待确认，暂不可设置或发动。' : '', card.setReason].filter(Boolean).join(' ');
       row.append(node('dt', '', cardName(card)), node('dd', '', description));
       list.append(row);
     }
@@ -291,15 +299,27 @@ function activatePowers(container, state, powers, locked, action) {
       if (option.reason) group.append(node('p', 'small-note', option.reason));
       let room;
       let door;
+      let steal;
       if (option.rooms?.length) room = select(group, `power-room-${option.slot}`, '选择作用房间', option.rooms, locked || !option.canActivate);
       if (option.doors?.length) door = select(group, `power-door-${option.slot}`, '选择要封锁的门', option.doors.map((value, index) => ({ id: index, name: value.name || `${roomName(value.fromRoomId)} — ${roomName(value.toRoomId)}` })), locked || !option.canActivate);
-      const activate = button(`发动${card.name}`, 'activate-power', locked || !option.canActivate, () => {
+      if (card.id === 7) {
+        const choices = (option.stealOptions?.items || []).map(item => ({ id: `item:${item.id}`, name: `抢走道具：${item.name || itemNames[item.id] || '访问者道具'}` }));
+        if (option.stealOptions?.canStealToken) choices.push({ id: 'token', name: '随机抢走1枚盖放标志' });
+        steal = select(group, `power-steal-${option.slot}`, '选择抢夺方式', choices, locked || !option.canActivate);
+        group.append(node('p', 'small-note', '抢夺后，访问者可重新选择行动，不消耗标准行动。'));
+      }
+      if (card.id === 8) group.append(node('p', 'small-note', '诅咒从人偶持有者的下次翻牌回合起生效，本次不补翻。'));
+      const activate = button(`发动${card.name}`, 'activate-power', locked || !option.canActivate || Boolean(steal && !steal.value), () => {
         const payload = { slot: option.slot };
         if (room) payload.roomId = room.value;
         if (door) {
           const target = option.doors[Number(door.value)];
           payload.fromRoomId = target.fromRoomId;
           payload.toRoomId = target.toRoomId;
+        }
+        if (steal) {
+          payload.stealKind = steal.value === 'token' ? 'token' : 'item';
+          if (payload.stealKind === 'item') payload.itemId = steal.value.slice(5);
         }
         action('activate_power', payload);
       });

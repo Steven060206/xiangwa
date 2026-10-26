@@ -1,8 +1,8 @@
 // Bots receive exactly the same filtered snapshot as a browser player. Keep their
 // decisions stateless so neither another seat's hand nor hidden board can leak in.
 const ITEM_ORDER = ['deduction', 'night_vision', 'stethoscope', 'ventriloquist_doll',
-  'relic_ring', 'dowsing_rod', 'smartphone', 'spirit_pen', 'suitcase', 'nightmare_letter', 'walkie_talkie'];
-const POWER_ORDER = [5, 6, 1, 2, 3, 10, 9, 11];
+  'relic_ring', 'dowsing_rod', 'smartphone', 'spirit_pen', 'suitcase', 'nightmare_letter', 'shrine_bell', 'walkie_talkie'];
+const POWER_ORDER = [5, 7, 6, 8, 1, 2, 3, 10, 9, 11];
 
 function pick(values, random) {
   return values?.length ? values[Math.min(values.length - 1, Math.floor(random() * values.length))] : null;
@@ -96,13 +96,19 @@ function resolutionAction(view, random) {
 
 function activateSimplePower(round, random, interrupt = false) {
   const eligible = (round.powers?.activationOptions ?? []).filter(option => option.canActivate
-    && (interrupt ? [6, 10].includes(option.card.id) : [1, 2, 3, 5].includes(option.card.id)));
+    && (interrupt ? [6, 7, 8, 10].includes(option.card.id) : [1, 2, 3, 5].includes(option.card.id)));
   const useful = eligible.filter(option => option.card.id !== 5
     || round.visitors.some(visitor => visitor.status === 'alive' && visitor.roomId === round.hako.roomId)
     || round.notebooks.length >= 8);
   const option = pick(useful, random);
   if (!option) return null;
   const action = { type: 'activate_power', slot: option.slot };
+  if (option.card.id === 7) {
+    const item = preferredItem(option.stealOptions?.items ?? [], random);
+    if (option.stealOptions?.canStealToken && (!item || random() < 0.6)) action.stealKind = 'token';
+    else if (item) { action.stealKind = 'item'; action.itemId = item.id; }
+    else return null;
+  }
   if (option.card.id === 3) {
     const door = pick(option.doors, random);
     if (!door) return null;
@@ -169,9 +175,12 @@ function exchangeAction(view) {
     && offer.requestItemIds.every(id => inventory.items.some(item => item.id === id));
   const current = round.exchangePartners.some(player => player.id === offer.fromId)
     && offer.giveTokens.length === offer.giveTokenIds.length && offer.giveItems.length === offer.giveItemIds.length;
+  const cursed = round.noiseEffects?.maryPlayerId;
+  const lockedDoll = cursed === view.you && inventory.tokens.some(token => token.type === 'doll' && offer.requestTokenIds.includes(token.id))
+    || cursed === offer.fromId && offer.giveTokens.some(token => token.type === 'doll');
   const incoming = offer.giveTokenIds.length + offer.giveItemIds.length;
   const outgoing = offer.requestTokenIds.length + offer.requestItemIds.length;
-  return { type: 'respond_exchange', offerId: offer.id, accept: held && current && incoming >= outgoing };
+  return { type: 'respond_exchange', offerId: offer.id, accept: held && current && !lockedDoll && incoming >= outgoing };
 }
 
 function activeItemAction(round, random) {
@@ -199,7 +208,7 @@ function visitorAction(view, random) {
   const round = view.round;
   const player = round.visitors.find(visitor => visitor.id === view.you);
   if (player?.status !== 'alive') return hidingAction(round, round.ghost, false, random);
-  const free = ['visitor_reveal', 'visitor_action'].includes(round.phase);
+  const free = ['visitor_reveal', 'visitor_action'].includes(round.phase) && !(round.silent.revealsRemaining > 0);
   if (free) {
     const exchange = exchangeAction(view);
     if (exchange) return exchange;
@@ -210,9 +219,11 @@ function visitorAction(view, random) {
   if (round.silent.turnPlayerId !== view.you) return null;
   if (round.phase === 'visitor_reveal') {
     const card = pick(round.silent.cards.filter(candidate => candidate.status === 'down'), random);
-    return card ? { type: 'silent_reveal', index: card.index } : null;
+    return card ? { type: 'silent_reveal', index: card.index,
+      ...(round.noiseEffects?.canChooseBell && random() < 0.35 ? { useBell: true } : {}) } : null;
   }
   if (round.phase !== 'visitor_action') return null;
+  if (round.noiseEffects?.canUseBell) return { type: 'use_item', itemId: 'shrine_bell' };
   const peekTargets = round.peekTargets.filter(id => !round.cornerState.some(corner => corner.id === id && corner.faceUp));
   const activeItem = round.items?.usableItems?.length && random() < 0.16 ? activeItemAction(round, random) : null;
   if (activeItem) return activeItem;

@@ -16,6 +16,7 @@ const selections = new Map();
 const selectedGifts = new Set();
 let safeKey = '';
 let safeNumbers = [];
+let bellChoiceTurn = '';
 const tokenNames = {
   safe: '转轮式保险箱', notebook: '手记', password: '密码', weakness_clue: '讨伐情况',
   weapon: '讨伐道具', doll: '玛丽小姐的人偶', hidden_exit: '隐藏出口', amulet: '古怪护符',
@@ -103,7 +104,11 @@ export function explorationDescription(state) {
   const isHako = round.hako.playerId === state.you;
   const ghost = round.ghost;
   switch (round.phase) {
-    case 'visitor_reveal': return mine ? '轮到你了。翻开一枚无声标志，或持牌跳过本回合。' : `等待${playerName(state, round.silent?.turnPlayerId)}翻牌或持牌跳过。`;
+    case 'visitor_reveal': {
+      const remaining = round.silent?.revealsRemaining || 0;
+      if (remaining > 0) return mine ? `继续翻开无声标志，还需翻${remaining}张；连续翻牌完成前不能持牌跳过。` : `等待${playerName(state, round.silent?.turnPlayerId)}继续翻开${remaining}张无声标志。`;
+      return mine ? '轮到你了。翻开无声标志，或持牌跳过本回合。' : `等待${playerName(state, round.silent?.turnPlayerId)}翻牌或持牌跳过。`;
+    }
     case 'visitor_action': return mine ? '选择移动、窥探或使用道具。' : `等待${playerName(state, round.silent?.turnPlayerId)}行动。`;
     case 'visitor_reaction': return isHako ? '访问者已声明行动。确认后结算。' : '行动已经声明，等待箱娃确认结算。';
     case 'hako_reaction': return isHako ? '累计数字已超过10。结束反应窗口，进入箱娃阶段。' : '累计数字已超过10，等待箱娃结束反应窗口。';
@@ -200,9 +205,11 @@ function pendingControls(container, state, locked, action) {
   const pending = round.pendingAction;
   if (!pending) return;
   const kind = pending.kind || pending.type;
+  const freeActionNames = { show_token: '展示标志', offer_exchange: '提出交换或赠送', respond_exchange: '接受交换或赠送', drop_token: '丢弃标志' };
   const text = kind === 'move' || pending.toRoomId
     ? `${playerName(state, pending.playerId)}：${roomName(pending.fromRoomId)} → ${roomName(pending.toRoomId)}`
     : kind === 'item' ? `${playerName(state, pending.playerId)}声明使用道具。`
+      : kind === 'free' ? `${playerName(state, pending.playerId)}声明${freeActionNames[pending.actionType] || '自由行动'}。`
       : `${playerName(state, pending.playerId)}声明${kind === 'weapon' || kind === 'use_weapon' ? '使用讨伐道具' : '窥探'}：${cornerName(pending.cornerId)}`;
   container.append(node('p', 'pending-move', text));
   if (round.hako.playerId === state.you) container.append(button('确认行动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
@@ -351,6 +358,7 @@ function inventory(container, state, locked, action) {
     section.append(details);
   }
   const alive = round.visitors.find(visitor => visitor.id === state.you)?.status === 'alive';
+  const transferableTokens = (belongings.tokens || []).filter(token => token.type !== 'doll' || round.noiseEffects?.maryPlayerId !== state.you);
   if (alive && ['visitor_reveal', 'visitor_action'].includes(round.phase) && !round.result && !round.resolution && !round.pendingAction && !round.interruption) {
     const free = node('details', 'free-actions');
     free.append(node('summary', '', '展示、赠送与放置（自由行动）'));
@@ -362,7 +370,7 @@ function inventory(container, state, locked, action) {
         const tokenChoice = select(controls, 'show-token-select', '选择只向对方展示的标志', belongings.tokens.map(token => ({ id: token.id, name: tokenName(token) })), locked);
         controls.append(button('向对方展示标志', 'show-token', locked, () => action('show_token', { tokenId: tokenChoice.value, targetId: target.value }), true));
       }
-      const giftItems = [...(belongings.tokens || []).map(token => ({ ...token, giftKind: 'token', label: tokenName(token) })), ...(belongings.items || []).map(item => ({ ...item, giftKind: 'item', label: item.name }))];
+      const giftItems = [...transferableTokens.map(token => ({ ...token, giftKind: 'token', label: tokenName(token) })), ...(belongings.items || []).map(item => ({ ...item, giftKind: 'item', label: item.name }))];
       if (giftItems.length) {
         const fieldset = node('fieldset', 'gift-options');
         fieldset.append(node('legend', '', '选择要赠送的物品，可多选'));
@@ -387,8 +395,8 @@ function inventory(container, state, locked, action) {
         controls.append(fieldset, gift, node('p', 'small-note', '赠送需对方接受。对方的其他物品保持私密；可再由对方另行回赠。'));
       }
     } else controls.append(node('p', 'small-note', '当前没有同房访问者可以展示或赠送。'));
-    if (belongings.tokens?.length && round.dropTargets?.length) {
-      const token = select(controls, 'drop-token-select', '选择要放置的随身标志', belongings.tokens.map(value => ({ id: value.id, name: tokenName(value) })), locked);
+    if (transferableTokens.length && round.dropTargets?.length) {
+      const token = select(controls, 'drop-token-select', '选择要放置的随身标志', transferableTokens.map(value => ({ id: value.id, name: tokenName(value) })), locked);
       const corner = select(controls, 'drop-corner-select', '当前房间的空角落', round.dropTargets.map(id => ({ id, name: cornerName(id) })), locked);
       controls.append(button('盖放到空角落', 'drop-token', locked, () => action('drop_token', { tokenId: token.value, cornerId: corner.value }), true));
     }
@@ -457,6 +465,33 @@ function surrenderControls(container, state, locked, action) {
   container.append(details);
 }
 
+function noiseControls(container, state, locked, action, silentCards) {
+  const round = state.round;
+  const silent = round.silent;
+  const effects = round.noiseEffects || {};
+  const mine = round.phase === 'visitor_reveal' && silent.turnPlayerId === state.you;
+  const turnKey = `${state.code || ''}:${silent.cycle}:${silent.turnPlayerId}:${round.phase}:${silent.cards.map(card => card.status).join(',')}`;
+  if (turnKey !== bellChoiceTurn) selections.delete('silent-use-bell');
+  bellChoiceTurn = turnKey;
+  let useBell;
+  const section = silentCards(state, locked, (type, payload) => action(type, type === 'silent_reveal' && useBell?.checked ? { ...payload, useBell: true } : payload));
+  if (mine && effects.canChooseBell && !(silent.revealsRemaining > 0)) {
+    const choice = node('div', 'practice-controls');
+    useBell = checkbox(choice, 'silent-use-bell', '额外翻一张，随后可用标准行动摇铃', locked);
+    section.insertBefore(choice, section.querySelector('.silent-cards'));
+  }
+  if (silent.revealsRemaining > 0) {
+    for (const skip of section.querySelectorAll('.silent-skip')) {
+      skip.disabled = true;
+      skip.title = '连续翻牌尚未完成，不能持牌跳过。';
+    }
+  }
+  if (effects.maryPlayerId) section.append(node('p', 'small-note', `玛丽小姐：${playerName(state, effects.maryPlayerId)}受诅咒，行动前需翻两张无声标志（保留最后一张盖牌），不能交换或丢弃人偶。`));
+  if (effects.canUseBell) section.append(node('p', 'small-note', '额外翻牌已完成，可以消耗标准行动摇铃，也可选择其他行动。'));
+  if (effects.bellUserId) section.append(node('p', 'small-note', `${playerName(state, effects.bellUserId)}已摇铃：${round.phase === 'hako_phase' ? '本次' : '下一次'}箱娃阶段禁止设置危险度B或C的能力。`));
+  container.append(section);
+}
+
 export function renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens }) {
   const round = state.round;
   const locked = pending || !online || Boolean(round.result);
@@ -465,7 +500,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
   const fragment = document.createDocumentFragment();
   if (round.result) gameResult(fragment, state);
   else fragment.append(node('h2', '', '旧宅探索'));
-  fragment.append(node('p', 'practice-scope small-note', '支持探索、主动道具、哭喊、能力设置与打断、死亡转箱人及三条胜利路线。深菱神社之铃、NO.7和NO.8仍未开放。'));
+  fragment.append(node('p', 'practice-scope small-note', '已接入目前所有确认规则。NO.12按无声模式规则移出游戏。'));
   if (state.initialPower) {
     const power = node('p', 'initial-power-public', `初始箱娃之力：${state.initialPower.name}`);
     power.dataset.testid = 'initial-power';
@@ -521,7 +556,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
     renderActiveItems({ container: controls, state, locked, action });
   }
   fragment.append(controls);
-  if (round.silent) fragment.append(silentCards(state, locked, action));
+  if (round.silent) noiseControls(fragment, state, locked, action, silentCards);
   inventory(fragment, state, locked, action);
   exchanges(fragment, state, locked, action);
   publicProgress(fragment, state);

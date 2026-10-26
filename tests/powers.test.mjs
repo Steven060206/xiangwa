@@ -151,7 +151,8 @@ test('setting and recalling share one management choice and later slots conceal 
   assert.equal(play.powers.hand.find(card => card.id === 2).ignoreThreshold, false);
   reject(play, hakoId, { type: 'set_power', powerId: 2, slot: 0 });
   reject(play, hakoId, { type: 'recall_power', slot: 1 });
-  for (const id of [7, 8, 12]) assert.equal(powerCard(id).supported, false);
+  for (const id of [7, 8]) assert.equal(powerCard(id).supported, true);
+  assert.equal(powerCard(12).supported, false);
 });
 
 test('same-floor movement includes dynamic corners, excludes other floors and cannot be activated after final inspection', () => {

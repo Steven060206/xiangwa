@@ -421,6 +421,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           extinguisher_response: input.use ? `${player.name} 使用灭火器，跳过本次箱娃行动。` : '灭火器响应已完成。',
           surrender: `${player.name}${input.agree === false ? ' 撤回了投降提议。' : ' 提出了投降。'}`,
         }[input.type];
+        if (room.play.round.pendingAction?.type === 'free') message = `${player.name} 声明了自由行动，等待箱娃确认。`;
         break;
       }
       case 'remove_player': {

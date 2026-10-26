@@ -5,6 +5,7 @@ import { getRoom, getCornerRoom, getHidingTargets, getMoveTargets } from './move
 import { createPowers, startPowerStage, applyPowerAction, getPowersView, powerCard,
   powerHidingTargets, restrictPowerMoves, afterPowerMove, hasActivePower, isPowerMoveForced } from './powers.mjs';
 import { declareItem, resolveItem, answerItem, getItemView, itemResolutionView } from './items.mjs';
+import { revealWithEffects, syncNoiseEffects, getNoiseEffectsView } from './noise-effects.mjs';
 
 const TAKEABLE = new Set(['key', 'password', 'doll', 'weakness_clue', 'weapon', 'amulet', 'extinguisher']);
 const NAMES = { hako: '箱娃', box_person: '箱人', notebook: '手记', empty_box: '空箱', safe: '转轮式保险箱',
@@ -52,6 +53,7 @@ function assertTurn(play, id) {
 function assertFree(play, id) {
   const player = assertAlive(play, id);
   if (!['visitor_reveal', 'visitor_action'].includes(play.round.silent.phase)
+      || play.round.silent.revealsRemaining > 0
       || play.round.pendingAction || play.resolution) throw new Error('请等待当前结算或箱娃阶段结束。');
   return player;
 }
@@ -87,8 +89,8 @@ function checkVictory(play) {
     setResult(play, 'hako', '所有访问者均已死亡');
     return;
   }
-  // Only permanently removed pieces can make a route impossible. A pending ring inheritance
-  // still owns its pieces until the player decides whether to pass them on.
+  // Stolen pieces cannot be recovered unless Hako chooses to return them (rulebook
+  // pages 12/15). A pending ring inheritance still owns its pieces until decided.
   const tokens = [...Object.values(play.tokens).filter(Boolean),
     ...Object.values(play.inventories).flatMap(held => held.tokens)];
   const has = type => tokens.some(token => token.type === type);
@@ -301,6 +303,7 @@ function replaceCorner(play, id, cornerId, action) {
     const held = inventory(play, id);
     const index = held.tokens.findIndex(token => token.id === action.replacement);
     if (index < 0) throw new Error('请选择备用空箱或自己持有的一枚标志补位。');
+    assertDollTransfer(play, id, [action.replacement]);
     play.tokens[cornerId] = held.tokens.splice(index, 1)[0];
   }
 }
@@ -396,6 +399,7 @@ function confirmAction(play, id) {
   if (pending.type === 'peek') beginPeek(play, pending);
   else if (pending.type === 'weapon') resolveWeapon(play, pending);
   else if (pending.type === 'item') resolveItem(play, pending, context(play));
+  else if (pending.type === 'free') applyFreeAction(play, pending.playerId, pending.action);
   else throw new Error('等待结算的访问者行动无效。');
 }
 
@@ -453,6 +457,34 @@ function selectedIds(value) {
   }
   return [...value];
 }
+function applyFreeAction(play, id, action) {
+  const handlers = { show_token: showToken, offer_exchange: offerExchange,
+    respond_exchange: respondExchange, drop_token: dropToken };
+  handlers[action.type](play, id, action);
+}
+function freeAction(play, id, action) {
+  // Existing free actions stay immediate unless a set theft card can interrupt.
+  if (!hasActivePower(play, 7) && !hasActivePower(play, 8)) return applyFreeAction(play, id, action);
+  applyFreeAction(clone(play), id, action);
+  play.round.pendingAction = { type: 'free', playerId: id, actionType: action.type, action: clone(action) };
+}
+function recheckMaryDeclaration(play) {
+  const pending = play.round.pendingAction;
+  if (pending?.type === 'item' && pending.itemId === 'smartphone' && pending.targetZone === 'slot'
+      && !play.powers.slots[pending.index]) play.round.pendingAction = null;
+  if (pending?.type !== 'free') return;
+  const validation = clone(play);
+  validation.round.pendingAction = null;
+  // A newly cursed doll cannot complete a previously declared transfer. The
+  // visitor may declare again without consuming a standard action or a reveal.
+  try { applyFreeAction(validation, pending.playerId, pending.action); }
+  catch { play.round.pendingAction = null; }
+}
+function assertDollTransfer(play, id, tokenIds) {
+  if (play.noiseEffects?.mary?.playerId === id && inventory(play, id).tokens.some(token => token.type === 'doll' && tokenIds.includes(token.id))) {
+    throw new Error('我的玛丽小姐生效中，人偶不能转交、交换、丢弃或用于补位。');
+  }
+}
 function assertHeld(play, id, tokenIds, itemIds) {
   const held = inventory(play, id);
   if (tokenIds.some(tokenId => !held.tokens.some(token => token.id === tokenId))
@@ -470,6 +502,7 @@ function offerExchange(play, id, action) {
     throw new Error('请至少选择一枚标志或一张道具进行给予或交换。');
   }
   assertHeld(play, id, offer.giveTokenIds, offer.giveItemIds);
+  assertDollTransfer(play, id, offer.giveTokenIds);
   // A proposal must not answer whether guessed IDs exist in somebody else's inventory.
   // The invited owner validates their own requested pieces only when accepting.
   play.exchangeOffers.push(offer);
@@ -488,6 +521,8 @@ function respondExchange(play, id, action) {
     assertSameRoom(play, offer.fromId, offer.targetId);
     assertHeld(play, offer.fromId, offer.giveTokenIds, offer.giveItemIds);
     assertHeld(play, id, offer.requestTokenIds, offer.requestItemIds);
+    assertDollTransfer(play, offer.fromId, offer.giveTokenIds);
+    assertDollTransfer(play, id, offer.requestTokenIds);
     const from = inventory(play, offer.fromId), to = inventory(play, id);
     transfer(from, to, 'tokens', offer.giveTokenIds);
     transfer(to, from, 'tokens', offer.requestTokenIds);
@@ -508,6 +543,7 @@ function dropToken(play, id, action) {
   assertCorner(play, id, action.cornerId, { mustBeEmpty: true });
   const held = inventory(play, id), index = held.tokens.findIndex(token => token.id === action.tokenId);
   if (index < 0) throw new Error('请选择自己持有的标志。');
+  assertDollTransfer(play, id, [action.tokenId]);
   play.tokens[action.cornerId] = held.tokens.splice(index, 1)[0];
 }
 function bequeath(play, id, action) {
@@ -554,17 +590,18 @@ export function applyPlayAction(previous, playerId, action) {
     case 'resolve_visitor_action': confirmAction(play, playerId); break;
     case 'inspect_hiding_room': inspectHidingRoom(play, playerId, action.roomId); break;
     case 'hako_hide': case 'ghost_hide': hide(play, playerId, action); break;
-    case 'show_token': showToken(play, playerId, action); break;
-    case 'offer_exchange': offerExchange(play, playerId, action); break;
-    case 'respond_exchange': respondExchange(play, playerId, action); break;
-    case 'drop_token': dropToken(play, playerId, action); break;
+    case 'show_token': case 'offer_exchange': case 'respond_exchange': case 'drop_token':
+      freeAction(play, playerId, action); break;
     case 'bequeath': bequeath(play, playerId, action); break;
     case 'surrender': surrender(play, playerId, action); break;
     case 'use_item': declareItem(play, playerId, action, context(play)); break;
     case 'answer_item': answerItem(play, playerId, action, context(play)); break;
     case 'choose_forced_peek': chooseForcedPeek(play, playerId, action); break;
     case 'extinguisher_response': respondExtinguisher(play, playerId, action); break;
-    case 'silent_reveal': case 'silent_skip': case 'move':
+    case 'silent_reveal':
+      assertAlive(play, playerId);
+      revealWithEffects(play, playerId, action); break;
+    case 'silent_skip': case 'move':
       assertAlive(play, playerId);
       if (action.type === 'move') {
         const targets = getRoundView(play.round, playerId).moveTargets;
@@ -576,9 +613,11 @@ export function applyPlayAction(previous, playerId, action) {
       const beforePowers = clone(play.powers);
       if (action.type === 'begin_hako_action' && play.hakoStage) play.hakoStage.publicCorners = publicCorners(play);
       if (!applyPowerAction(play, playerId, action, context(play))) throw new Error('该回合操作尚未实现。');
+      if (action.type === 'activate_power' && play.powers.lastActivation?.powerId === 8) recheckMaryDeclaration(play);
       if (play.interruption?.kind === 'power') play.interruption.restorePowers = beforePowers;
     }
   }
+  syncNoiseEffects(play);
   finishBlockedMove(play);
   checkVictory(play);
   beginHakoStage(play);
@@ -629,7 +668,7 @@ function resolutionView(play, id) {
   return {
     kind: resolution.kind, playerId: id, cornerId: resolution.cornerId, token: tokenView(token),
     canTake: TAKEABLE.has(token.type), needsReplacement,
-    replacementTokens: inventory(play, id).tokens.map(tokenView),
+    replacementTokens: inventory(play, id).tokens.filter(token => !(play.noiseEffects?.mary?.playerId === id && token.type === 'doll')).map(tokenView),
     canUseEmptyBox: play.opening.emptyBoxTokens.length > 0,
     canLeaveEmpty: play.opening.emptyBoxTokens.length === 0,
     canFaceUp: hasItem(play, id, 'deduction'),
@@ -648,6 +687,7 @@ export function getPlayView(play, playerId) {
   const canAct = alive(play, playerId) && play.round.silent.phase === 'visitor_action'
     && play.round.silent.turnPlayerId === playerId && !play.round.pendingAction && !play.resolution && !play.result && !play.interruption;
   const canFree = alive(play, playerId) && ['visitor_reveal', 'visitor_action'].includes(play.round.silent.phase)
+    && !(play.round.silent.revealsRemaining > 0)
     && !play.round.pendingAction && !play.resolution && !play.result && !play.interruption;
   view.phase = play.result ? 'game_over' : play.resolution ? 'visitor_resolution' : view.phase;
   view.visitors = play.round.visitors.map(player => ({ id: player.id, status: player.status,
@@ -657,7 +697,8 @@ export function getPlayView(play, playerId) {
   if (view.pendingAction) {
     const pending = play.round.pendingAction;
     view.pendingAction = { type: pending.type, playerId: pending.playerId,
-      ...(pending.type === 'move' ? { fromRoomId: pending.fromRoomId, toRoomId: pending.toRoomId }
+      ...(pending.type === 'free' ? { actionType: pending.actionType }
+        : pending.type === 'move' ? { fromRoomId: pending.fromRoomId, toRoomId: pending.toRoomId }
         : pending.type === 'item' ? { itemId: pending.itemId, ...(pending.roomId ? { roomId: pending.roomId } : {}) }
           : { cornerId: pending.cornerId }) };
   }
@@ -686,6 +727,7 @@ export function getPlayView(play, playerId) {
   view.blockedDoors = clone(play.round.blockedDoors);
   view.blockedWait = play.lastBlockedWait?.cycle === play.round.silent.cycle ? clone(play.lastBlockedWait) : null;
   view.powers = getPowersView(play, playerId);
+  view.noiseEffects = getNoiseEffectsView(play, playerId);
   view.items = getItemView(play, playerId, context(play));
   if (!canChoose) view.items.usableItems = [];
   view.interruption = play.interruption ? { kind: play.interruption.kind,

@@ -28,6 +28,7 @@ export function createSilentRound(visitorIds, { numbers } = {}) {
     resumePlayerId: null,
     total: 0,
     trigger: null,
+    revealsRemaining: 0,
     cards: makeCards(numbers),
   };
 }
@@ -48,6 +49,8 @@ function getDownCard(state, index) {
 }
 
 function endVisitorTurn(state, playerId) {
+  state.revealsRemaining = 0;
+  state.turnSerial = (state.turnSerial ?? 0) + 1;
   const nextPlayerId = state.visitorIds[(state.visitorIds.indexOf(playerId) + 1) % state.visitorIds.length];
   if (state.cards.filter(card => card.status === 'down').length === 1) {
     state.phase = 'hako_phase';
@@ -60,18 +63,23 @@ function endVisitorTurn(state, playerId) {
   }
 }
 
-export function revealSilent(state, playerId, index) {
+export function revealSilent(state, playerId, index, { count = 1 } = {}) {
   assertVisitorTurn(state, playerId, 'visitor_reveal');
+  if (!Number.isInteger(count) || count < 1 || count > 5) throw new Error('本次须翻开1至5枚无声标志。');
   const card = getDownCard(state, index);
+  const remaining = state.revealsRemaining > 0 ? state.revealsRemaining : count;
   card.status = 'up';
   state.total += card.number;
+  state.revealsRemaining = remaining - 1;
   if (state.total > 10) {
     // 留出杂音触发后的即时能力窗口，随后才开始箱娃阶段。
     state.phase = 'hako_reaction';
     state.turnPlayerId = null;
     state.resumePlayerId = playerId;
     state.trigger = 'overflow';
-  } else {
+    state.revealsRemaining = 0;
+  } else if (state.revealsRemaining === 0 || state.cards.filter(item => item.status === 'down').length === 1) {
+    state.revealsRemaining = 0;
     state.phase = 'visitor_action';
   }
   return getSilentView(state);
@@ -79,6 +87,7 @@ export function revealSilent(state, playerId, index) {
 
 export function skipSilent(state, playerId, index) {
   assertVisitorTurn(state, playerId, 'visitor_reveal');
+  if (state.revealsRemaining > 0) throw new Error('连续翻牌已经开始，不能改为持牌跳过。');
   const card = getDownCard(state, index);
   if (state.cards.some(item => item.status === 'up' && item.number === 0)) {
     throw new Error('数字0已经翻开，不能跳过本回合。');
@@ -119,11 +128,13 @@ export function finishHakoPhase(state, { numbers } = {}) {
   const cards = makeCards(numbers);
   state.cards = cards;
   state.cycle += 1;
+  state.turnSerial = (state.turnSerial ?? 0) + 1;
   state.total = 0;
   state.phase = 'visitor_reveal';
   state.turnPlayerId = state.resumePlayerId;
   state.resumePlayerId = null;
   state.trigger = null;
+  state.revealsRemaining = 0;
   return getSilentView(state);
 }
 
@@ -134,6 +145,7 @@ export function getSilentView(state) {
     turnPlayerId: state.turnPlayerId,
     total: state.total,
     trigger: state.trigger,
+    ...(state.revealsRemaining > 0 ? { revealsRemaining: state.revealsRemaining } : {}),
     cards: state.cards.map(card => {
       const view = { index: card.index, status: card.status };
       if (card.status === 'up') view.number = card.number;

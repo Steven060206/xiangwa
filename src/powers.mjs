@@ -1,6 +1,7 @@
 import { getConnections } from './game.mjs';
 import { getTile } from './maps.mjs';
 import { getRoom, getCornerRoom, getMoveTargets, getHidingTargets } from './movement.mjs';
+import { getStealOptions, stealPossession } from './theft.mjs';
 
 const clone = value => structuredClone(value);
 const CARDS = {
@@ -10,14 +11,15 @@ const CARDS = {
   4: ['动来动去', 0, 'stage', '秘密查看一个房间，再重排未被潜伏者盖住的角落标志。'],
   5: ['我在你身后', 6, 'stage', '杀死箱娃同房访问者；公开八枚手记时也杀死箱人同房访问者。'],
   6: ['好想打开它', 5, 'interrupt', '取消已声明的访问者行动，由该访问者自己选择同房角落强制窥探。'],
-  7: ['快把它给我', 0, 'interrupt', '尚未开放：本批没有该能力实卡，后续结合说明书实现。'],
-  8: ['我的玛丽小姐', 0, 'interrupt', '尚未开放：无声模式双枚杂音的完整顺序仍待核对。'],
+  7: ['快把它给我', 0, 'interrupt', '抢夺访问者的指定道具或随机一枚随身标志，旧赃物交给这次受害者。'],
+  8: ['我的玛丽小姐', 0, 'interrupt', '人偶持有者从下次回合起须连翻两枚，不能转交或丢弃人偶；与铃合计三枚。'],
   9: ['虚假的回应', 0, 'passive', '设置后可在回答访问者道具的问题时说谎，无需翻开。'],
   10: ['鬼来电', 0, 'interrupt', '所有访问者只能沿最短路线向客厅移动，首人进入后全体解除；每局一次。'],
   11: ['虚假的哭喊', 0, 'cry', '设置后哭喊可指向其他房间；本次开始行动时回手，本局不能再次设置。'],
   12: ['天旋地转', 0, 'excluded', '无声模式明确移出游戏。'],
 };
-const DISABLED = new Set([7, 8, 12]);
+const DISABLED = new Set([12]);
+const DANGER = { 1: 'A', 2: 'A', 3: 'B', 4: 'C', 5: 'A', 6: 'A', 7: 'B', 8: 'B', 9: 'C', 10: 'C' };
 const ACTIONS = new Set(['hako_cry', 'set_power', 'recall_power', 'begin_hako_action',
   'activate_power', 'power_rearrange', 'inspect_path_room']);
 
@@ -26,7 +28,7 @@ export function powerCard(cardOrId) {
   const entry = CARDS[card.id];
   if (!entry) throw new Error('未知的箱娃之力。');
   const [name, threshold, timing, description] = entry;
-  return { id: Number(card.id), name, threshold, timing, description,
+  return { id: Number(card.id), name, threshold, timing, description, danger: DANGER[card.id] ?? null,
     supported: !DISABLED.has(Number(card.id)),
     ...('ignoreThreshold' in card ? { ignoreThreshold: card.ignoreThreshold === true } : {}),
     ...(DISABLED.has(Number(card.id)) ? { reason: description } : {}) };
@@ -42,7 +44,7 @@ export function createPowers(opening) {
     removed: [12], used: [], cooldowns: {}, stageCycle: null,
     cryUsed: false, manageUsed: false, step: 'preparation', announcement: null,
     lastDraw: null, lastActivation: null, movement: {}, rearrangement: null, falseCryPending: false,
-    ghostCall: { active: false, mode: 'first_arrival' },
+    ghostCall: { active: false, mode: 'first_arrival' }, stolen: null,
   };
 }
 
@@ -157,9 +159,15 @@ function setPower(play, action) {
   if (index < 0) throw new Error('请选择自己手中的箱娃之力。');
   const card = powers.hand[index];
   if (!powerCard(card).supported) throw new Error(powerCard(card).reason);
+  const reason = bellSetError(play, card);
+  if (reason) throw new Error(reason);
   if (card.id === 11 && powers.used.includes(11)) throw new Error('虚假的哭喊已经使用，本局不能再次设置。');
   powers.slots[action.slot] = { ...powers.hand.splice(index, 1)[0], faceUp: false };
   powers.manageUsed = true;
+}
+function bellSetError(play, card) {
+  return play.noiseEffects?.bell?.cycle === cycle(play) && ['B', 'C'].includes(DANGER[card.id])
+    ? '深菱神社之铃生效中，本次箱娃阶段不能设置危险度B或C的能力。' : null;
 }
 function recallPower(play, action) {
   assertPreparation(play);
@@ -205,6 +213,14 @@ function activationError(play, card) {
   if (details.timing === 'stage' && (play.hakoStage?.done.includes(play.round.hakoId)
       || play.hakoStage?.inspections[play.round.hakoId])) return '箱娃已经开始本次潜伏。';
   if (details.timing === 'interrupt' && !play.round.pendingAction) return '请等待访问者声明行动。';
+  if (play.round.pendingAction?.type === 'free' && ![7, 8].includes(card.id)) return '此窗口用于抢夺或玛丽小姐的自由行动打断。';
+  if (play.round.pendingAction?.type === 'item' && play.round.pendingAction.itemId === 'amulet'
+      && details.timing === 'interrupt') return '箱娃之力不能打断古怪护符。';
+  if (card.id === 7 && play.round.pendingAction) {
+    const options = getStealOptions(play, play.round.pendingAction.playerId);
+    if (!options.items.length && !options.canStealToken) return '该访问者没有可抢夺的物品。';
+  }
+  if (card.id === 8 && play.noiseEffects?.mary) return '我的玛丽小姐已经生效。';
   if (card.id === 6 && play.round.pendingAction) {
     const player = play.round.visitors.find(candidate => candidate.id === play.round.pendingAction.playerId);
     const available = player && roomCorners(play, player.roomId).some(cornerId => play.tokens[cornerId]
@@ -255,6 +271,19 @@ function activate(play, action, ctx) {
     releaseSlot(play, action.slot);
     ctx.forcePeek(interruptedId);
     return;
+  } else if (card.id === 7) {
+    stealPossession(play, interruptedId, action);
+  } else if (card.id === 8) {
+    const holder = play.round.visitors.find(player => player.status === 'alive'
+      && play.inventories[player.id].tokens.some(token => token.type === 'doll'));
+    if (holder) {
+      play.noiseEffects ??= {};
+      play.noiseEffects.mary = { playerId: holder.id,
+        deferredCycle: cycle(play), deferredTurn: play.round.silent.turnSerial ?? 0,
+        card: { id: card.id, ignoreThreshold: card.ignoreThreshold === true } };
+      play.powers.slots[action.slot] = null;
+      return;
+    }
   } else if (card.id === 10) {
     recordUsed(play, 10);
     card.faceUp = true;
@@ -393,8 +422,10 @@ export function getPowersView(play, id) {
     ghostCall: { active: powers.ghostCall.active, mode: 'first_arrival' },
   };
   if (!hako) return view;
+  view.stolen = clone(powers.stolen ?? null);
   view.hand = powers.hand.map(card => ({ ...powerCard(card),
-    settable: canManage && powerCard(card).supported && !(card.id === 11 && powers.used.includes(11)) }));
+    settable: canManage && powerCard(card).supported && !(card.id === 11 && powers.used.includes(11)) && !bellSetError(play, card),
+    ...(bellSetError(play, card) ? { setReason: bellSetError(play, card) } : {}) }));
   view.lastDraw = clone(powers.lastDraw);
   view.cryRooms = hasActivePower(play, 11) ? rooms(play).map(room => ({ id: room.id, name: room.name })) : [];
   view.activationOptions = powers.slots.flatMap((card, slot) => {
@@ -404,6 +435,7 @@ export function getPowersView(play, id) {
       ...(error ? { reason: error } : {}),
       ...(card.id === 3 ? { doors: actualDoors(play) } : {}),
       ...(card.id === 4 ? { rooms: rooms(play).map(room => ({ id: room.id, name: room.name })) } : {}),
+      ...(card.id === 7 && play.round.pendingAction ? { stealOptions: getStealOptions(play, play.round.pendingAction.playerId) } : {}),
     }];
   });
   if (powers.rearrangement) view.rearrangement = { roomId: powers.rearrangement.roomId,

@@ -404,12 +404,11 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'power': {
         const select = choiceSelect(controls, {
-          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(option => ({ ...option,
-            disabled: [7, 8].includes(option.id), name: `${option.name}${[7, 8].includes(option.id) ? '（未开放）' : ''}` })),
+          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions,
           selected: selectedPower, locked, onChange: value => { selectedPower = value; },
         });
         controls.append(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked || !select.value, () => action('choose_initial_power', { powerId: Number(select.value) })));
-        controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。NO.7和NO.8尚未开放。'));
+        controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
         break;
       }
     }

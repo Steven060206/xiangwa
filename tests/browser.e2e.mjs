@@ -342,8 +342,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
   await assertVisitorPrivacy('power');
   await hakoPage.reload();
   await hakoPage.getByTestId('initial-power-select').waitFor();
-  for (const id of [7, 8]) assert.equal(await hakoPage.locator(`#initial-power-select option[value="${id}"]`).isDisabled(), true,
-    'Unavailable powers must not be offered as usable opening choices');
+  for (const id of [7, 8]) assert.equal(await hakoPage.locator(`#initial-power-select option[value="${id}"]`).isDisabled(), false,
+    'Confirmed NO7 and NO8 powers are available as opening choices');
   const restoredHako = await getState(identities[0]);
   await waitForSSE(restoredHako.version);
   assert.equal(restoredHako.you, identities[0].playerId);

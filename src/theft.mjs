@@ -1,0 +1,41 @@
+function alive(play, playerId) {
+  return play.round.visitors.some(player => player.id === playerId && player.status === 'alive');
+}
+
+/** Expose selectable visitor cards, never the identities of carried tokens. */
+export function getStealOptions(play, playerId) {
+  if (!alive(play, playerId)) return { items: [], canStealToken: false };
+  const held = play.inventories[playerId];
+  return {
+    items: held.items.map(item => ({ id: item.id, name: item.name })),
+    canStealToken: held.tokens.length > 0,
+  };
+}
+
+/** Called on the parent's transaction clone after its power/window checks. */
+export function stealPossession(play, playerId, action) {
+  if (!alive(play, playerId)) throw new Error('只能抢夺存活访问者携带的物品。');
+  const held = play.inventories[playerId];
+  let pieces, index;
+  if (action.stealKind === 'item') {
+    pieces = held.items;
+    index = pieces.findIndex(item => item.id === action.itemId);
+    if (index < 0) throw new Error('请选择该访问者携带的访问者道具。');
+  } else if (action.stealKind === 'token') {
+    if (Object.hasOwn(action, 'tokenId')) throw new Error('随身标志须随机抢夺，不能指定标志。');
+    pieces = held.tokens;
+    if (!pieces.length) throw new Error('该访问者没有可供抢夺的随身标志。');
+    index = Math.floor(Math.random() * pieces.length);
+  } else {
+    throw new Error('请选择抢夺访问者道具或随机一枚随身标志。');
+  }
+
+  const stolen = { kind: action.stealKind, piece: structuredClone(pieces[index]) };
+  const previous = play.powers.stolen ?? null;
+  pieces.splice(index, 1);
+  // Select the new possession before returning the previous one to this victim.
+  if (previous) held[previous.kind === 'item' ? 'items' : 'tokens'].push(structuredClone(previous.piece));
+  play.powers.stolen = stolen;
+  // The interrupted visitor keeps the same silent turn and declares an action again.
+  play.round.pendingAction = null;
+}
