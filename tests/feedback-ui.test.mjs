@@ -63,7 +63,7 @@ test('acquired token has its concrete name, rule explanation, privacy and symbol
     id: 'extinguisher', type: 'extinguisher',
   })));
   assert.match(extinguisher.body, /无声累计超过10/);
-  assert.match(extinguisher.body, /“我在你身后”发动的响应窗口/);
+  assert.match(extinguisher.body, /“NO\.5 我在你身后”发动的响应窗口/);
 });
 
 test('initial and later visitor items include the actual card description', () => {
@@ -209,14 +209,14 @@ test('cry room, phone card and drawn powers use only fields present in the parti
   const tracker = trackerWith(initial);
   const cry = nextState(initial, value => {
     value.round.powers.announcement = { roomId: 'living_room', cycle: 1 };
-    value.round.powers.lastDraw = { kind: 'acquired', cards: [11] };
-    value.round.powers.hand.push({ id: 11, name: '虚假的哭喊', description: '可宣告另一房间。' });
+    value.round.powers.lastDraw = { kind: 'acquired', cards: [3] };
+    value.round.powers.hand.push({ id: 3, name: '打不开的门', description: '封锁一扇实际相连的门。' });
   });
   const events = tracker.receive(cry);
   assert.equal(events.length, 2);
   assert.equal(events[0].title, '哭喊指向客厅');
   assert.equal(events[0].privateLabel, '全员可见');
-  assert.equal(events[1].title, '获得了虚假的哭喊');
+  assert.equal(events[1].title, '获得了NO.3 打不开的门');
   assert.equal(events[1].privateLabel, '仅你可见');
   assert.ok(events.every(event => event.highlight));
   const visitor = state();
@@ -229,7 +229,7 @@ test('cry room, phone card and drawn powers use only fields present in the parti
     value.round.items.result = { kind: 'phone', card: { id: 4, name: '动来动去', description: '重排一个房间的标志。' } };
   });
   const [phoneEvent] = visitorTracker.receive(phone);
-  assert.equal(phoneEvent.title, '手机查看：动来动去');
+  assert.equal(phoneEvent.title, '手机查看：NO.4 动来动去');
   assert.equal(phoneEvent.body, '重排一个房间的标志。');
   assert.equal(phoneEvent.privateLabel, '仅你可见');
 });

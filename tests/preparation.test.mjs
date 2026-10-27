@@ -319,10 +319,10 @@ test('initial power is chosen from three dealt cards and remains private with th
   assert.equal(options.length, 3);
   assert.equal(new Set(options.map(power => power.id)).size, 3);
   assert.deepEqual(options.map(power => power.id), opening.initialPowerCandidates);
-  assert.ok(options.every(power => power.description && power.id >= 1 && power.id <= 11));
-  const unoffered = Array.from({ length: 11 }, (_, index) => index + 1)
+  assert.ok(options.every(power => power.description && power.id >= 1 && power.id <= 10));
+  const unoffered = Array.from({ length: 10 }, (_, index) => index + 1)
     .find(id => !opening.initialPowerCandidates.includes(id));
-  for (const powerId of [0, unoffered, 12, 13, 1.5, '1', undefined]) {
+  for (const powerId of [0, unoffered, 11, 12, 13, 1.5, '1', undefined]) {
     rejectsWithoutMutation(opening, () => chooseInitialPower(opening, hakoId, powerId));
   }
   const chosen = options[0];
@@ -331,14 +331,15 @@ test('initial power is chosen from three dealt cards and remains private with th
   assert.equal(opening.phase, 'opening_ready');
   assert.equal(opening.initialPowerId, chosen.id);
   assert.equal(opening.initialPowerIgnoresNotebookRequirement, true);
-  assert.equal(opening.powerDeck.length, 11);
-  assert.equal(new Set(opening.powerDeck).size, 11);
+  assert.equal(opening.powerDeck.length, 10);
+  assert.equal(new Set(opening.powerDeck).size, 10);
   assert.deepEqual(opening.powerDeck.filter(id => typeof id === 'number').sort((a, b) => a - b),
-    Array.from({ length: 11 }, (_, index) => index + 1).filter(id => id !== chosen.id));
+    Array.from({ length: 10 }, (_, index) => index + 1).filter(id => id !== chosen.id));
   assert.ok(opening.powerDeck.includes('despair'));
   assert.equal(opening.powerDeck.includes(chosen.id), false);
   assert.ok(options.slice(1).every(power => opening.powerDeck.includes(power.id)));
   assert.equal(opening.powerDeck.includes(12), false);
+  assert.equal(opening.powerDeck.includes(11), false);
   for (const playerId of [hakoId, ...visitors]) {
     const view = getOpeningView(opening, playerId);
     if (playerId === hakoId) {
@@ -385,15 +386,16 @@ test('opening draws include every allowed numbered power and persist without res
     getOpeningView(opening, visitors[0]);
     assert.deepEqual(opening, before);
   }
-  assert.deepEqual([...seen].sort((a, b) => a - b), Array.from({ length: 11 }, (_, index) => index + 1));
+  assert.deepEqual([...seen].sort((a, b) => a - b), Array.from({ length: 10 }, (_, index) => index + 1));
 });
 
-test('NO.4 and NO.11 can be initial choices and restored pending draws keep the same three options', () => {
-  for (const powerId of [4, 11]) {
+test('NO.4 can be an initial choice and legacy pending draws replace innate NO.11 deterministically', () => {
+  for (const powerId of [4, 2]) {
     const opening = beforePower();
     opening.initialPowerCandidates = [1, 4, 11];
     const saved = JSON.parse(JSON.stringify(opening));
     const expected = getOpeningView(opening, hakoId).initialPowerOptions;
+    assert.deepEqual(expected.map(card => card.id), [1, 4, 2]);
     assert.deepEqual(getOpeningView(saved, hakoId).initialPowerOptions, expected);
     chooseInitialPower(saved, hakoId, powerId);
     assert.equal(saved.initialPowerId, powerId);
@@ -408,13 +410,15 @@ test('legacy pending openings have stable three-card choices and retain already 
   const before = structuredClone(opening);
   t.mock.method(Math, 'random', () => { throw new Error('read-only views must not draw cards'); });
   const options = getOpeningView(opening, hakoId).initialPowerOptions;
-  assert.deepEqual(options.map(card => card.id), [1, 4, 11]);
+  assert.deepEqual(options.map(card => card.id), [1, 4, 2]);
   assert.deepEqual(getOpeningView(JSON.parse(JSON.stringify(opening)), hakoId).initialPowerOptions, options);
   assert.deepEqual(opening, before);
   t.mock.restoreAll();
   chooseInitialPower(opening, hakoId, 4);
   assert.equal(getOpeningView(opening, hakoId).initialPowerId, 4);
   assertPublicOpening(opening);
+  opening.initialPowerId = 11;
+  assert.equal(getOpeningView(opening, hakoId).initialPowerId, 11, 'already selected legacy powers remain valid');
 });
 
 test('all opening views copy nested secret options, inspected tokens and public choice records', () => {
@@ -428,7 +432,7 @@ test('all opening views copy nested secret options, inspected tokens and public 
   initial.corners[0].occupied = false;
   assert.deepEqual(opening, initialBefore);
   assert.deepEqual(getOpeningView(opening, hakoId).passwordOptions, [1, 2, 3, 4, 5, 6]);
-  assert.equal(getOpeningView(opening, hakoId).weaknessOptions[0].name, '白木棒');
+  assert.equal(getOpeningView(opening, hakoId).weaknessOptions[0].name, '白木椿');
   chooseSecrets(opening, hakoId, { password: [1, 3, 5], weakness: 'gasoline' });
   const secretsBefore = structuredClone(opening);
   const secrets = getOpeningView(opening, hakoId);

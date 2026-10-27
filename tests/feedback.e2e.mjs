@@ -146,11 +146,11 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   assert.match(await fp.getByTestId('private-resolution').innerText(), /马上就到哟/);
   assert.match(await fp.getByTestId('private-resolution').innerText(), /先发动/);
   assert.match(await hp.getByTestId('notebook-power').innerText(), /马上就到哟/);
-  state = await click(fp, 'publish_token', () => fp.getByTestId('publish-peek-token').click());
+  assert.equal(await fp.getByTestId('publish-peek-token').count(), 0);
+  state = await snapshot(first);
   assert.equal(state.round.phase, 'visitor_resolution');
   assert.equal(state.round.silent.phase, 'visitor_action');
   assert.equal(state.round.silent.turnPlayerId, first.playerId);
-  assert.match(await hp.getByTestId('public-discoveries').innerText(), /手记2/);
   await click(fp, 'resolve_peek', () => fp.getByTestId('resolve-peek').click());
 
   async function nextStage() {

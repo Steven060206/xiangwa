@@ -11,6 +11,7 @@ import { copyRoom, createRoomStore } from './storage.mjs';
 import { chooseBotAction } from './bots.mjs';
 import { checkpoint, clearUndo, rememberAction, undoView, applyUndo, membershipActions } from './undo.mjs';
 import { createAccessControl, createTrafficControl } from './access.mjs';
+import { sendChat, getChatView } from './chat.mjs';
 
 const BODY_LIMIT = 64 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -26,6 +27,8 @@ const staticFiles = new Map([
   ['/undo.js', ['../public/undo.js', 'text/javascript; charset=utf-8']],
   ['/feedback.js', ['../public/feedback.js', 'text/javascript; charset=utf-8']],
   ['/feedback-view.js', ['../public/feedback-view.js', 'text/javascript; charset=utf-8']],
+  ['/chat.js', ['../public/chat.js', 'text/javascript; charset=utf-8']],
+  ['/chat.css', ['../public/chat.css', 'text/css; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
@@ -101,6 +104,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   const polling = new Map();
   const botTimers = new Map();
   const botFailures = new Map();
+  const mapPreviews = new Map();
   let closing = false;
   try {
     for (const room of rooms.values()) {
@@ -124,6 +128,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
 
   function snapshot(room, playerId) {
     const round = room.play ? { mode: 'exploration', ...getPlayView(room.play, playerId) } : null;
+    const setup = room.game ? getSetupView(room.game) : null;
+    const preview = mapPreviews.get(room.code);
+    if (setup) setup.preview = preview?.key === previewKey(room) ? preview.value : null;
     return {
       code: room.code,
       hostId: room.hostId,
@@ -134,7 +141,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         ...(isBot ? { isBot: true } : {}),
       })),
       you: playerId,
-      setup: room.game ? getSetupView(room.game) : null,
+      setup,
       draft: room.draft?.phase === 'item_draft' ? getItemDraftView(room.draft) : null,
       initialItems: room.draft ? getItemDraftView(room.draft).choices : [],
       opening: room.opening && !room.play ? getOpeningView(room.opening, playerId) : null,
@@ -146,7 +153,14 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       log: [...room.log],
       version: room.version,
       undo: undoView(room, playerId),
+      chat: getChatView(room, playerId),
     };
+  }
+
+  function previewKey(room) {
+    const game = room.game;
+    return game?.phase === 'map_setup' && game.drawnTileId
+      ? `${game.turnPlayerId}:${game.drawnTileId}:${game.placements.length}` : null;
   }
 
   function scheduleBots(room, delay = botDelayMs) {
@@ -177,13 +191,13 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     botTimers.set(room.code, timer);
   }
 
-  function publish(room, message, persist = true) {
+  function publish(room, message, persist = true, advanceVersion = true) {
     if (persist) {
       if (message) {
         room.log.push(message);
         if (room.log.length > 64) room.log.shift();
       }
-      room.version += 1;
+      if (advanceVersion) room.version += 1;
       const next = new Map(rooms);
       if (room.players.length) next.set(room.code, room);
       else next.delete(room.code);
@@ -198,6 +212,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         clearTimeout(botTimers.get(room.code));
         botTimers.delete(room.code);
         botFailures.delete(room.code);
+        mapPreviews.delete(room.code);
       }
     }
     for (const player of room.players) {
@@ -240,12 +255,40 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   }
 
   function runAction(room, player, input) {
+    if (input.type === 'chat_send') {
+      try { sendChat(room, player.id, input); }
+      catch (error) { fail(409, error.message); }
+      publish(room, undefined, true, false);
+      return snapshot(room, player.id);
+    }
+    if (input.type === 'preview_map') {
+      if (room.undoPending) fail(409, '请先完成撤销确认。');
+      if (input.expectedVersion !== room.version || !previewKey(room)
+          || room.game.turnPlayerId !== player.id || input.tileId !== room.game.drawnTileId) {
+        fail(409, '地图轮次已更新，或当前未轮到你摆放。');
+      }
+      const legal = getSetupView(room.game).legalPlacements;
+      if (!Number.isInteger(input.rotation) || input.rotation < 0 || input.rotation > 3) fail(400, '旋转角度无效。');
+      const placement = input.placement;
+      if (placement != null && !legal.some(target => target.rotation === input.rotation
+          && target.floor === placement.floor && target.x === placement.x && target.y === placement.y)) {
+        fail(409, '请选择合法的预览位置。');
+      }
+      const previous = mapPreviews.get(room.code);
+      const value = { playerId: player.id, tileId: room.game.drawnTileId, rotation: input.rotation,
+        placement: placement == null ? null : { floor: placement.floor, x: placement.x, y: placement.y, rotation: input.rotation },
+        revision: (previous?.value.revision || 0) + 1 };
+      mapPreviews.set(room.code, { key: previewKey(room), value });
+      publish(room, undefined, false);
+      return snapshot(room, player.id);
+    }
     if (['undo_request', 'undo_respond', 'undo_cancel', 'undo_resume'].includes(input.type)) {
       let message;
       try {
         const onlineIds = room.players.filter(candidate => candidate.connections.size || polling.has(candidate.id)).map(candidate => candidate.id);
         message = applyUndo(room, player, input, onlineIds);
       } catch (error) { fail(409, error.message); }
+      mapPreviews.delete(room.code);
       publish(room, message);
       return snapshot(room, player.id);
     }
@@ -393,6 +436,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'safe_guess':
       case 'use_weapon':
       case 'show_token':
+      case 'show_possession':
       case 'publish_token':
       case 'offer_exchange':
       case 'respond_exchange':
@@ -429,6 +473,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           safe_guess: `${player.name} 完成了保险箱尝试。`,
           use_weapon: `${player.name} 声明了使用讨伐道具，等待箱娃确认。`,
           show_token: `${player.name} 向另一名访问者展示了标志。`,
+          show_possession: `${player.name} 向同房访问者展示了物品。`,
           publish_token: `${player.name} 向所有玩家公开了一条发现。`,
           offer_exchange: `${player.name} 提出了物品交换。`,
           respond_exchange: `${player.name} 处理了交换请求。`,
@@ -478,6 +523,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     if (membershipActions.has(input.type)) clearUndo(room);
     else rememberAction(room, before, player.id, input.type, message);
     if (!player.isBot) room.undoPaused = false;
+    mapPreviews.delete(room.code);
     publish(room, message);
     if (input.type === 'leave') {
       for (const response of player.connections) response.end();

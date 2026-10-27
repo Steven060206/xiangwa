@@ -9,7 +9,9 @@
 .has-round .game-layout{grid-template-columns:minmax(0,1fr) 340px}
 .has-round .board-section{align-self:start}
 .tile-svg .corner-mark{fill:#faf5e9;stroke:#665b46;stroke-width:.8}
-.tile-svg .corner-number{font-family:var(--sans);font-size:7px;font-weight:600;fill:#302c25;font-variant-numeric:tabular-nums}
+.tile-svg .corner-number{font-family:var(--sans);font-size:8.8px;font-weight:700;fill:#302c25;font-variant-numeric:tabular-nums;pointer-events:none}
+.tile-svg .safe-landmark-badge{fill:#594c37;stroke:#faf5e9;stroke-width:.5}
+.tile-svg .safe-landmark-label{fill:#fff8ea;font-family:var(--sans);font-size:6.3px;font-weight:600;pointer-events:none}
 .corner-guide{padding:16px;background:var(--paper);border-top:1px solid #cbbda5}
 .corner-guide h2{font-size:18px}
 .corner-guide>p{font-size:12px;color:var(--muted);margin:4px 0 15px}
@@ -334,6 +336,14 @@ input,select{caret-color:var(--accent)}
 .reference-details[open]>summary{color:var(--ink)}
 .reference-details>p{margin-top:6px}
 .private-memory,.personal-result,.private-messages{font-size:13px}
+.in-game .private-memory{padding:10px 12px;margin:4px 0 12px;border:1px solid #c7b795;background:var(--paper-light)}
+.private-memory .inspected-tokens{margin-bottom:0}
+.possession-sharing{margin:12px 0}
+.game-review{border-top:1px solid #ad9d83;padding-top:15px}
+.game-review>h3{font-size:19px}
+.review-player{padding:6px 0}
+.review-player h4{margin:0;font-size:13px}
+.game-review .inspected-tokens dd{overflow-wrap:anywhere}
 .public-progress h4{font-size:13px;font-weight:600;margin:12px 0 5px}
 .in-game .self-position{margin:6px 0 12px}
 .power-overview h3{font-size:16px}

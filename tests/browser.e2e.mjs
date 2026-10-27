@@ -165,13 +165,16 @@ test('four browser sessions complete private opening, powers, exploration, item 
     const names = { safe: '转轮式保险箱', notebook: '手记', password: '密码', weakness_clue: '讨伐情况',
       weapon: '讨伐道具', doll: '玛丽小姐的人偶', hidden_exit: '隐藏出口', amulet: '古怪护符',
       extinguisher: '灭火器', remains: '亡骸', empty_box: '空箱', key: '钥匙' };
-    assert.equal(await page.locator('.inspected-tokens > [data-corner-id]').count(), room.corners.length);
+    const rows = page.locator(selectId === 'initial-hiding-select'
+      ? '#opening-panel .inspected-tokens > [data-corner-id]'
+      : '.hako-sequence .inspected-tokens > [data-corner-id]');
+    assert.equal(await rows.count(), room.corners.length);
     for (const corner of room.corners) {
-      const row = page.locator(`.inspected-tokens > [data-corner-id="${corner.id}"]`);
+      const row = rows.filter({ has: page.locator(`dt`, { hasText: numberedCornerName(corner.id) }) });
       assert.equal(await row.isVisible(), true, 'Every public corner name must be visible before choosing a hiding location');
       const expected = !Object.hasOwn(corner, 'token') ? null
         : corner.token?.type === 'weapon'
-        ? { white_stick: '白木棒', gasoline: '汽油', rusty_chain: '锈锁链' }[corner.token.tool]
+        ? { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '锈锁链' }[corner.token.tool]
         : corner.token ? names[corner.token.type] : '无标志';
       if (Object.hasOwn(corner, 'token')) assert.ok(expected, `Missing test name for ${corner.token?.type}`);
       const option = page.getByTestId(selectId).locator(`option[value="${corner.id}"]`);
@@ -568,7 +571,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   state = await performAction(hakoPage, 'hako_cry', () => hakoPage.getByTestId('hako-cry').click());
   assert.deepEqual(state.round.powers.announcement, { roomId: 'children_room', cycle: 1 });
   assert.deepEqual(state.round.powers.lastDraw, { kind: 'returned', cards: [10] });
-  assert.equal(state.round.powers.handCount, 1, 'An unqualified cry card returns to the real deck');
+  assert.equal(state.round.powers.handCount, 2, 'The unqualified draw returns to the deck; the selected card and innate NO.11 remain in hand');
   for (const page of pages) assert.match(await page.getByTestId('cry-announcement').innerText(), /儿童房/);
   await assertVisitorPrivacy();
   await hakoPage.getByTestId('set-power-select').selectOption('1');
@@ -590,11 +593,11 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.powers.step, 'action');
   state = await performAction(hakoPage, 'activate_power', () => hakoPage.locator('[data-testid="activate-power"][data-power-id="1"]').click());
   assert.equal(state.round.powers.slots[0].occupied, false);
-  assert.equal(state.round.powers.handCount, 1, 'A used ordinary ability returns to hako hand');
+  assert.equal(state.round.powers.handCount, 2, 'A used ordinary ability returns beside the innate NO.11 in hako hand');
   assert.deepEqual(state.round.powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
   for (const page of pages) {
     const activationText = await page.getByTestId('power-last-activation').innerText();
-    if (page === hakoPage) assert.match(activationText, /发动了就在你身旁/);
+    if (page === hakoPage) assert.match(activationText, /发动了NO\.1 就在你身旁/);
     else {
       assert.match(activationText, /发动了能力/);
       assert.equal(activationText.includes('就在你身旁'), false, 'NO.1 stays anonymous unless Hako explicitly reveals it');

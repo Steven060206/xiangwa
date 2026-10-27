@@ -1,5 +1,6 @@
 import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
+import { cardName } from './abilities.js';
 import { renderExploration, explorationDescription, explorationSeatStatus } from './exploration.js';
 
 const rooms = getLogicalRooms();
@@ -25,7 +26,7 @@ const tokenNames = {
   weapon: '讨伐道具', doll: '玛丽小姐的人偶', hidden_exit: '隐藏出口', amulet: '古怪护符',
   extinguisher: '灭火器', remains: '亡骸', hako: '箱娃', box_person: '箱人', empty_box: '空箱', key: '钥匙',
 };
-const toolNames = { white_stick: '白木棒', gasoline: '汽油', rusty_chain: '锈锁链' };
+const toolNames = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '锈锁链' };
 
 function playerName(state, id) {
   return state.players.find(player => player.id === id)?.name || '访问者';
@@ -111,12 +112,12 @@ function silentCards(state, locked, action) {
       const skip = button('持牌跳过', `skip-card-${card.index}`, locked || zeroRevealed || ghostCall, () => action('silent_skip', { index: card.index }), true);
       skip.classList.add('silent-skip');
       if (zeroRevealed) skip.title = '数字0已翻开，本轮不能跳过。';
-      if (ghostCall) skip.title = '鬼来电生效中，必须翻牌并沿最短路线移动。';
+      if (ghostCall) skip.title = 'NO.10 鬼来电生效中，必须翻牌并沿最短路线移动。';
       cell.append(skip);
     }
     grid.append(cell);
   }
-  section.append(grid, node('p', 'small-note', ghostCall ? '鬼来电生效中，不能持牌跳过。照常翻牌；无路可走时自动结束本次行动，等待解封。' : zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
+  section.append(grid, node('p', 'small-note', ghostCall ? 'NO.10 鬼来电生效中，不能持牌跳过。照常翻牌；无路可走时自动结束本次行动，等待解封。' : zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
   return section;
 }
 
@@ -135,7 +136,7 @@ export function renderPractice({ state, pending, online, action }) {
   const fragment = document.createDocumentFragment();
   fragment.append(node('h2', '', '基础回合'));
   if (state.initialPower) {
-    const power = node('p', 'initial-power-public', `初始箱娃之力：${state.initialPower.name}`);
+    const power = node('p', 'initial-power-public', `初始箱娃之力：${cardName(state.initialPower)}`);
     power.dataset.testid = 'initial-power';
     fragment.append(power);
   }
@@ -393,7 +394,7 @@ export function renderOpening({ state, pending, online, action }) {
   const isHako = opening.hakoId === state.you;
   const fragment = document.createDocumentFragment();
   fragment.append(node('h2', '', '开局准备'));
-  if (opening.initialPowerName) fragment.append(node('p', 'initial-power-public', `初始箱娃之力：${opening.initialPowerName}`));
+  if (opening.initialPowerName) fragment.append(node('p', 'initial-power-public', `初始箱娃之力：${cardName({ id: opening.initialPowerId, name: opening.initialPowerName })}`));
   const progress = node('ol', 'opening-progress');
   const current = preparationSteps.findIndex(([phase]) => phase === opening.phase);
   preparationSteps.forEach(([phase, name], index) => {
@@ -431,7 +432,7 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'power': {
         const select = choiceSelect(controls, {
-          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions,
+          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(card => ({ ...card, name: cardName(card) })),
           selected: selectedPower, locked, onChange: value => { selectedPower = value; },
         });
         const description = node('p', 'item-description small-note');

@@ -18,19 +18,22 @@ export const INITIAL_ITEMS = Object.freeze([
 ].map(item => Object.freeze(item)));
 
 const TOOLS = Object.freeze([
-  { id: 'white_stick', name: '白木棒' },
+  { id: 'white_stick', name: '白木椿' },
   { id: 'gasoline', name: '汽油' },
   { id: 'rusty_chain', name: '锈锁链' },
 ].map(tool => Object.freeze(tool)));
 const POWER_NAMES = [null, '就在你身旁', '马上就到哟', '打不开的门', '动来动去', '我在你身后',
   '好想打开它', '快把它给我', '我的玛丽小姐', '虚假的回应', '鬼来电', '虚假的哭喊'];
-const INITIAL_POWER_IDS = Array.from({ length: 11 }, (_, index) => index + 1);
+const INITIAL_POWER_IDS = Array.from({ length: 10 }, (_, index) => index + 1);
 // Pending openings from the previous version have no draw. Keep their three
 // choices stable across read-only snapshots and restarts until one is selected.
-const LEGACY_INITIAL_POWER_CANDIDATES = [1, 4, 11];
+const LEGACY_INITIAL_POWER_CANDIDATES = [1, 4, 2];
 
 function initialPowerCandidates(opening) {
-  return opening.initialPowerCandidates ?? LEGACY_INITIAL_POWER_CANDIDATES;
+  const saved = opening.initialPowerCandidates ?? LEGACY_INITIAL_POWER_CANDIDATES;
+  // Preserve a pending saved draw without leaving the innate NO.11 among its choices.
+  return [...new Set([...saved, ...LEGACY_INITIAL_POWER_CANDIDATES, ...INITIAL_POWER_IDS])]
+    .filter(id => INITIAL_POWER_IDS.includes(id)).slice(0, 3);
 }
 const PASSWORD_NUMBERS = [1, 2, 3, 4, 5, 6];
 const SAFE_CORNER = 'study_desk';
@@ -254,7 +257,7 @@ export function chooseInitialPower(opening, playerId, powerId) {
   }
   // Both unchosen candidates return to the numbered deck; silent mode removes NO.12.
   // Despair must be present for its confirmed draw-and-return-to-bottom rule to apply.
-  const powerDeck = shuffled([...Array.from({ length: 11 }, (_, index) => index + 1)
+  const powerDeck = shuffled([...INITIAL_POWER_IDS
     .filter(id => id !== powerId), 'despair']);
   opening.initialPowerId = powerId;
   opening.initialPowerIgnoresNotebookRequirement = true;

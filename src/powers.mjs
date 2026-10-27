@@ -9,13 +9,13 @@ const CARDS = {
   2: ['马上就到哟', 3, 'stage', '须先发动再移动；本次最多移动两块地图板，先选择途经房间，再选择最终潜伏角落。'],
   3: ['打不开的门', 0, 'stage', '封锁一扇实际相连的门至下一箱娃阶段；下一阶段不能再次发动。'],
   4: ['动来动去', 0, 'stage', '秘密查看一个房间，再重排未被潜伏者盖住的角落标志。'],
-  5: ['我在你身后', 6, 'stage', '杀死箱娃同房访问者；公开八枚手记时也杀死箱人同房访问者。'],
+  5: ['我在你身后', 6, 'stage', '发动后在下一次箱娃阶段开始前杀死箱娃同房访问者；届时公开八枚手记时也杀死箱人同房访问者。'],
   6: ['好想打开它', 5, 'interrupt', '取消已声明的访问者行动，由该访问者自己选择同房角落强制窥探。'],
   7: ['快把它给我', 0, 'interrupt', '抢夺访问者的指定道具或随机一枚随身标志，旧赃物交给这次受害者。'],
   8: ['我的玛丽小姐', 0, 'interrupt', '人偶持有者从下次回合起须连翻两枚，不能转交或丢弃人偶；与铃合计三枚。'],
   9: ['虚假的回应', 0, 'passive', '设置后可在回答访问者道具的问题时说谎，无需翻开。'],
   10: ['鬼来电', 0, 'interrupt', '所有访问者只能沿最短路线向客厅移动，首人进入后全体解除；每局一次。'],
-  11: ['虚假的哭喊', 0, 'cry', '设置后哭喊可指向其他房间；本次开始行动时回手，本局不能再次设置。'],
+  11: ['虚假的哭喊', 0, 'cry', '开局固有能力，无需抽取。设置后哭喊可指向其他房间；本次开始行动时回手，本局不能再次设置。'],
   12: ['天旋地转', 0, 'excluded', '无声模式明确移出游戏。'],
 };
 const DISABLED = new Set([12]);
@@ -34,18 +34,44 @@ export function powerCard(cardOrId) {
     ...(DISABLED.has(Number(card.id)) ? { reason: description } : {}) };
 }
 
+function normalizePowers(powers) {
+  // Old saves dealt NO.11 through the deck. Migrate it into the hand while retaining
+  // a card already set in a slot and its once-per-game use restriction.
+  let foundEleven = false;
+  powers.slots = powers.slots.map(card => {
+    if (card?.id !== 11) return card;
+    if (foundEleven) return null;
+    foundEleven = true;
+    return card;
+  });
+  powers.hand = powers.hand.filter(card => {
+    if (card.id !== 11) return true;
+    if (foundEleven) return false;
+    foundEleven = true;
+    return true;
+  });
+  if (!foundEleven) powers.hand.push({ id: 11, ignoreThreshold: false });
+  powers.deck = powers.deck.filter(id => id !== 11 && id !== 12);
+  // Previous saves did not record historical cries. Recover only the one cry
+  // evidenced by the saved stage, never substitute total rounds for cry count.
+  if (!Number.isSafeInteger(powers.cryCount) || powers.cryCount < 0) {
+    powers.cryCount = powers.cryUsed || powers.announcement ? 1 : 0;
+  }
+  return powers;
+}
+
 export function createPowers(opening) {
   if (!opening || !CARDS[opening.initialPowerId] || opening.initialPowerId === 12) {
     throw new Error('请先确定本局初始箱娃之力。');
   }
-  return {
+  return normalizePowers({
     hand: [{ id: opening.initialPowerId, ignoreThreshold: true }],
     deck: [...opening.powerDeck].filter(id => id !== 12), slots: [null, null],
     removed: [12], used: [], cooldowns: {}, stageCycle: null,
-    cryUsed: false, manageUsed: false, step: 'preparation', announcement: null,
+    cryUsed: false, cryCount: 0, manageUsed: false, step: 'preparation', announcement: null,
     lastDraw: null, lastActivation: null, movement: {}, rearrangement: null, falseCryPending: false,
-    ghostCall: { active: false, mode: 'first_arrival' }, stolen: null,
-  };
+    ghostCall: { active: false, mode: 'first_arrival' }, stolen: null, pendingBehindYou: null,
+  });
 }
 
 function roomOf(cornerId) {
@@ -96,9 +122,10 @@ export function hasActivePower(play, powerId) {
   return !!play.powers?.slots.some(card => card?.id === powerId);
 }
 
-export function startPowerStage(play) {
+export function startPowerStage(play, ctx) {
   const powers = play.powers;
   if (!powers || powers.stageCycle === cycle(play)) return;
+  normalizePowers(powers);
   powers.stageCycle = cycle(play);
   powers.cryUsed = false;
   powers.manageUsed = false;
@@ -109,6 +136,18 @@ export function startPowerStage(play) {
   powers.rearrangement = null;
   powers.falseCryPending = false;
   play.round.blockedDoors = [];
+  if (powers.pendingBehindYou && powers.pendingBehindYou.cycle <= cycle(play)) {
+    const killers = [{ playerId: play.round.hakoId, cornerId: play.round.hidingCornerId }];
+    if (play.notebooks.length >= 8) killers.push(...play.ghosts.filter(ghost => !ghost.banished));
+    const deaths = play.round.visitors.filter(player => player.status === 'alive').flatMap(player => {
+      const killer = killers.find(actor => atRoom(ctx, actor.cornerId) === getLogicalRoomId(player.roomId));
+      return killer ? [{ playerId: player.id, killerCornerId: killer.cornerId }] : [];
+    });
+    powers.pendingBehindYou = null;
+    // The extinguisher window belonged to activation. The delayed effect settles
+    // once at this boundary, before preparation or any further hidden movement.
+    ctx.processDeaths(deaths);
+  }
 }
 
 function cry(play, action, ctx) {
@@ -120,12 +159,14 @@ function cry(play, action, ctx) {
   if (!rooms(play).some(room => room.id === announcedRoomId)) throw new Error('请选择本局地图内的房间。');
   if (announcedRoomId !== actualRoomId && !hasActivePower(play, 11)) throw new Error('只有设置虚假的哭喊时才能指向其他房间。');
   powers.cryUsed = true;
+  powers.cryCount++;
   powers.announcement = { roomId: announcedRoomId, cycle: cycle(play) };
   if (announcedRoomId !== actualRoomId) {
     powers.falseCryPending = true;
     recordUsed(play, 11);
   }
-  const drawn = powers.deck.shift();
+  const guaranteed = powers.cryCount === 10 ? powers.deck.indexOf('despair') : -1;
+  const drawn = guaranteed >= 0 ? powers.deck.splice(guaranteed, 1)[0] : powers.deck.shift();
   if (drawn === undefined) { powers.lastDraw = { kind: 'empty_deck', cards: [] }; return; }
   if (drawn === 'despair') {
     powers.deck.push(drawn);
@@ -139,7 +180,7 @@ function cry(play, action, ctx) {
       gained.push(id);
     }
     powers.lastDraw = { kind: 'despair', cards: gained };
-  } else if (drawn === 11 || play.notebooks.some(note => note.number === drawn)) {
+  } else if (play.notebooks.some(note => note.number === drawn)) {
     powers.hand.push({ id: drawn, ignoreThreshold: false });
     powers.lastDraw = { kind: 'acquired', cards: [drawn] };
   } else {
@@ -263,14 +304,11 @@ function activate(play, action, ctx) {
     if (action.public === true) card.public = true;
     return;
   } else if (card.id === 5) {
-    const killers = [{ playerId: play.round.hakoId, cornerId: play.round.hidingCornerId }];
-    if (play.notebooks.length >= 8) killers.push(...play.ghosts.filter(ghost => !ghost.banished));
-    const deaths = play.round.visitors.filter(player => player.status === 'alive').flatMap(player => {
-      const killer = killers.find(actor => atRoom(ctx, actor.cornerId) === getLogicalRoomId(player.roomId));
-      return killer ? [{ playerId: player.id, killerCornerId: killer.cornerId }] : [];
-    });
+    play.powers.pendingBehindYou = { cycle: cycle(play) + 1 };
     releaseSlot(play, action.slot);
-    ctx.queueDeaths(deaths);
+    // Keep the existing activation response window. A successful response restores
+    // the pre-activation powers (including this pending effect) and skips the stage.
+    ctx.queueDeaths([]);
     return;
   } else if (card.id === 6) {
     releaseSlot(play, action.slot);
@@ -342,6 +380,7 @@ export function applyPowerAction(play, id, action, ctx) {
   if (!ACTIONS.has(action?.type)) return false;
   assertHako(play, id);
   if (!play.powers) throw new Error('箱娃之力尚未初始化。');
+  normalizePowers(play.powers);
   switch (action.type) {
     case 'hako_cry': cry(play, action, ctx); break;
     case 'set_power': setPower(play, action); break;
@@ -413,8 +452,9 @@ function viewCorner(play, id) {
   return { id, token: actors.length ? null : clone(play.tokens[id]), actors };
 }
 export function getPowersView(play, id) {
-  const powers = play.powers;
-  if (!powers) return null;
+  if (!play.powers) return null;
+  const powers = normalizePowers(clone(play.powers));
+  play = { ...play, powers };
   const hako = id === play.round.hakoId;
   const preparation = hako && phase(play) === 'hako_phase' && powers.step === 'preparation' && !play.result && !play.resolution;
   const canManage = preparation && !powers.manageUsed;
@@ -430,6 +470,8 @@ export function getPowersView(play, id) {
     lastActivation: !hako && powers.lastActivation && powers.lastActivation.powerId <= 4
       && powers.lastActivation.public !== true ? { cycle: powers.lastActivation.cycle } : clone(powers.lastActivation),
     canCry: preparation && !powers.cryUsed && !powers.manageUsed,
+    cryCount: powers.cryCount,
+    pendingBehindYou: clone(powers.pendingBehindYou ?? null),
     canManage, canBegin: preparation,
     ghostCall: { active: powers.ghostCall.active, mode: 'first_arrival' },
   };

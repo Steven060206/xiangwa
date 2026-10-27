@@ -178,13 +178,14 @@ test('global discoveries preserve action and inventory privacy while cry markers
   assert.equal(found.round.resolution.token.power.id, 2);
   assert.match(found.round.resolution.token.power.description, /先发动/);
   assert.equal(found.round.notebooks[0].power.name, '马上就到哟');
-  const disclosed = await g.act(first, 'publish_token', { tokenId: 'notebook_2' });
+  assert.equal((await g.action(first, 'publish_token', { tokenId: 'notebook_2' })).status, 409, 'Notebooks are already mandatory public information');
+  const disclosed = await g.snapshot(first);
   assert.deepEqual(disclosed.round.silent, found.round.silent);
   assert.deepEqual(disclosed.round.resolution, found.round.resolution, 'The player still chooses the normal peek resolution');
-  for (const person of g.people) assert.equal((await g.snapshot(person)).round.publicDiscoveries.length, 2);
+  for (const person of g.people) assert.equal((await g.snapshot(person)).round.publicDiscoveries.length, 1);
   await g.restart();
   assert.equal((await g.snapshot(first)).round.resolution.token.power.id, 2);
-  assert.equal((await g.snapshot(third)).round.publicDiscoveries.length, 2);
+  assert.equal((await g.snapshot(third)).round.publicDiscoveries.length, 1);
   await g.act(first, 'resolve_peek', { take: true, replacement: 'empty_box' });
   for (const person of [second, third]) {
     const own = await g.snapshot(person);
@@ -200,7 +201,7 @@ test('global discoveries preserve action and inventory privacy while cry markers
   assert.equal(JSON.stringify(await g.snapshot(third)).includes('password_6'), false);
   const publicFind = await g.act(first, 'publish_token', { tokenId: 'password_6' });
   assert.deepEqual(publicFind.round.silent, privateFind.round.silent);
-  assert.deepEqual(publicFind.round.resolution, privateFind.round.resolution);
+  assert.deepEqual(publicFind.round.resolution, { ...privateFind.round.resolution, canPublish: false });
   assert.equal((await g.snapshot(third)).round.publicDiscoveries.at(-1).token.id, 'password_6');
   await g.act(first, 'resolve_peek', { take: false });
   let stage = await nextHakoStage(g);

@@ -6,7 +6,7 @@ import { getRoom, getMoveTargets, getHidingTargets } from '../src/movement.mjs';
 import { INITIAL_ITEMS, createOpening, chooseSecrets, placeRemains, inspectInitialRoom,
   chooseInitialHiding, chooseInitialPower } from '../src/preparation.mjs';
 import { createPlay, applyPlayAction, getPlayView } from '../src/play.mjs';
-import { powerCard, powerHidingTargets } from '../src/powers.mjs';
+import { createPowers, powerCard, powerHidingTargets } from '../src/powers.mjs';
 
 const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
 const [first, second, third] = visitors;
@@ -88,7 +88,7 @@ test('cry draws the top card only, returns a locked card to the bottom and never
   reject(play, hakoId, { type: 'hako_cry', roomId: 'hall_room' });
   play = act(play, hakoId, { type: 'hako_cry' });
   assert.deepEqual(play.powers.deck, [3, 'despair', 2]);
-  assert.deepEqual(play.powers.hand.map(card => card.id), [1]);
+  assert.deepEqual(play.powers.hand.map(card => card.id), [1, 11]);
   assert.deepEqual(getPlayView(play, first).powers.announcement, { roomId: 'children_room', cycle: 1 });
   assert.equal(Object.hasOwn(getPlayView(play, first).powers, 'lastDraw'), false);
   assert.equal(Object.hasOwn(getPlayView(play, first).powers, 'hand'), false);
@@ -103,24 +103,24 @@ test('cry draws the top card only, returns a locked card to the bottom and never
   assert.equal(getPlayView(play, hakoId).powers.canCry, true);
 });
 
-test('public matching notebooks and direct-acquisition eleven enter the hand without granting other exemptions', () => {
-  for (const id of [2, 11]) {
+test('public matching notebooks enter the hand without granting other exemptions', () => {
+  for (const id of [2, 3]) {
     let play = fixture();
-    play.powers.deck = [id, 3];
-    if (id === 2) play.notebooks.push(piece('note-two', 'notebook', { number: 2 }));
+    play.powers.deck = [id, 4];
+    play.notebooks.push(piece(`note-${id}`, 'notebook', { number: id }));
     play = act(stage(play), hakoId, { type: 'hako_cry' });
     assert.deepEqual(play.powers.hand.find(card => card.id === id), { id, ignoreThreshold: false });
-    assert.deepEqual(play.powers.deck, [3]);
+    assert.deepEqual(play.powers.deck, [4]);
   }
 });
 
 test('despair returns itself to the bottom, grants up to two distinct cards with notebook exemptions and preserves single-use restrictions', () => {
   let play = fixture();
-  play.powers.deck = ['despair', 10, 11, 2];
+  play.powers.deck = ['despair', 10, 3, 2];
   play = act(stage(play), hakoId, { type: 'hako_cry' });
   assert.deepEqual(play.powers.deck, [2, 'despair']);
-  assert.deepEqual(play.powers.hand.filter(card => [10, 11].includes(card.id)), [
-    { id: 10, ignoreThreshold: true }, { id: 11, ignoreThreshold: true },
+  assert.deepEqual(play.powers.hand.filter(card => [10, 3].includes(card.id)), [
+    { id: 10, ignoreThreshold: true }, { id: 3, ignoreThreshold: true },
   ]);
   play.powers.used.push(11);
   reject(play, hakoId, { type: 'set_power', powerId: 11, slot: 0 });
@@ -135,6 +135,71 @@ test('despair returns itself to the bottom, grants up to two distinct cards with
   short = act(stage(short), hakoId, { type: 'hako_cry' });
   assert.deepEqual(short.powers.deck, ['despair']);
   assert.equal(short.powers.hand.filter(card => card.id === 2).length, 1);
+});
+
+test('NO.11 is an innate card alongside the private initial choice and never remains in the deck', () => {
+  const play = fixture();
+  assert.deepEqual(play.powers.hand.map(card => card.id), [1, 11]);
+  assert.equal(play.powers.deck.includes(11), false);
+  const legacy = createPowers({ initialPowerId: 11, powerDeck: [1, 2, 11, 'despair'] });
+  assert.deepEqual(legacy.hand.map(card => card.id), [11]);
+  assert.deepEqual(legacy.deck, [1, 2, 'despair']);
+  assert.equal(Object.hasOwn(getPlayView(play, first).powers, 'hand'), false);
+});
+
+test('legacy games gain innate NO.11 without read-side mutation, duplication, or resetting its use limit', () => {
+  let play = fixture();
+  play.powers.hand = play.powers.hand.filter(card => card.id !== 11);
+  play.powers.deck.unshift(11);
+  delete play.powers.cryCount;
+  const before = structuredClone(play);
+  const view = getPlayView(play, hakoId).powers;
+  assert.equal(view.hand.filter(card => card.id === 11).length, 1);
+  assert.equal(view.cryCount, 0);
+  assert.deepEqual(play, before);
+  play = stage(play);
+  play = act(play, hakoId, { type: 'set_power', powerId: 11, slot: 0 });
+  assert.equal(play.powers.deck.includes(11), false);
+  assert.equal(play.powers.hand.some(card => card.id === 11), false);
+  assert.equal(getPlayView(play, hakoId).powers.hand.some(card => card.id === 11), false);
+  play.powers.used.push(11);
+  play.powers.hand.push({ id: 11, ignoreThreshold: true });
+  assert.equal(getPlayView(play, hakoId).powers.hand.some(card => card.id === 11), false);
+});
+
+test('the tenth actual cry guarantees despair after skipped stages and survives save restoration', () => {
+  let play = fixture();
+  play.powers.deck = [2, 3, 4, 5, 6, 7, 8, 9, 10, 'despair'];
+  for (let count = 0; count < 3; count++) play = stage(finishStage(begin(stage(play))));
+  assert.equal(play.powers.cryCount, 0);
+  for (let count = 1; count <= 9; count++) {
+    play = act(play, hakoId, { type: 'hako_cry' });
+    assert.equal(play.powers.cryCount, count);
+    assert.notEqual(play.powers.lastDraw.kind, 'despair');
+    play = stage(finishStage(begin(play)));
+  }
+  // Keep despair away from the top to distinguish the explicit tenth-cry guarantee.
+  play.powers.deck = [3, 4, 'despair', 2];
+  play = JSON.parse(JSON.stringify(play));
+  play = act(play, hakoId, { type: 'hako_cry' });
+  assert.equal(play.powers.cryCount, 10);
+  assert.deepEqual(play.powers.lastDraw, { kind: 'despair', cards: [3, 4] });
+  assert.deepEqual(play.powers.deck, [2, 'despair']);
+  assert.equal(play.powers.hand.find(card => card.id === 3).ignoreThreshold, true);
+  reject(play, hakoId, { type: 'hako_cry' });
+  assert.equal(play.powers.cryCount, 10);
+});
+
+test('early despair keeps its normal handling and does not substitute a round number for cry count', () => {
+  let play = fixture();
+  play.round.silent.cycle = 10;
+  play.powers.deck = [2, 'despair', 3];
+  play = act(stage(play), hakoId, { type: 'hako_cry' });
+  assert.deepEqual(play.powers.lastDraw, { kind: 'returned', cards: [2] });
+  assert.equal(play.powers.cryCount, 1);
+  play = act(stage(finishStage(begin(play))), hakoId, { type: 'hako_cry' });
+  assert.deepEqual(play.powers.lastDraw, { kind: 'despair', cards: [3, 2] });
+  assert.equal(play.powers.cryCount, 2);
 });
 
 test('setting and recalling share one management choice and later slots conceal their identities', () => {
@@ -338,7 +403,12 @@ test('same-board visitors share the behind-you effect across printed subroom bou
   play.round.visitors[0].roomId = 'study_room';
   givePower(play, 5, { slot: 0, ignoreThreshold: true });
   play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  assert.equal(play.round.visitors[0].status, 'alive');
+  assert.deepEqual(play.powers.pendingBehindYou, { cycle: 2 });
+  play.round.silent.cycle++;
+  play = stage(play);
   assert.equal(play.round.visitors[0].status, 'box_person');
+  assert.equal(play.powers.pendingBehindYou, null);
 });
 
 test('behind-you uses six notebooks for hako and eight for box-person rooms', () => {
@@ -350,10 +420,39 @@ test('behind-you uses six notebooks for hako and eight for box-person rooms', ()
     notes(play, count);
     givePower(play, 5, { slot: 0 });
     play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+    assert.equal(play.round.visitors[0].status, 'alive');
+    assert.equal(play.round.visitors[2].status, 'alive');
+    play.round.silent.cycle++;
+    play = stage(play);
     assert.equal(play.round.visitors[0].status, 'box_person');
     assert.equal(play.round.visitors[2].status, count === 8 ? 'box_person' : 'alive');
     if (count === 8) assert.equal(play.ghosts.find(actor => actor.playerId === third).cornerId, 'hall_clock');
   }
+});
+
+test('behind-you settles once using next-stage positions and notebooks before any new hiding action', () => {
+  let play = fixture();
+  ghost(play, second, 'hall_clock');
+  play.round.visitors[0].roomId = 'children_room';
+  play.round.visitors[2].roomId = 'hall_room';
+  notes(play, 6);
+  givePower(play, 5, { slot: 0 });
+  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  assert.equal(play.round.visitors[0].status, 'alive');
+  // The visitor escaped, while another visitor entered a ghost room before the next stage.
+  play.round.visitors[0].roomId = 'study_room';
+  notes(play, 8);
+  play = JSON.parse(JSON.stringify(play));
+  play.round.silent.cycle++;
+  play = stage(play);
+  assert.equal(play.round.visitors[0].status, 'alive');
+  assert.equal(play.round.visitors[2].status, 'box_person');
+  assert.equal(play.powers.step, 'preparation');
+  assert.equal(play.powers.pendingBehindYou, null);
+  assert.equal(play.interruption, null);
+  play = act(play, third, { type: 'bequeath', targetId: first });
+  play = begin(play);
+  assert.equal(play.round.visitors[0].status, 'alive');
 });
 
 test('behind-you waits for extinguisher responses and using one restores the unactivated card', () => {
@@ -370,6 +469,7 @@ test('behind-you waits for extinguisher responses and using one restores the una
   assert.equal(play.round.visitors[0].status, 'alive');
   assert.equal(play.powers.slots[0].id, 5);
   assert.equal(play.powers.slots[0].faceUp, false);
+  assert.equal(play.powers.pendingBehindYou, null);
   assert.equal(play.round.silent.phase, 'visitor_reveal');
   assert.equal(play.interruption, null);
   assert.ok(play.removedTokens.some(token => token.id === 'counter-extinguisher'));
@@ -385,12 +485,19 @@ test('declining the extinguisher lets group deaths finish before a relic-ring in
   play.inventories[third].tokens.push(piece('unused-extinguisher', 'extinguisher'));
   play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
   play = act(play, third, { type: 'extinguisher_response', use: false });
+  assert.equal(play.round.visitors[0].status, 'alive');
+  assert.equal(play.round.visitors[1].status, 'alive');
+  assert.equal(play.resolution, null);
+  play = finishStage(play);
+  play = stage(play);
   assert.equal(play.round.visitors[0].status, 'box_person');
   assert.equal(play.round.visitors[1].status, 'box_person');
   assert.equal(play.round.visitors[2].status, 'alive');
   assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
   play = act(play, first, { type: 'bequeath', targetId: third });
   assert.ok(play.inventories[third].tokens.some(token => token.id === 'inherited-key'));
+  assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: second });
+  play = act(play, second, { type: 'bequeath', targetId: third });
   assert.equal(play.resolution, null);
 });
 

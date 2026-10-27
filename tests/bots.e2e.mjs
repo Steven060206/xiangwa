@@ -5,12 +5,31 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { createGameServer } from '../src/server.mjs';
+import { createPlay } from '../src/play.mjs';
 
 const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
 async function createSession(t, { poll = false } = {}) {
-  const server = createGameServer({ deck, botDelayMs: 25, silentNumbers: [0, 1, 2, 3, 4, 5] });
+  const server = createGameServer({ deck, botDelayMs: 25, silentNumbers: [0, 1, 2, 3, 4, 5],
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      if (!poll) return play;
+      // This scenario verifies automatic answers and movement confirmations.
+      // A random legal NO.6/7/10 interruption cancels that movement, so use
+      // non-interrupting real cards while preserving the entire card pool.
+      const chosen = play.powers.hand.find(card => card.id !== 11);
+      if (chosen.id !== 1) {
+        const index = play.powers.deck.indexOf(1);
+        assert.ok(index >= 0);
+        play.powers.deck[index] = chosen.id;
+        chosen.id = 1;
+      }
+      const passive = play.powers.deck.indexOf(9);
+      assert.ok(passive >= 0);
+      play.powers.deck.unshift(...play.powers.deck.splice(passive, 1));
+      return play;
+    } });
   let browser;
   t.after(async () => {
     await browser?.close();

@@ -8,7 +8,7 @@ const node = (tag, className, text) => {
 export function applyUndoLock(state) {
   if (!state.undo?.pending) return;
   for (const element of document.querySelectorAll('#lobby-view button, #setup-view button, #setup-view select, #setup-view input')) {
-    if (!element.closest('#floor-tabs, #map-positions') && !['map-focus', 'corner-guide-toggle', 'focus-current-action', 'focus-inventory'].includes(element.id)) element.disabled = true;
+    if (!element.closest('#floor-tabs, #map-positions, #chat-panel') && !['map-focus', 'corner-guide-toggle', 'focus-current-action', 'focus-inventory'].includes(element.id)) element.disabled = true;
   }
 }
 

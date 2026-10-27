@@ -284,7 +284,7 @@ test('NO8 blocks doll gifts, accepted requests, drops and peek replacement, incl
   assert.equal(play.inventories[first].tokens.some(token => token.type === 'doll'), true);
 });
 
-test('NO8 returns to hand immediately on its holder death, even while a relic inheritance still holds the doll', () => {
+test('NO8 returns to hand immediately on its holder death while mandatory inheritance still holds the doll, with or without a ring', () => {
   for (const ring of [false, true]) {
     let play = mary(fixture());
     if (ring) play.inventories[first].items.push(item('relic_ring'));
@@ -295,13 +295,16 @@ test('NO8 returns to hand immediately on its holder death, even while a relic in
     assert.equal(play.noiseEffects.mary, null);
     assert.equal(play.powers.hand.filter(card => card.id === 8).length, 1);
     assert.equal(getPlayView(play, second).noiseEffects.maryPlayerId, null);
-    if (ring) {
-      assert.equal(play.resolution.kind, 'inheritance');
-      assert.equal(play.inventories[first].tokens.some(token => token.type === 'doll'), true);
-      play = act(play, first, { type: 'bequeath', targetId: second });
-      assert.equal(play.inventories[second].tokens.some(token => token.type === 'doll'), true);
-      assert.equal(play.noiseEffects.mary, null);
-    } else assert.equal(play.discarded.some(entry => entry.tokens.some(token => token.type === 'doll')), true);
+    assert.equal(play.resolution.kind, 'inheritance');
+    assert.equal(play.inventories[first].tokens.some(token => token.type === 'doll'), true);
+    assert.equal(play.ringAllies.includes(first), ring, 'the ring alone grants a temporary visitor alliance');
+    assert.equal(play.discarded.some(entry => entry.tokens.some(token => token.type === 'doll')), false);
+    reject(play, first, { type: 'bequeath', targetId: null });
+    play = act(play, first, { type: 'bequeath', targetId: second });
+    assert.equal(play.inventories[second].tokens.some(token => token.type === 'doll'), true);
+    assert.equal(play.inventories[first].tokens.some(token => token.type === 'doll'), false);
+    assert.equal(play.noiseEffects.mary, null);
+    assert.equal(play.resolution, null);
   }
 });
 

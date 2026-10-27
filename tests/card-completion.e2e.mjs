@@ -38,11 +38,17 @@ function fixture({ slots = [], hand = [], possessions = [] } = {}) {
       play.tokens[position] = null;
     }
     for (const powerId of [...slots, ...hand]) {
-      const index = play.powers.deck.indexOf(powerId);
-      assert.notEqual(index, -1, `The trusted fixture must move the real power ${powerId}`);
-      play.powers.deck.splice(index, 1);
-      if (slots.includes(powerId)) play.powers.slots[slots.indexOf(powerId)] = { id: powerId, faceUp: false };
-      else play.powers.hand.push({ id: powerId, ignoreThreshold: false });
+      const handIndex = play.powers.hand.findIndex(card => card.id === powerId);
+      let card;
+      if (handIndex >= 0) card = play.powers.hand.splice(handIndex, 1)[0];
+      else {
+        const deckIndex = play.powers.deck.indexOf(powerId);
+        assert.notEqual(deckIndex, -1, `The trusted fixture must move the real power ${powerId}`);
+        play.powers.deck.splice(deckIndex, 1);
+        card = { id: powerId, ignoreThreshold: false };
+      }
+      if (slots.includes(powerId)) play.powers.slots[slots.indexOf(powerId)] = { ...card, faceUp: false };
+      else play.powers.hand.push(card);
     }
     assert.deepEqual(tokenIds(), beforeTokens, 'Fixture only relocates existing pieces');
     assert.deepEqual(cardIds(), beforeCards, 'Fixture only relocates existing cards');

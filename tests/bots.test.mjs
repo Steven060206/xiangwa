@@ -463,7 +463,18 @@ test('NO2 paths, NO3 actual doors, NO5 victims, NO10 interruption, existing NO4 
       assert.ok(result.play.powers.movement.pathRoomId);
     }
     if (powerId === 3) assert.equal(play.round.blockedDoors.length, 1);
-    if (powerId === 5) assert.equal(play.result?.winner, 'hako');
+    if (powerId === 5) {
+      assert.equal(play.result, null, 'NO5 activation schedules the effect without killing current victims');
+      assert.ok(play.round.visitors.every(player => player.status === 'alive'));
+      assert.equal(play.powers.pendingBehindYou.cycle, play.round.silent.cycle + 1);
+      play = applyPlayAction(play, hakoId, { type: 'inspect_hiding_room', roomId: 'hall_room' });
+      play = applyPlayAction(play, hakoId, { type: 'hako_hide', cornerId: 'hall_clock' });
+      assert.equal(play.result, null, 'finishing the activation stage still leaves visitors alive');
+      play = stage(play);
+      assert.equal(play.result?.winner, 'hako', 'victims at the next stage boundary are killed');
+      assert.equal(play.powers.pendingBehindYou, null);
+      assert.equal(play.resolution, null, 'no inheritance is requested when every visitor dies together');
+    }
   }
   let call = reveal(fixture());
   slot(call, 10);
@@ -488,15 +499,22 @@ test('NO2 paths, NO3 actual doors, NO5 victims, NO10 interruption, existing NO4 
   assert.ok(recalled.play.powers.hand.some(card => card.id === 4));
 });
 
-test('unsupported hand cards are skipped and a bot box person waits for hako before its own hiding', () => {
+test('unsupported and used intrinsic hand cards are skipped and a bot box person inherits then waits for hako to hide', () => {
   let unsupported = stage(fixture());
   unsupported.powers.hand = [{ id: 12, ignoreThreshold: true }];
+  unsupported.powers.used.push(11);
   unsupported = applyPlayAction(unsupported, hakoId, { type: 'hako_cry' });
+  assert.ok(unsupported.powers.hand.some(card => card.id === 11), 'NO11 is always present even when the old hand omitted it');
+  assert.equal(getPlayView(unsupported, hakoId).powers.hand.find(card => card.id === 11).settable, false);
   assert.deepEqual(botAct(unsupported, hakoId).action, { type: 'begin_hako_action' });
   let play = fixture();
   play.round.visitors[0].roomId = 'children_room';
   play = peek(play, 'children_bed');
   assert.equal(play.round.visitors[0].status, 'box_person');
+  const inherited = botAct(play, first);
+  assert.deepEqual(inherited.action, { type: 'bequeath', targetId: human });
+  play = inherited.play;
+  assert.equal(play.resolution, null);
   assert.equal(decide(snapshot(play, first)), null);
   play = stage(play);
   play = applyPlayAction(play, hakoId, { type: 'begin_hako_action' });

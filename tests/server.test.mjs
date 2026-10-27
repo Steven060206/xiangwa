@@ -937,6 +937,9 @@ test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a de
     await action(request, person, 'silent_reveal', { index });
     await action(request, person, 'peek', { cornerId: 'hall_clock' });
     assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
+    const inheritance = (await snapshot(request, person)).body.round.resolution;
+    assert.equal(inheritance.kind, 'inheritance');
+    assert.equal((await action(request, person, 'bequeath', { targetId: visitors[2].playerId })).status, 200);
     const owner = (await snapshot(request, person)).body;
     assert.equal(owner.round.ghost.cornerId, 'hall_clock');
     assert.equal(owner.round.visitors.find(player => player.id === person.playerId).status, 'box_person');
@@ -982,7 +985,9 @@ test('HTTP and SSE keep phone results and false answers private while allowing a
   assert.equal((await action(request, first, 'activate_power', { slot: 0 })).status, 409);
   assert.deepEqual((await snapshot(request, first)).body, initial);
   await action(request, first, 'silent_reveal', { index: 0 });
-  assert.equal((await action(request, first, 'use_item', { itemId: 'smartphone', targetZone: 'hand', index: 1 })).status, 200);
+  const photographedIndex = (await snapshot(request, hako)).body.round.powers.hand.findIndex(card => card.id === 4);
+  assert.ok(photographedIndex >= 0);
+  assert.equal((await action(request, first, 'use_item', { itemId: 'smartphone', targetZone: 'hand', index: photographedIndex })).status, 200);
   const photo = await action(request, hako, 'resolve_visitor_action');
   assert.equal(photo.status, 200);
   for (let index = 0; index < people.length; index++) {

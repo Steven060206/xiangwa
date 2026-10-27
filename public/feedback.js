@@ -1,4 +1,4 @@
-const TOOL_NAMES = { white_stick: '白木棒', gasoline: '汽油', rusty_chain: '锈锁链' };
+const TOOL_NAMES = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '锈锁链' };
 const TOKEN_NAMES = { key: '钥匙', password: '密码', notebook: '手记', doll: '玛丽小姐的人偶',
   weakness_clue: '讨伐情报', weapon: '讨伐道具', amulet: '古怪护符', extinguisher: '灭火器',
   safe: '转轮式保险箱', hidden_exit: '隐藏出口', remains: '亡骸', empty_box: '空箱' };
@@ -13,7 +13,7 @@ const TOKEN_EFFECTS = {
   doll: '携带玛丽小姐的人偶窥探亡骸，即可超度。',
   weapon: '消耗标准行动指定角落进行讨伐；使用后该道具移出游戏。先核对已知讨伐情报。',
   amulet: '消耗标准行动和护符，移除箱娃可用能力栏中的一张能力。',
-  extinguisher: '无声累计超过10，或“我在你身后”发动的响应窗口中，可消耗灭火器跳过本次箱娃行动。',
+  extinguisher: '无声累计超过10，或“NO.5 我在你身后”发动的响应窗口中，可消耗灭火器跳过本次箱娃行动。',
   safe: '不能获取；窥探后猜测三个密码数字，全部正确即可取得钥匙。',
   hidden_exit: '不能获取；携带钥匙窥探这里即可逃脱。',
   remains: '不能获取；携带玛丽小姐的人偶窥探这里即可超度。',
@@ -24,7 +24,10 @@ const PRIVATE = '仅你可见';
 const changed = (before, after) => JSON.stringify(before ?? null) !== JSON.stringify(after ?? null);
 const added = (before = [], after = []) => after.filter(value => !before.some(old => old.id === value.id));
 const playerName = (state, id) => state.players?.find(player => player.id === id)?.name || '玩家';
-const powerName = card => card?.name || POWER_NAMES[typeof card === 'object' ? card.id : card] || '箱娃之力';
+const powerName = card => {
+  const id = Number(typeof card === 'object' ? card?.id ?? card?.powerId : card);
+  return `${Number.isInteger(id) && id > 0 ? `NO.${id} ` : ''}${card?.name || POWER_NAMES[id] || '箱娃之力'}`;
+};
 function tokenName(token) {
   if (token.name) return token.name;
   if (token.type === 'weapon') return TOOL_NAMES[token.tool] || TOKEN_NAMES.weapon;
@@ -33,7 +36,7 @@ function tokenName(token) {
 }
 function tokenDescription(token) {
   if (token.description) return token.description;
-  if (token.power) return `${token.power.name}：${token.power.description}`;
+  if (token.power) return `${powerName(token.power)}：${token.power.description}`;
   if (token.type === 'weakness_clue') return `讨伐情报：${TOOL_NAMES[token.tool] || '该讨伐道具'}对箱娃无效。`;
   return TOKEN_EFFECTS[token.type] || '可在当前操作中查看详情。';
 }
@@ -92,7 +95,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
         push(`获得了${ownChoice.itemName || ownChoice.name || '初始道具'}`, ownChoice.itemDescription || '道具已放入你的随身物品，可随时查看效果。', 'success', PRIVATE, true, 'item');
       }
       if (next.initialPower && changed(before.initialPower, next.initialPower)) {
-        push(`初始能力：${next.initialPower.name}`, next.initialPower.description || '只有你能看到这张初始能力，仍需按时机设置和发动。', 'success', PRIVATE, true, 'power');
+        push(`初始能力：${powerName(next.initialPower)}`, next.initialPower.description || '只有你能看到这张初始能力，仍需按时机设置和发动。', 'success', PRIVATE, true, 'power');
       }
       const round = next.round;
       const oldRound = before.round;
@@ -103,7 +106,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
 
       for (const notebook of added(oldRound.notebooks, round.notebooks)) {
         push(`手记${notebook.number ?? ''}已公开`, notebook.power
-          ? `${notebook.power.name}：${notebook.power.description}` : '所有玩家都能在公开手记中查看这条信息。', 'info', PUBLIC, true, 'notebook');
+          ? `${powerName(notebook.power)}：${notebook.power.description}` : '所有玩家都能在公开手记中查看这条信息。', 'info', PUBLIC, true, 'notebook');
       }
       for (const discovery of (round.publicDiscoveries || []).slice(oldRound.publicDiscoveries?.length || 0)) {
         push(`${playerName(next, discovery.playerId)}公开了${tokenName(discovery.token)}`,
@@ -117,7 +120,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
         || logs.includes('箱娃发动了能力。'));
       if (activated) {
         const privateCard = round.hako?.playerId === next.you && activation.powerId <= 4 && !activation.public;
-        push(activation.name ? `箱娃发动了${activation.name}` : '箱娃发动了能力',
+        push(activation.name ? `箱娃发动了${powerName(activation)}` : '箱娃发动了能力',
           activation.name ? '请查看当前操作提示，按能力效果继续结算。' : '本次能力的名称未公开，请查看当前操作提示。',
           'attention', privateCard ? PRIVATE : PUBLIC, activation.powerId >= 5 || Boolean(round.resolution?.kind === 'forced_peek'), 'power');
       }
@@ -154,12 +157,16 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
         const card = round.items.result.card;
         push(card ? `手机查看：${powerName(card)}` : '道具结果已更新', card?.description || '查看你的道具结果，具体内容仅你可见。', 'info', PRIVATE, true, card ? 'power' : 'item');
       }
-      const completedSafeAttempt = round.sharedTokens?.kind === 'safe_result'
-        && oldRound.resolution?.kind === 'safe' && !round.resolution;
-      if (round.sharedTokens && (changed(oldRound.sharedTokens, round.sharedTokens) || completedSafeAttempt)) {
-        const shared = round.sharedTokens;
-        if (shared.kind === 'shown_token') push(`${playerName(next, shared.fromId)}向你展示了${tokenName(shared.token)}`, `${tokenDescription(shared.token)} 仅你收到这次展示。`, 'info', PRIVATE, true, tokenSymbol(shared.token));
-        else if (shared.kind === 'safe_result') push(shared.correct ? '保险箱尝试正确' : '保险箱尝试未成功', shared.usedStethoscope ? shared.correct ? '听诊器确认的正确数字已公开，可在保险箱信息中查看。' : '听诊器已完成本次尝试，未公开新的正确数字。' : '请按当前保险箱状态继续探索。', shared.correct ? 'success' : 'attention', PRIVATE, true, 'password');
+      const sharedEntries = value => Array.isArray(value) ? value : value ? [value] : [];
+      const oldShared = sharedEntries(oldRound.sharedTokens);
+      for (const shared of sharedEntries(round.sharedTokens)) {
+        const completedSafeAttempt = shared.kind === 'safe_result' && oldRound.resolution?.kind === 'safe' && !round.resolution;
+        if (!completedSafeAttempt && oldShared.some(old => !changed(old, shared))) continue;
+        if (['shown_token', 'shown_possession'].includes(shared.kind)) {
+          push(`${playerName(next, shared.fromId)}向你展示了${shared.item ? shared.item.name : tokenName(shared.token)}`,
+            `${shared.item ? shared.item.description || '对方持有这张道具。' : tokenDescription(shared.token)} 仅你收到这次展示。`,
+            'info', PRIVATE, true, shared.item ? 'item' : tokenSymbol(shared.token));
+        } else if (shared.kind === 'safe_result') push(shared.correct ? '保险箱尝试正确' : '保险箱尝试未成功', shared.usedStethoscope ? shared.correct ? '听诊器确认的正确数字已公开，可在保险箱信息中查看。' : '听诊器已完成本次尝试，未公开新的正确数字。' : '请按当前保险箱状态继续探索。', shared.correct ? 'success' : 'attention', PRIVATE, true, 'password');
       }
 
       const lastDraw = round.powers?.lastDraw;

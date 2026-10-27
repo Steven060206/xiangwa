@@ -28,11 +28,20 @@ export function mapPlayers(state) {
     for (const visitor of state.round.visitors) {
       if ((!visitor.status || visitor.status === 'alive') && visitor.roomId) add(visitor.id, { roomId: visitor.roomId });
     }
-    if (state.round.hako.playerId === state.you && state.round.hako.cornerId) {
-      add(state.you, { roomId: state.round.hako.roomId, cornerId: state.round.hako.cornerId }, 'hako');
-    }
-    if (state.round.ghost?.status !== 'banished' && state.round.ghost?.cornerId) {
-      add(state.you, { roomId: state.round.ghost.roomId, cornerId: state.round.ghost.cornerId }, 'ghost');
+    const actors = state.round.review
+      ? state.round.review.corners.flatMap(corner => (corner.actors || []).map(actor => ({ ...actor, cornerId: corner.id, roomId: corner.roomId })))
+      : state.round.alliedActors;
+    if (actors) {
+      for (const actor of actors) if (actor.status !== 'banished' && actor.cornerId) {
+        add(actor.playerId, { roomId: actor.roomId, cornerId: actor.cornerId, revealed: Boolean(state.round.review) }, actor.type === 'hako' ? 'hako' : 'ghost');
+      }
+    } else {
+      if (state.round.hako.playerId === state.you && state.round.hako.cornerId) {
+        add(state.you, { roomId: state.round.hako.roomId, cornerId: state.round.hako.cornerId }, 'hako');
+      }
+      if (state.round.ghost?.status !== 'banished' && state.round.ghost?.cornerId) {
+        add(state.you, { roomId: state.round.ghost.roomId, cornerId: state.round.ghost.cornerId }, 'ghost');
+      }
     }
   } else if (state.opening || state.setup?.phase === 'map_ready') {
     for (const player of state.players.filter(player => player.role === 'visitor')) add(player.id, { roomId: 'entrance' });
@@ -137,13 +146,21 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = [], players =
         'data-corner-id': corner.id, 'aria-label': cornerName(corner.id), role: 'button', tabindex: '0' });
       if (corner.id.startsWith('suitcase:')) mark.setAttribute('data-testid', 'suitcase-corner');
       mark.append(el('title', {}, cornerName(corner.id)));
-      mark.append(el('rect', { x: -5.5, y: -5.5, width: 11, height: 11, rx: 1, class: 'corner-mark' }));
+      mark.append(el('rect', { x: -9, y: -9, width: 18, height: 18, fill: 'transparent', class: 'corner-hit-area' }));
+      mark.append(el('rect', { x: -7, y: -7, width: 14, height: 14, rx: 1, class: 'corner-mark' }));
       mark.append(el('text', { x: 0, y: .5, 'text-anchor': 'middle', 'dominant-baseline': 'middle', class: 'corner-number' }, cornerNumber(corner.id)));
+      if (corner.id === 'study_desk') {
+        const landmark = el('g', { class: 'safe-landmark', 'data-testid': 'safe-landmark', 'aria-label': '固定地标：转轮式保险箱（写字台下）' });
+        landmark.append(el('title', {}, '转轮式保险箱 · 固定在写字台下，打开后仍保留此地标'));
+        landmark.append(el('rect', { x: -15, y: 9, width: 30, height: 9, rx: 1, class: 'safe-landmark-badge' }));
+        landmark.append(el('text', { x: 0, y: 14, 'text-anchor': 'middle', 'dominant-baseline': 'middle', class: 'safe-landmark-label' }, '保险箱'));
+        mark.append(landmark);
+      }
       svg.append(mark);
     }
   }
   const addPlayer = (player, x, y) => {
-    const label = `${player.name}${player.self ? '（你）' : ''} · ${player.kind === 'visitor' ? '访问者' : player.kind === 'hako' ? '箱娃，仅自己可见' : '箱人，仅自己可见'}`;
+    const label = `${player.name}${player.self ? '（你）' : ''} · ${player.kind === 'visitor' ? '访问者' : `${player.kind === 'hako' ? '箱娃' : '箱人'}，${player.revealed ? '终局公开' : '仅箱娃方可见'}`}`;
     const marker = el('g', { class: `map-player-marker seat-color-${player.seat}${player.self ? ' self-player' : ''}${player.cornerId ? ' private-position' : ''}`,
       transform: `translate(${x} ${y})`, 'data-player-id': player.id, 'data-room-id': player.roomId,
       'aria-label': label, 'data-testid': 'map-player-marker' });

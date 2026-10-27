@@ -1,11 +1,19 @@
 import { getTile, getLogicalRoomId, getLogicalRooms } from '/shared/maps.mjs';
 import { createFeedbackUI } from './feedback-view.js';
+import { createChatUI } from './chat.js';
 import { applyUndoLock, renderUndo } from './undo.js';
 import { createTileSvg, cornerNumber, cornerName, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
 const feedback = createFeedbackUI();
+const chat = createChatUI(async payload => {
+  if (!identity || !online) throw new Error('请等待连接恢复。');
+  const next = await api(`/api/rooms/${identity.roomCode}/actions`, {
+    playerId: identity.playerId, token: identity.token, type: 'chat_send', ...payload,
+  });
+  receiveState(next);
+});
 const SESSION_KEY = 'hako.room.session.v1';
 const SAVED_SESSIONS_KEY = 'hako.room.saved.v1';
 const floorName = floor => ({ 1: '一楼', 2: '二楼', '-1': '地下室' })[floor];
@@ -23,6 +31,9 @@ let rotation = 0;
 let selected = null;
 let tileTurnKey = '';
 let boardKey = '';
+let previewTimer = null;
+let previewSending = false;
+let lastPreviewSent = '';
 let selectedMapCorner = '';
 const compactScreen = matchMedia('(max-width:720px)');
 let guideExpanded = !compactScreen.matches;
@@ -191,12 +202,23 @@ function connect() {
 function receiveState(next) {
   // A POST response can arrive after a newer SSE event.
   if (state && next.version < state.version) return;
+  if (next.phase === 'map_setup' && next.setup.turnPlayerId !== next.you && next.setup.preview?.placement
+      && next.setup.preview.revision !== state?.setup?.preview?.revision) activeFloor = next.setup.preview.placement.floor;
+  if (state && next.version === state.version) {
+    if ((next.chat?.revision || 0) < (state.chat?.revision || 0)) next.chat = state.chat;
+    if (next.setup?.drawnTileId === state.setup?.drawnTileId
+        && next.setup?.turnPlayerId === state.setup?.turnPlayerId
+        && (next.setup?.preview?.revision || 0) < (state.setup?.preview?.revision || 0)) {
+      next.setup.preview = state.setup.preview;
+    }
+  }
   state = next;
   const key = next.setup ? `${next.setup.turnPlayerId}:${next.setup.drawnTileId}` : '';
   if (key !== tileTurnKey) {
     tileTurnKey = key;
     rotation = 0;
     selected = null;
+    lastPreviewSent = '';
     const first = next.setup?.legalPlacements?.find(p => p.rotation === rotation);
     if (first && next.setup.turnPlayerId === next.you) {
       selected = { ...first };
@@ -343,7 +365,26 @@ function renderLobby() {
 }
 
 function canPlace() {
-  return online && !pending && state.phase === 'map_setup' && state.setup.turnPlayerId === state.you;
+  return online && !pending && !state.undo?.pending && state.phase === 'map_setup' && state.setup.turnPlayerId === state.you;
+}
+
+function queueMapPreview() {
+  if (!canPlace() || !state.setup.drawnTileId || previewSending) return;
+  const value = { tileId: state.setup.drawnTileId, rotation, placement: selected };
+  const signature = JSON.stringify([state.version, value]);
+  if (signature === lastPreviewSent) return;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    if (!canPlace() || !state.setup.drawnTileId) return;
+    previewSending = true;
+    const payload = { tileId: state.setup.drawnTileId, rotation, placement: selected };
+    lastPreviewSent = JSON.stringify([state.version, payload]);
+    try {
+      await api(`/api/rooms/${identity.roomCode}/actions`, { playerId: identity.playerId,
+        token: identity.token, type: 'preview_map', expectedVersion: state.version, ...payload });
+    } catch (error) { if (error.status !== 409) showError(error); }
+    finally { previewSending = false; queueMapPreview(); }
+  }, 100);
 }
 
 function legalForRotation() {
@@ -418,13 +459,15 @@ function renderBoard() {
   const extraCorners = state.round?.extraCorners || [];
   const players = mapPlayers(state);
   const announcement = state.round?.powers?.announcement;
+  const remotePreview = setup.turnPlayerId !== state.you && setup.preview?.placement?.floor === activeFloor
+    ? setup.preview : null;
   renderMapPositions(players);
-  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players, announcement]);
+  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players, announcement, remotePreview]);
   if (key === boardKey) return;
   boardKey = key;
   const board = $('tile-board');
   const fragment = document.createDocumentFragment();
-  const positions = [...placements, ...targets];
+  const positions = [...placements, ...targets, ...(remotePreview ? [remotePreview.placement] : [])];
   if (!positions.length) {
     board.style.gridTemplateColumns = '1fr';
     board.style.gridTemplateRows = 'auto';
@@ -468,6 +511,17 @@ function renderBoard() {
         $('tile-board').querySelector('.selected')?.focus({ preventScroll: true });
       });
       fragment.append(button);
+    }
+    if (remotePreview) {
+      const cell = node('div', 'board-cell shared-map-preview');
+      cell.dataset.testid = 'shared-map-preview';
+      cell.dataset.rotation = remotePreview.rotation;
+      cell.dataset.tileId = remotePreview.tileId;
+      cell.style.gridColumn = remotePreview.placement.x - minX + 1;
+      cell.style.gridRow = remotePreview.placement.y - minY + 1;
+      cell.setAttribute('aria-label', '其他玩家正在预览，尚未确认摆放');
+      cell.append(createTileSvg(remotePreview.tileId, remotePreview.rotation));
+      fragment.append(cell);
     }
   }
   board.replaceChildren(fragment);
@@ -554,15 +608,16 @@ function renderSetup() {
   const turnPlayer = state.players.find(p => p.id === setup.turnPlayerId);
   const drawn = setup.drawnTileId ? getTile(setup.drawnTileId) : null;
   const locked = !canPlace();
+  const shownRotation = mine ? rotation : setup.preview?.rotation ?? 0;
   $('map-count').replaceChildren(document.createTextNode(setup.placements.length), node('span', '', '/ 9'));
   $('turn-seat').textContent = complete ? '九块齐备' : mine ? '你的轮次' : '等待访问者';
   $('drawn-title').textContent = complete ? '宅邸已现' : drawn ? '本次抽到' : '轮流抽板';
-  const previewKey = `${setup.drawnTileId}:${rotation}:${complete}`;
+  const previewKey = `${setup.drawnTileId}:${shownRotation}:${complete}`;
   if ($('drawn-preview').dataset.key !== previewKey) {
     const preview = $('drawn-preview');
     preview.dataset.key = previewKey;
     preview.classList.toggle('completed-preview', complete);
-    if (drawn) preview.replaceChildren(createTileSvg(drawn.id, rotation));
+    if (drawn) preview.replaceChildren(createTileSvg(drawn.id, shownRotation));
     else if (complete) {
       const mark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       mark.setAttribute('viewBox', '0 0 48 48');
@@ -585,13 +640,14 @@ function renderSetup() {
   $('rotate-tile').disabled = locked;
   $('confirm-placement').hidden = !drawn || !mine || complete;
   $('confirm-placement').disabled = locked || !selected;
-  $('selection-description').textContent = drawn && mine && selected ? `${floorName(selected.floor)} · 位置 ${selected.x}, ${selected.y} · ${rotation * 90}°` : '';
+  const shownPosition = mine ? selected : setup.preview?.placement;
+  $('selection-description').textContent = drawn && shownPosition ? `${mine ? '' : '实时预览 · '}${floorName(shownPosition.floor)} · 位置 ${shownPosition.x}, ${shownPosition.y} · ${shownRotation * 90}°` : '';
   $('drawn-title').closest('.turn-panel').hidden = complete;
   $('map-complete').hidden = !complete || Boolean(round || state.opening);
   $('prepare-opening').hidden = state.hostId !== state.you;
   $('prepare-opening').disabled = pending || !online;
   $('opening-start-hint').textContent = state.hostId === state.you ? '准备好后，配置角落标志并由箱娃选择开局秘密。' : '等待房主开始开局配置。';
-  $('board-help').textContent = round ? '圆标为玩家座位号 · 潜伏位置仅本人可见' : state.opening ? '访问者在正门待入场 · 标志保持盖放' : complete ? '访问者在正门等待入场' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
+  $('board-help').textContent = round ? round.result ? '本局结束 · 可查看完整盘面复盘' : '圆标为玩家座位号 · 潜伏位置仅箱娃方可见' : state.opening ? '访问者在正门待入场 · 标志保持盖放' : complete ? '访问者在正门等待入场' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
   for (const button of $('floor-tabs').querySelectorAll('button')) {
     const floor = Number(button.dataset.floor);
     button.setAttribute('aria-selected', String(floor === activeFloor));
@@ -600,6 +656,7 @@ function renderSetup() {
   }
   renderBoard();
   applyUndoLock(state);
+  queueMapPreview();
 }
 
 function currentTask() {
@@ -657,7 +714,7 @@ function renderGameStatus() {
   $('personal-role').textContent = `${you?.name || '你'} · ${isHako ? '箱娃' : visitor?.status === 'box_person' ? '箱人' : visitor?.status === 'banished' ? '已被消灭' : '访问者'}`;
   const location = mapPlayers(state).find(player => player.id === state.you);
   const room = location && getLogicalRooms().find(room => room.id === getLogicalRoomId(location.roomId));
-  $('personal-location').textContent = location ? `${room?.name || '正门'}${location.cornerId ? ` · ${cornerNumber(location.cornerId)}（仅你可见）` : ''}` : '';
+  $('personal-location').textContent = location ? `${room?.name || '正门'}${location.cornerId ? ` · ${cornerNumber(location.cornerId)}（${round.result ? '复盘公开' : '箱娃方可见'}）` : ''}` : '';
   $('round-context').textContent = `总回合 ${round.totalRounds ?? 0}`;
   $('focus-inventory').textContent = isHako ? `我的能力 · ${round.powers?.hand?.length ?? 0}` : `我的物品 · ${(round.inventory?.items?.length || 0) + (round.inventory?.tokens?.length || 0)}`;
 }
@@ -690,6 +747,7 @@ function render() {
   else renderSetup();
   renderUndo({ state, pending, online, action });
   if (!lobby) renderGameStatus();
+  chat.render(state, online);
 }
 
 $('focus-current-action').addEventListener('click', () => focusGameSection(currentTask().target || '#practice-panel'));

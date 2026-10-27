@@ -185,7 +185,7 @@ test('same-room lethal active items kill before returning answers or applying ef
     play = use(play, itemId, { roomId: 'children_room', targetZone: 'hand', index: 0 });
     assert.equal(play.round.visitors.find(player => player.id === first).status, 'box_person');
     assert.equal(play.ghosts.find(ghost => ghost.playerId === first).cornerId, 'hall_clock');
-    assert.equal(play.resolution, null);
+    assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
     assert.equal(play.itemResults[first], null);
     assert.deepEqual(play.powers.deck, deckBefore);
     assert.deepEqual(play.notebooks, notesBefore);
