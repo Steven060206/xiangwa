@@ -1,8 +1,8 @@
-import { MAP_TILES } from '/shared/maps.mjs';
+import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
 import { renderExploration, explorationDescription, explorationSeatStatus } from './exploration.js';
 
-const rooms = MAP_TILES.flatMap(tile => tile.rooms);
+const rooms = getLogicalRooms();
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
 const node = (tag, className, text) => {
   const element = document.createElement(tag);
@@ -67,7 +67,7 @@ function hidingControls(container, targets, initial, locked, action, inspectedRo
   select.disabled = locked;
   for (const id of targets) {
     const corner = inspectedRoom?.corners.find(corner => corner.id === id);
-    const option = node('option', '', `${cornerName(id)}${corner ? ` — ${tokenDescription(corner.token)}` : ''}`);
+    const option = node('option', '', `${cornerName(id)}${corner?.token !== undefined ? ` — ${tokenDescription(corner.token)}` : ''}`);
     option.value = id;
     select.append(option);
   }
@@ -222,7 +222,7 @@ export function preparationDescription(state) {
   if (state.draft) return state.draft.turnPlayerId === state.you ? '轮到你领取一张初始道具。选择后，将由下一位访问者继续。' : `等待${playerName(state, state.draft.turnPlayerId)}领取初始道具。`;
   if (state.opening) {
     const name = preparationSteps.find(([phase]) => phase === state.opening.phase)?.[1] || '开局配置';
-    if (state.opening.phase === 'power') return state.opening.hakoId === state.you ? '选择初始箱娃之力。初始能力会公开展示，所选能力可免公开手记门槛。' : '箱娃正在选择初始能力。初始能力会公开展示，所选能力可免公开手记门槛。';
+    if (state.opening.phase === 'power') return state.opening.hakoId === state.you ? '从系统随机抽取的三张箱娃之力中秘密选择一张，可免公开手记门槛。' : '箱娃正在秘密选择初始能力。';
     return state.opening.hakoId === state.you ? `箱娃准备：${name}。选择内容仅你可见。` : `箱娃正在完成${name}。访问者在正门等待入场。`;
   }
   return '';
@@ -348,13 +348,13 @@ function tokenDescription(token) {
 }
 
 function inspectedRoomTokens(container, inspectedRoom) {
-  container.append(node('h3', '', `${roomName(inspectedRoom.id)} · 全部角落标志（仅你可见）`),
-    node('p', 'small-note', '先查看全部角落，再选择潜伏位置；确认后，所选角落的原物会被暂存。'));
+  container.append(node('h3', '', `${roomName(inspectedRoom.id)} · 潜伏角落`),
+    node('p', 'small-note', '确认潜伏后，仅查看被替换的棋子。'));
   const tokens = node('dl', 'inspected-tokens');
   for (const corner of inspectedRoom.corners) {
     const row = node('div');
     row.dataset.cornerId = corner.id;
-    row.append(node('dt', '', cornerName(corner.id)), node('dd', '', tokenDescription(corner.token)));
+    row.append(node('dt', '', cornerName(corner.id)), node('dd', '', corner.token === undefined ? '盖放标志（潜伏后查看）' : tokenDescription(corner.token)));
     tokens.append(row);
   }
   container.append(tokens);
@@ -365,7 +365,7 @@ export function renderRoomMemory(container, memory) {
   const section = node('section', 'exploration-section');
   section.dataset.testid = 'hiding-room-memory';
   const when = memory.cycle === 0 ? '开局' : `第${memory.cycle}轮`;
-  section.append(node('h3', '', `潜伏查看记录 · ${roomName(memory.id)}（仅你可见）`),
+  section.append(node('h3', '', `被替换棋子记录 · ${roomName(memory.id)}（仅你可见）`),
     node('p', 'small-note', `${when}查看时的记录，之后的取放变化不会自动更新。`));
   const list = node('dl', 'inspected-tokens');
   for (const corner of memory.corners) {
@@ -416,10 +416,10 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'hiding_room': {
         const select = choiceSelect(controls, {
-          id: 'initial-room-select', label: '选择一间怨房，查看角落标志', options: opening.hidingRooms,
+          id: 'initial-room-select', label: '选择初始潜伏的怨房', options: opening.hidingRooms,
           selected: selectedRoom, locked, onChange: value => { selectedRoom = value; },
         });
-        controls.append(button('查看这间怨房', 'inspect-initial-room', locked || !select.value, () => action('inspect_initial_room', { roomId: select.value })));
+        controls.append(button('选择这间怨房', 'inspect-initial-room', locked || !select.value, () => action('inspect_initial_room', { roomId: select.value })));
         break;
       }
       case 'hiding_corner': {
@@ -432,6 +432,12 @@ export function renderOpening({ state, pending, online, action }) {
           id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions,
           selected: selectedPower, locked, onChange: value => { selectedPower = value; },
         });
+        const description = node('p', 'item-description small-note');
+        description.dataset.testid = 'initial-power-description';
+        const describe = () => { description.textContent = opening.initialPowerOptions.find(card => String(card.id) === select.value)?.description || ''; };
+        select.addEventListener('change', describe);
+        describe();
+        controls.append(description);
         controls.append(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked || !select.value, () => action('choose_initial_power', { powerId: Number(select.value) })));
         controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
         renderRoomMemory(controls, opening.lastInspectedRoom);

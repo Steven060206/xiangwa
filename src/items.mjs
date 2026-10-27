@@ -1,4 +1,4 @@
-import { getTile } from './maps.mjs';
+import { getTile, getLogicalRoomId, getLogicalRooms } from './maps.mjs';
 import { getNoiseEffectsView } from './noise-effects.mjs';
 import { INITIAL_ITEMS } from './preparation.mjs';
 
@@ -12,14 +12,14 @@ const SAME_ROOM_LETHAL = new Set(['spirit_pen', 'ventriloquist_doll', 'nightmare
 const clone = value => structuredClone(value);
 
 function rooms(play) {
-  return play.round.placements.flatMap(placement => getTile(placement.tileId).rooms);
+  return getLogicalRooms().filter(room => play.round.placements.some(placement => placement.tileId === room.tileId));
 }
 function floorOf(play, roomId) {
-  return play.round.placements.find(placement => getTile(placement.tileId).rooms.some(room => room.id === roomId))?.floor;
+  return play.round.placements.find(placement => getTile(placement.tileId).rooms.some(room => getLogicalRoomId(room.id) === getLogicalRoomId(roomId)))?.floor;
 }
 function floorName(floor) { return floor === -1 ? '地下室' : `${floor}楼`; }
 function assertRoom(play, roomId) {
-  if (!rooms(play).some(room => room.id === roomId)) throw new Error('请选择本局地图中的房间。');
+  if (!rooms(play).some(room => room.id === getLogicalRoomId(roomId))) throw new Error('请选择本局地图中的房间。');
 }
 function assertPhoneTarget(play, action) {
   if (!['hand', 'slot'].includes(action.targetZone) || !Number.isInteger(action.index) || action.index < 0) {
@@ -47,8 +47,8 @@ function assertItem(play, id, action, ctx) {
       break;
     case 'spirit_pen': {
       assertRoom(play, action.roomId);
-      const roomId = ctx.visitor(id).roomId;
-      if (!play.round.visitors.some(player => player.id !== id && player.status === 'alive' && player.roomId === roomId)) {
+      const roomId = getLogicalRoomId(ctx.visitor(id).roomId);
+      if (!play.round.visitors.some(player => player.id !== id && player.status === 'alive' && getLogicalRoomId(player.roomId) === roomId)) {
         throw new Error('使用笔仙时，同一房间内须有其他存活访问者。');
       }
       break;
@@ -59,8 +59,8 @@ function assertItem(play, id, action, ctx) {
       if (!play.powers.deck.includes('despair')) throw new Error('箱娃之力牌库中没有绝望时刻。');
       break;
     case 'suitcase': {
-      const cornerId = `suitcase:${ctx.visitor(id).roomId}`;
-      if (play.extraCorners[cornerId]) throw new Error('当前房间已经设置了行李箱位置。');
+      const roomId = getLogicalRoomId(ctx.visitor(id).roomId);
+      if (Object.values(play.extraCorners).some(corner => getLogicalRoomId(corner.roomId) === roomId)) throw new Error('当前房间已经设置了行李箱位置。');
       if (!play.opening.emptyBoxTokens.length) throw new Error('备用空箱已用尽，无法放置行李箱。');
       break;
     }
@@ -71,7 +71,7 @@ function assertItem(play, id, action, ctx) {
 export function declareItem(play, id, action, ctx) {
   assertItem(play, id, action, ctx);
   const pending = { type: 'item', playerId: id, itemId: action.itemId };
-  if (['spirit_pen', 'ventriloquist_doll'].includes(action.itemId)) pending.roomId = action.roomId;
+  if (['spirit_pen', 'ventriloquist_doll'].includes(action.itemId)) pending.roomId = getLogicalRoomId(action.roomId);
   if (action.itemId === 'smartphone') { pending.targetZone = action.targetZone; pending.index = action.index; }
   if (action.itemId === 'amulet') { pending.tokenId = action.tokenId; pending.index = action.index; }
   play.round.pendingAction = pending;
@@ -105,10 +105,10 @@ export function resolveItem(play, pending, ctx) {
   assertItem(play, pending.playerId, pending, ctx);
   const id = pending.playerId;
   play.itemResults[id] = null;
-  const roomId = ctx.visitor(id).roomId;
+  const roomId = getLogicalRoomId(ctx.visitor(id).roomId);
   // The phone explicitly suppresses its effect on death. The other lethal active
   // cards do not state timing; this implementation resolves that death first too.
-  if (SAME_ROOM_LETHAL.has(pending.itemId) && ctx.roomOf(play.round.hidingCornerId) === roomId) {
+  if (SAME_ROOM_LETHAL.has(pending.itemId) && getLogicalRoomId(ctx.roomOf(play.round.hidingCornerId)) === roomId) {
     ctx.die(id, play.round.hidingCornerId);
     return;
   }
@@ -160,7 +160,7 @@ export function resolveItem(play, pending, ctx) {
     }
     case 'spirit_pen':
       play.resolution = { kind: 'item_answer', playerId: play.round.hakoId, userId: id,
-        itemId: pending.itemId, roomId: pending.roomId, truth: ctx.roomOf(play.round.hidingCornerId) === pending.roomId };
+        itemId: pending.itemId, roomId: getLogicalRoomId(pending.roomId), truth: getLogicalRoomId(ctx.roomOf(play.round.hidingCornerId)) === getLogicalRoomId(pending.roomId) };
       break;
     case 'dowsing_rod':
       play.resolution = { kind: 'item_answer', playerId: play.round.hakoId, userId: id,
@@ -214,10 +214,10 @@ export function getItemView(play, id, ctx) {
     && play.round.silent.turnPlayerId === id && !play.round.pendingAction && !play.resolution && !play.result;
   const usableItems = canUse ? ctx.inventory(id).items.filter(item => ACTIVE_ITEMS.has(item.id)).filter(item => {
     if (item.id === 'shrine_bell') return getNoiseEffectsView(play, id).canUseBell;
-    if (item.id === 'spirit_pen') return play.round.visitors.some(other => other.id !== id && other.status === 'alive' && other.roomId === player.roomId);
+    if (item.id === 'spirit_pen') return play.round.visitors.some(other => other.id !== id && other.status === 'alive' && getLogicalRoomId(other.roomId) === getLogicalRoomId(player.roomId));
     if (item.id === 'nightmare_letter') return play.powers.deck.includes('despair');
     if (item.id === 'smartphone') return play.powers.hand.length > 0 || play.powers.slots.some(Boolean);
-    if (item.id === 'suitcase') return play.opening.emptyBoxTokens.length > 0 && !play.extraCorners[`suitcase:${player.roomId}`];
+    if (item.id === 'suitcase') return play.opening.emptyBoxTokens.length > 0 && !Object.values(play.extraCorners).some(corner => getLogicalRoomId(corner.roomId) === getLogicalRoomId(player.roomId));
     return true;
   }).map(item => ({ id: item.id, name: ITEM_NAMES[item.id],
     description: INITIAL_ITEMS.find(known => known.id === item.id)?.description || item.description })) : [];

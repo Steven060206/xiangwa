@@ -16,7 +16,7 @@ function rejectsWithoutMutation(game, action) {
   assert.deepEqual(game, before);
 }
 
-test('catalog preserves nine boards, thirteen distinct rooms and all twenty-four corners', () => {
+test('catalog preserves nine boards, thirteen drawn subdivisions and all twenty-four corners', () => {
   assert.equal(MAP_TILES.length, 9);
   const rooms = MAP_TILES.flatMap(tile => tile.rooms);
   assert.equal(rooms.length, 13);
@@ -158,7 +158,7 @@ test('upstairs and basement must each be drawn and explicitly placed on their ow
   assert.ok(!getSetupView(game).legalPlacements.some(p => p.floor === -1));
 });
 
-test('connections include split rooms, rotated external doors and stairs only when both ends exist', () => {
+test('connections join whole boards through rotated external doors and stairs, omitting printed subdivisions', () => {
   const placements = [
     { tileId: 'hall', ...position(1, 0, 0) },
     { tileId: 'study', ...position(1, 0, -1, 2) },
@@ -170,11 +170,8 @@ test('connections include split rooms, rotated external doors and stairs only wh
   const edges = getConnections(placements);
   const keys = edges.map(({ from, to, kind }) => `${[from, to].sort().join(':')}:${kind}`).sort();
   assert.deepEqual(keys, [
-    'bathroom_room:hall_room:door', 'bathroom_room:toilet_stall:door',
-    'basement_room:storage_room:stairs', 'blue_bedroom:upstairs_hall:door',
-    'dark_room:study_room:door', 'hall_room:study_room:door',
-    'hall_room:upstairs_hall:stairs', 'kitchen:storage_room:door',
-    'kitchen:upstairs_hall:door',
+    'bathroom_room:hall_room:door', 'basement_room:storage_room:stairs',
+    'hall_room:study_room:door', 'hall_room:upstairs_hall:stairs', 'storage_room:upstairs_hall:door',
   ].sort());
   assert.equal(new Set(keys).size, keys.length);
   assert.deepEqual(getConnections([{ tileId: 'hall', ...position(1, 0, 0) }]), []);

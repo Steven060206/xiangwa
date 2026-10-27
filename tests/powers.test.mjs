@@ -28,6 +28,7 @@ function fixture() {
   placeRemains(opening, hakoId, 'hall_clock');
   inspectInitialRoom(opening, hakoId, 'children_room');
   chooseInitialHiding(opening, hakoId, 'children_bed');
+  opening.initialPowerCandidates = [1, 4, 11];
   chooseInitialPower(opening, hakoId, 1);
   return createPlay(setup, opening, { numbers: [0, 1, 2, 3, 4, 5] });
 }
@@ -95,8 +96,10 @@ test('cry draws the top card only, returns a locked card to the bottom and never
   reject(play, hakoId, { type: 'hako_cry' });
   play = begin(play);
   play = finishStage(play);
+  assert.deepEqual(getPlayView(play, first).powers.announcement, { roomId: 'children_room', cycle: 1 });
   reject(play, hakoId, { type: 'hako_cry' });
   play = stage(play);
+  assert.equal(getPlayView(play, first).powers.announcement, null);
   assert.equal(getPlayView(play, hakoId).powers.canCry, true);
 });
 
@@ -171,13 +174,14 @@ test('same-floor movement includes dynamic corners, excludes other floors and ca
   assert.ok(targets.includes('suitcase:living_room'));
   assert.equal(targets.includes('upstairs_armor'), false);
   assert.equal(targets.includes('basement_barrel'), false);
-  assert.deepEqual(getPlayView(play, first).powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
+  assert.deepEqual(getPlayView(play, first).powers.lastActivation, { cycle: 1 });
+  assert.deepEqual(getPlayView(play, hakoId).powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
   play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'living_room' });
   reject(play, hakoId, { type: 'activate_power', slot: 1 });
   reject(play, hakoId, { type: 'inspect_path_room', roomId: 'study_room' });
 });
 
-test('two-room movement requires inspecting its actual path before expanding to the second room', () => {
+test('two-room movement requires selecting its actual path without viewing its hidden tokens', () => {
   let play = fixture();
   givePower(play, 2, { slot: 0, ignoreThreshold: true });
   const origin = 'children_room';
@@ -188,16 +192,60 @@ test('two-room movement requires inspecting its actual path before expanding to 
   const extraId = `suitcase:${path.target}`;
   play.extraCorners[extraId] = { id: extraId, roomId: path.target, name: '行李箱中' };
   play.tokens[extraId] = piece('two-hop-empty', 'empty_box');
-  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  play.tokens[getRoom(path.intermediate).corners[0].id] = piece('private-path-token', 'password', { number: 6 });
+  play = begin(stage(play));
+  reject(play, hakoId, { type: 'inspect_path_room', roomId: path.intermediate });
+  play = act(play, hakoId, { type: 'activate_power', slot: 0 });
   assert.equal(powerHidingTargets(play, 'children_bed').includes(extraId), false);
   reject(play, hakoId, { type: 'inspect_hiding_room', roomId: path.target });
   play = act(play, hakoId, { type: 'inspect_path_room', roomId: path.intermediate });
-  assert.equal(getPlayView(play, hakoId).powers.pathInspection.roomId, path.intermediate);
+  assert.deepEqual(getPlayView(play, hakoId).powers.pathInspection, { roomId: path.intermediate });
+  assert.equal(JSON.stringify(getPlayView(play, hakoId).powers).includes('private-path-token'), false);
   assert.equal(Object.hasOwn(getPlayView(play, first).powers, 'pathInspection'), false);
   assert.ok(powerHidingTargets(play, 'children_bed').includes(extraId));
   reject(play, hakoId, { type: 'inspect_path_room', roomId: path.intermediate });
   play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: path.target });
   reject(play, hakoId, { type: 'inspect_path_room', roomId: path.intermediate });
+});
+
+test('two-room power cannot be activated after the final room has already been inspected', () => {
+  let play = fixture();
+  givePower(play, 2, { slot: 0, ignoreThreshold: true });
+  play = begin(stage(play));
+  play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
+  const option = getPlayView(play, hakoId).powers.activationOptions.find(option => option.card.id === 2);
+  assert.equal(option.canActivate, false);
+  assert.match(option.reason, /潜伏/);
+  reject(play, hakoId, { type: 'activate_power', slot: 0 });
+  assert.deepEqual(getPlayView(play, hakoId).powers.pathRooms, []);
+});
+
+test('powers one through four reveal only an activation unless hako explicitly makes the ability public', () => {
+  for (const powerId of [1, 2, 3, 4]) for (const publicChoice of [false, true]) {
+    let play = fixture();
+    givePower(play, powerId, { slot: 0, ignoreThreshold: true });
+    play = begin(stage(play));
+    play = act(play, hakoId, { type: 'activate_power', slot: 0, public: publicChoice,
+      ...(powerId === 3 ? { fromRoomId: 'hall_room', toRoomId: 'study_room' } : {}),
+      ...(powerId === 4 ? { roomId: 'study_room' } : {}),
+    });
+    const own = getPlayView(play, hakoId).powers;
+    const visitor = getPlayView(play, first).powers;
+    assert.equal(own.lastActivation.powerId, powerId);
+    assert.equal(visitor.lastActivation.powerId, publicChoice ? powerId : undefined);
+    assert.equal(visitor.lastActivation.name, publicChoice ? powerCard(powerId).name : undefined);
+    if (powerId === 3) assert.equal(play.round.blockedDoors[0].public, publicChoice);
+    if (powerId === 4) {
+      assert.equal(visitor.slots[0].faceUp, publicChoice);
+      assert.equal(visitor.slots[0].card?.id, publicChoice ? 4 : undefined);
+      assert.equal(Object.hasOwn(visitor, 'rearrangement'), false);
+      if (!publicChoice) {
+        // Saves written by the former implementation turned this card face up automatically.
+        play.powers.slots[0].faceUp = true;
+        assert.equal(getPlayView(play, first).powers.slots[0].card, undefined);
+      }
+    }
+  }
 });
 
 test('ghosts stacked at hako do not inherit hako movement abilities', () => {
@@ -217,6 +265,10 @@ test('door locking rejects stairs, expires next stage and cannot be used in the 
   play = stage(play);
   play = act(play, hakoId, { type: 'set_power', powerId: 3, slot: 0 });
   play = begin(play);
+  const doors = getPlayView(play, hakoId).powers.activationOptions.find(option => option.card.id === 3).doors;
+  assert.equal(doors.some(door => door.fromRoomId === door.toRoomId), false);
+  assert.equal(doors.some(door => [door.fromRoomId, door.toRoomId].includes('dark_room')), false);
+  reject(play, hakoId, { type: 'activate_power', slot: 0, fromRoomId: 'study_room', toRoomId: 'dark_room' });
   reject(play, hakoId, { type: 'activate_power', slot: 0, fromRoomId: 'hall_room', toRoomId: 'upstairs_hall' });
   play = act(play, hakoId, { type: 'activate_power', slot: 0, fromRoomId: 'hall_room', toRoomId: 'study_room' });
   assert.ok(play.round.blockedDoors.some(door => [door.from, door.to].includes('hall_room')));
@@ -256,6 +308,37 @@ test('rearrangement conserves free tokens and never exposes or moves originals c
   assert.equal(play.round.hidingCornerId, 'children_bed');
   assert.deepEqual(Object.values(play.tokens).filter(Boolean).map(token => token.id).sort(), tokensBefore);
   assert.deepEqual(getPlayView(play, first).cornerState, publicBefore);
+});
+
+test('rearrangement targets one whole map board including its subrooms and old suitcase room aliases', () => {
+  let play = fixture();
+  givePower(play, 4, { slot: 0 });
+  play.extraCorners['suitcase:dark_room'] = { id: 'suitcase:dark_room', roomId: 'dark_room', name: '行李箱中' };
+  play.tokens['suitcase:dark_room'] = piece('board-suitcase', 'empty_box');
+  play = begin(stage(play));
+  const options = getPlayView(play, hakoId).powers.activationOptions.find(option => option.card.id === 4);
+  assert.equal(options.rooms.length, 9);
+  assert.equal(options.rooms.some(room => room.id === 'dark_room'), false);
+  assert.ok(options.rooms.some(room => room.id === 'study_room' && room.name.includes('深色房间')));
+  play = act(play, hakoId, { type: 'activate_power', slot: 0, roomId: 'dark_room' });
+  const pending = getPlayView(play, hakoId).powers.rearrangement;
+  assert.equal(pending.roomId, 'study_room');
+  assert.deepEqual(pending.corners.map(corner => corner.id).sort(), [
+    'study_books', 'study_desk', 'dark_wardrobe', 'dark_bed', 'suitcase:dark_room',
+  ].sort());
+  assert.ok(pending.corners.every(corner => Object.hasOwn(corner, 'token')));
+  const before = pending.corners.map(corner => corner.token?.id ?? null).sort();
+  play = act(play, hakoId, { type: 'power_rearrange', order: pending.corners.map(corner => corner.id).reverse() });
+  assert.deepEqual(pending.corners.map(corner => play.tokens[corner.id]?.id ?? null).sort(), before);
+});
+
+test('same-board visitors share the behind-you effect across printed subroom boundaries', () => {
+  let play = fixture();
+  play.round.hidingCornerId = 'dark_bed';
+  play.round.visitors[0].roomId = 'study_room';
+  givePower(play, 5, { slot: 0, ignoreThreshold: true });
+  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  assert.equal(play.round.visitors[0].status, 'box_person');
 });
 
 test('behind-you uses six notebooks for hako and eight for box-person rooms', () => {
@@ -465,7 +548,8 @@ test('power views are detached and do not expose hidden hand, rearrangement or d
   own.activationOptions[0].rooms[0].name = 'changed';
   own.lastActivation.powerId = 99;
   const publicView = getPlayView(play, first).powers;
-  publicView.slots[0].card.id = 99;
+  publicView.lastActivation.cycle = 99;
+  assert.equal(Object.hasOwn(publicView.slots[0], 'card'), false);
   assert.equal(Object.hasOwn(publicView, 'hand'), false);
   assert.equal(Object.hasOwn(publicView, 'rearrangement'), false);
   assert.equal(Object.hasOwn(publicView, 'lastDraw'), false);

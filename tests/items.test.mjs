@@ -23,6 +23,7 @@ function newPlay(itemId = 'spirit_pen') {
   placeRemains(opening, hako, 'hall_clock');
   inspectInitialRoom(opening, hako, 'children_room');
   chooseInitialHiding(opening, hako, 'children_bed');
+  opening.initialPowerCandidates = [1, 4, 11];
   chooseInitialPower(opening, hako, 1);
   return createPlay(setup, opening, { numbers: [0, 1, 2, 3, 4, 5] });
 }
@@ -117,6 +118,38 @@ test('spirit pen requires a living companion and only active NO9 permits a false
     assert.equal(play.itemEvents.at(-1).answer, !lying);
     assert.equal(play.round.silent.turnPlayerId, second);
   }
+});
+
+test('item room options contain whole boards and a companion in a printed subdivision counts as same-room', () => {
+  let play = reveal(newPlay('spirit_pen'));
+  play.round.visitors.find(player => player.id === first).roomId = 'bathroom_room';
+  play.round.visitors.find(player => player.id === second).roomId = 'toilet_stall';
+  const options = getPlayView(play, first).items.roomOptions;
+  assert.equal(options.length, 9);
+  assert.ok(!options.some(room => ['toilet_stall', 'dark_room', 'blue_bedroom', 'kitchen'].includes(room.id)));
+  assert.ok(getPlayView(play, first).items.usableItems.some(item => item.id === 'spirit_pen'));
+  play = use(play, 'spirit_pen', { roomId: 'dark_room' });
+  assert.equal(play.resolution.roomId, 'study_room');
+  assert.equal(play.resolution.truth, false);
+});
+
+test('active item same-room death spans the entire printed board', () => {
+  let play = reveal(newPlay('smartphone'));
+  play.round.visitors.find(player => player.id === first).roomId = 'study_room';
+  play.round.hidingCornerId = 'dark_bed';
+  play = use(play, 'smartphone', { targetZone: 'hand', index: 0 });
+  assert.equal(play.round.visitors.find(player => player.id === first).status, 'box_person');
+  assert.equal(play.itemResults[first], null);
+});
+
+test('a suitcase saved in a subdivision prevents placing a second suitcase elsewhere on the same board', () => {
+  const play = reveal(newPlay('suitcase'));
+  play.round.visitors.find(player => player.id === first).roomId = 'bathroom_room';
+  const cornerId = 'suitcase:toilet_stall';
+  play.extraCorners[cornerId] = { id: cornerId, roomId: 'toilet_stall', name: '行李箱中' };
+  play.tokens[cornerId] = { id: 'saved-suitcase-empty', type: 'empty_box' };
+  assert.ok(!getPlayView(play, first).items.usableItems.some(item => item.id === 'suitcase'));
+  rejects(play, first, { type: 'use_item', itemId: 'suitcase' });
 });
 
 test('smartphone reveals exactly the selected card to its user and views are detached', () => {

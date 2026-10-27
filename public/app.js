@@ -1,6 +1,6 @@
 import { getTile } from '/shared/maps.mjs';
 import { applyUndoLock, renderUndo } from './undo.js';
-import { createTileSvg, cornerNumber, mapPlayers } from './tile.js';
+import { createTileSvg, cornerNumber, cornerName, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
@@ -19,6 +19,7 @@ let rotation = 0;
 let selected = null;
 let tileTurnKey = '';
 let boardKey = '';
+let selectedMapCorner = '';
 const compactScreen = matchMedia('(max-width:720px)');
 let guideExpanded = !compactScreen.matches;
 
@@ -369,8 +370,9 @@ function renderBoard() {
   const placements = setup.placements.filter(p => p.floor === activeFloor);
   const extraCorners = state.round?.extraCorners || [];
   const players = mapPlayers(state);
+  const announcement = state.round?.powers?.announcement;
   renderMapPositions(players);
-  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players]);
+  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players, announcement]);
   if (key === boardKey) return;
   boardKey = key;
   const board = $('tile-board');
@@ -398,7 +400,7 @@ function renderBoard() {
       cell.dataset.rotation = placement.rotation;
       cell.style.gridColumn = placement.x - minX + 1;
       cell.style.gridRow = placement.y - minY + 1;
-      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners, players));
+      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners, players, announcement));
       fragment.append(cell);
     }
     for (const position of targets) {
@@ -422,8 +424,30 @@ function renderBoard() {
     }
   }
   board.replaceChildren(fragment);
+  if (selectedMapCorner) board.querySelector(`[data-corner-id="${CSS.escape(selectedMapCorner)}"].corner-location`)?.classList.add('selected-corner');
   renderCornerGuide(placements, extraCorners);
 }
+
+function selectMapCorner(event) {
+  if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+  const corner = event.target.closest('.corner-location');
+  if (!corner) return;
+  event.preventDefault();
+  event.stopPropagation();
+  selectedMapCorner = corner.dataset.cornerId;
+  for (const mark of $('tile-board').querySelectorAll('.corner-location')) mark.classList.toggle('selected-corner', mark === corner);
+  let name = $('selected-corner-name');
+  if (!name) {
+    name = node('span', 'selected-corner-name');
+    name.id = 'selected-corner-name';
+    name.dataset.testid = 'selected-corner-name';
+    name.setAttribute('role', 'status');
+    $('board-help').parentElement.append(name);
+  }
+  name.textContent = cornerName(selectedMapCorner);
+}
+$('tile-board').addEventListener('click', selectMapCorner);
+$('tile-board').addEventListener('keydown', selectMapCorner);
 
 function renderMapPositions(players) {
   const strip = $('map-positions');

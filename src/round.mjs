@@ -1,4 +1,4 @@
-import { MAP_TILES } from './maps.mjs';
+import { MAP_TILES, getLogicalRoomId } from './maps.mjs';
 import {
   createSilentRound, revealSilent, skipSilent, finishVisitorAction,
   passNoiseReaction, finishHakoPhase, getSilentView,
@@ -66,9 +66,10 @@ export function applyRoundAction(round, playerId, action) {
       assertVisitorAction(round, playerId);
       const visitor = round.visitors.find(player => player.id === playerId);
       const targets = getMoveTargets(round.placements, visitor.roomId, { blockedDoors: round.blockedDoors });
-      if (!targets.includes(action.roomId)) throw new Error('只能移动到门或楼梯相连、且通路未被封锁的相邻房间。');
+      const targetRoomId = getLogicalRoomId(action.roomId);
+      if (!targets.includes(targetRoomId)) throw new Error('只能移动到门或楼梯相连、且通路未被封锁的相邻房间。');
       // Declaration and resolution are separate so later powers can interrupt before movement.
-      round.pendingAction = { type: 'move', playerId, fromRoomId: visitor.roomId, toRoomId: action.roomId };
+      round.pendingAction = { type: 'move', playerId, fromRoomId: getLogicalRoomId(visitor.roomId), toRoomId: targetRoomId };
       break;
     }
     case 'resolve_visitor_action': {
@@ -78,11 +79,12 @@ export function applyRoundAction(round, playerId, action) {
       assertVisitorAction(round, pending.playerId);
       const visitor = round.visitors.find(player => player.id === pending.playerId);
       const targets = getMoveTargets(round.placements, visitor.roomId, { blockedDoors: round.blockedDoors });
-      if (visitor.roomId !== pending.fromRoomId || !targets.includes(pending.toRoomId)) {
+      if (getLogicalRoomId(visitor.roomId) !== getLogicalRoomId(pending.fromRoomId)
+          || !targets.includes(getLogicalRoomId(pending.toRoomId))) {
         throw new Error('房间通路已改变，请先处理待结算行动。');
       }
       finishVisitorAction(round.silent, pending.playerId);
-      visitor.roomId = pending.toRoomId;
+      visitor.roomId = getLogicalRoomId(pending.toRoomId);
       round.pendingAction = null;
       break;
     }
@@ -116,9 +118,11 @@ export function getRoundView(round, playerId) {
   const view = {
     phase: round.pendingAction ? 'visitor_reaction' : round.silent.phase,
     you: playerId,
-    visitors: round.visitors.map(player => ({ id: player.id, roomId: player.roomId })),
+    visitors: round.visitors.map(player => ({ id: player.id, roomId: getLogicalRoomId(player.roomId) })),
     silent: getSilentView(round.silent),
-    pendingAction: round.pendingAction ? { ...round.pendingAction } : null,
+    pendingAction: round.pendingAction ? { ...round.pendingAction,
+      ...(round.pendingAction.fromRoomId ? { fromRoomId: getLogicalRoomId(round.pendingAction.fromRoomId) } : {}),
+      ...(round.pendingAction.toRoomId ? { toRoomId: getLogicalRoomId(round.pendingAction.toRoomId) } : {}) } : null,
     moveTargets: mayMove ? getMoveTargets(round.placements, visitor.roomId, { blockedDoors: round.blockedDoors }) : [],
     hako: { playerId: round.hakoId },
   };

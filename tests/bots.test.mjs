@@ -78,6 +78,7 @@ function fixture(firstItem = 'deduction') {
   placeRemains(state, hakoId, 'hall_clock');
   inspectInitialRoom(state, hakoId, 'children_room');
   chooseInitialHiding(state, hakoId, 'children_bed');
+  state.initialPowerCandidates = [1, 4, 11];
   chooseInitialPower(state, hakoId, 1);
   state.powerDeck = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 'despair'];
   return createPlay(map, state, { numbers: [0, 1, 2, 3, 4, 5] });
@@ -167,7 +168,13 @@ test('hako completes secret opening choices from its own filtered options withou
     if (action.type === 'choose_initial_power') chooseInitialPower(state, hakoId, action.powerId);
   }
   assert.deepEqual(seen, ['choose_secrets', 'place_remains', 'inspect_initial_room', 'choose_initial_hiding', 'choose_initial_power']);
-  assert.equal(state.initialPowerId, 1);
+  assert.ok(state.initialPowerCandidates.includes(state.initialPowerId));
+});
+
+test('hako bots can choose NO4 from an opening draft without relying on an omitted favorite', () => {
+  const view = { phase: 'opening_setup', you: hakoId, players: players(),
+    opening: { phase: 'power', hakoId, initialPowerOptions: [{ id: 4, name: '动来动去' }] } };
+  assert.deepEqual(decide(view), { type: 'choose_initial_power', powerId: 4 });
 });
 
 test('visitors reveal only their own down card, wait during declarations, and hako confirms the declaration', () => {

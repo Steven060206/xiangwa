@@ -4,7 +4,7 @@ import { createSetup, drawTile, placeTile } from '../src/game.mjs';
 import {
   INITIAL_ITEMS, createItemDraft, chooseItem, getItemDraftView, createOpening,
   chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding,
-  chooseInitialPower, getOpeningView,
+  chooseInitialPower, getOpeningView, getInitialRoomMemory,
 } from '../src/preparation.mjs';
 
 const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
@@ -63,7 +63,7 @@ function assertPublicOpening(opening) {
     'hidingCornerId', 'hidingUnderToken', 'inspectedRoom', 'powerDeck', 'deck',
     'cornerTokens', 'token', 'number', 'tool', 'type', 'safeBoard', 'emptyBoxTokens',
     'remainsTargets', 'hidingRooms', 'hidingTargets', 'initialPowerOptions',
-    'initialPowerIgnoresNotebookRequirement',
+    'initialPowerIgnoresNotebookRequirement', 'initialPowerCandidates', 'initialPowerId', 'initialPowerName',
   ]);
   function checkKeys(value) {
     if (!value || typeof value !== 'object') return;
@@ -80,7 +80,6 @@ function assertPublicOpening(opening) {
     assert.ok(view.corners.every(corner => typeof corner.occupied === 'boolean'));
     checkKeys(view);
     const keys = ['phase', 'hakoId', 'itemChoices', 'corners'];
-    if (opening.initialPowerId !== null) keys.push('initialPowerId', 'initialPowerName');
     assert.deepEqual(Object.keys(view).sort(), keys.sort());
   }
   assert.throws(() => getOpeningView(opening, 'outsider'), /本局玩家/);
@@ -261,10 +260,11 @@ test('remains may directly fill the empty corner without moving any other token'
   assert.ok(Object.values(opening.cornerTokens).every(Boolean));
 });
 
-test('hako inspects exactly one haunted room and hides only there, preserving the covered token', () => {
+test('hako chooses a haunted board without seeing its contents and learns only the replaced piece', () => {
   for (const [roomId, cornerIds, outsideId] of [
     ['children_room', ['children_cabinet', 'children_toys', 'children_bed'], 'dark_wardrobe'],
-    ['dark_room', ['dark_wardrobe', 'dark_bed'], 'children_bed'],
+    ['study_room', ['study_books', 'study_desk', 'dark_wardrobe', 'dark_bed'], 'children_bed'],
+    ['dark_room', ['study_books', 'study_desk', 'dark_wardrobe', 'dark_bed'], 'children_bed'],
   ]) {
     const opening = afterRemains();
     rejectsWithoutMutation(opening, () => inspectInitialRoom(opening, hakoId, 'hall_room'));
@@ -272,19 +272,25 @@ test('hako inspects exactly one haunted room and hides only there, preserving th
     rejectsWithoutMutation(opening, () => chooseInitialHiding(opening, hakoId, cornerIds[0]));
     const view = inspectInitialRoom(opening, hakoId, roomId);
     assert.equal(opening.phase, 'hiding_corner');
-    assert.equal(view.inspectedRoom.id, roomId);
+    assert.equal(view.inspectedRoom.id, roomId === 'dark_room' ? 'study_room' : roomId);
     assert.deepEqual(view.inspectedRoom.corners.map(corner => corner.id), cornerIds);
     assert.deepEqual(view.hidingTargets, cornerIds);
-    for (const corner of view.inspectedRoom.corners) assert.deepEqual(corner.token, opening.cornerTokens[corner.id]);
-    rejectsWithoutMutation(opening, () => inspectInitialRoom(opening, hakoId, roomId === 'dark_room' ? 'children_room' : 'dark_room'));
+    for (const corner of view.inspectedRoom.corners) {
+      assert.equal(Object.hasOwn(corner, 'token'), false);
+      assert.equal(typeof corner.name, 'string');
+    }
+    rejectsWithoutMutation(opening, () => inspectInitialRoom(opening, hakoId, roomId === 'children_room' ? 'dark_room' : 'children_room'));
     rejectsWithoutMutation(opening, () => chooseInitialHiding(opening, hakoId, outsideId));
     rejectsWithoutMutation(opening, () => chooseInitialHiding(opening, visitors[0], cornerIds[0]));
     const previous = structuredClone(opening.cornerTokens[cornerIds[0]]);
     const otherTokens = structuredClone(opening.cornerTokens);
-    chooseInitialHiding(opening, hakoId, cornerIds[0]);
+    const hidden = chooseInitialHiding(opening, hakoId, cornerIds[0]);
     assert.equal(opening.phase, 'power');
     assert.equal(opening.hidingCornerId, cornerIds[0]);
     assert.deepEqual(opening.hidingUnderToken, previous);
+    assert.deepEqual(hidden.hidingUnderToken, previous);
+    assert.deepEqual(hidden.lastInspectedRoom, { id: view.inspectedRoom.id, cycle: 0,
+      corners: [{ id: cornerIds[0], token: previous }] });
     assert.deepEqual(opening.cornerTokens[cornerIds[0]], { id: 'hako', type: 'hako' });
     for (const [id, token] of Object.entries(otherTokens)) {
       if (id !== cornerIds[0]) assert.deepEqual(opening.cornerTokens[id], token);
@@ -293,34 +299,61 @@ test('hako inspects exactly one haunted room and hides only there, preserving th
   }
 });
 
-test('initial power forbids 4 and 12, bypasses notebook threshold, and keeps remaining powers secret', () => {
+test('legacy initial hiding memories reveal just the replaced token and normalize the room id', () => {
+  const opening = afterRemains();
+  inspectInitialRoom(opening, hakoId, 'dark_room');
+  chooseInitialHiding(opening, hakoId, 'dark_bed');
+  opening.inspectedRoomId = 'dark_room';
+  const token = structuredClone(opening.hidingUnderToken);
+  const memory = getInitialRoomMemory(opening);
+  assert.deepEqual(memory, { id: 'study_room', cycle: 0, corners: [{ id: 'dark_bed', token }] });
+  opening.cornerTokens.study_books = { id: 'another', type: 'notebook', number: 9 };
+  assert.deepEqual(getInitialRoomMemory(opening), memory);
+  memory.corners[0].token.id = 'changed';
+  assert.deepEqual(opening.hidingUnderToken, token);
+});
+
+test('initial power is chosen from three dealt cards and remains private with the rest of the deck', () => {
   const opening = beforePower();
   const options = getOpeningView(opening, hakoId).initialPowerOptions;
-  assert.deepEqual(options.map(power => power.id), [1, 2, 3, 5, 6, 7, 8, 9, 10]);
-  for (const powerId of [0, 4, 11, 12, 13, 1.5, '1', undefined]) {
+  assert.equal(options.length, 3);
+  assert.equal(new Set(options.map(power => power.id)).size, 3);
+  assert.deepEqual(options.map(power => power.id), opening.initialPowerCandidates);
+  assert.ok(options.every(power => power.description && power.id >= 1 && power.id <= 11));
+  const unoffered = Array.from({ length: 11 }, (_, index) => index + 1)
+    .find(id => !opening.initialPowerCandidates.includes(id));
+  for (const powerId of [0, unoffered, 12, 13, 1.5, '1', undefined]) {
     rejectsWithoutMutation(opening, () => chooseInitialPower(opening, hakoId, powerId));
   }
-  rejectsWithoutMutation(opening, () => chooseInitialPower(opening, visitors[0], 1));
-  chooseInitialPower(opening, hakoId, 1);
+  const chosen = options[0];
+  rejectsWithoutMutation(opening, () => chooseInitialPower(opening, visitors[0], chosen.id));
+  chooseInitialPower(opening, hakoId, chosen.id);
   assert.equal(opening.phase, 'opening_ready');
-  assert.equal(opening.initialPowerId, 1);
+  assert.equal(opening.initialPowerId, chosen.id);
   assert.equal(opening.initialPowerIgnoresNotebookRequirement, true);
   assert.equal(opening.powerDeck.length, 11);
   assert.equal(new Set(opening.powerDeck).size, 11);
-  assert.deepEqual(opening.powerDeck.filter(id => typeof id === 'number').sort((a, b) => a - b), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(opening.powerDeck.filter(id => typeof id === 'number').sort((a, b) => a - b),
+    Array.from({ length: 11 }, (_, index) => index + 1).filter(id => id !== chosen.id));
   assert.ok(opening.powerDeck.includes('despair'));
-  assert.equal(opening.powerDeck.includes(1), false);
+  assert.equal(opening.powerDeck.includes(chosen.id), false);
+  assert.ok(options.slice(1).every(power => opening.powerDeck.includes(power.id)));
   assert.equal(opening.powerDeck.includes(12), false);
   for (const playerId of [hakoId, ...visitors]) {
     const view = getOpeningView(opening, playerId);
-    assert.equal(view.initialPowerId, 1);
-    assert.equal(view.initialPowerName, '就在你身旁');
+    if (playerId === hakoId) {
+      assert.equal(view.initialPowerId, chosen.id);
+      assert.equal(view.initialPowerName, chosen.name);
+    } else {
+      assert.equal(Object.hasOwn(view, 'initialPowerId'), false);
+      assert.equal(Object.hasOwn(view, 'initialPowerName'), false);
+    }
     assert.equal(Object.hasOwn(view, 'powerDeck'), false);
   }
   rejectsWithoutMutation(opening, () => chooseInitialPower(opening, hakoId, 2));
 });
 
-test('each preparation stage exposes only public occupancy and the public initial power to visitors', () => {
+test('each preparation stage exposes only public occupancy to visitors', () => {
   const opening = newOpening();
   assertPublicOpening(opening);
   chooseSecrets(opening, hakoId, { password: [1, 3, 5], weakness: 'gasoline' });
@@ -332,7 +365,55 @@ test('each preparation stage exposes only public occupancy and the public initia
   chooseInitialHiding(opening, hakoId, 'children_bed');
   assert.equal(opening.hidingUnderToken.type, 'remains');
   assertPublicOpening(opening);
-  chooseInitialPower(opening, hakoId, 1);
+  chooseInitialPower(opening, hakoId, opening.initialPowerCandidates[0]);
+  assertPublicOpening(opening);
+});
+
+test('opening draws include every allowed numbered power and persist without reshuffling on reads', t => {
+  let seed = 72;
+  t.mock.method(Math, 'random', () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 0x100000000));
+  const seen = new Set();
+  for (let count = 0; count < 40; count++) {
+    const opening = newOpening();
+    assert.equal(opening.initialPowerCandidates.length, 3);
+    assert.equal(new Set(opening.initialPowerCandidates).size, 3);
+    opening.initialPowerCandidates.forEach(id => seen.add(id));
+    const saved = JSON.parse(JSON.stringify(opening));
+    assert.deepEqual(saved.initialPowerCandidates, opening.initialPowerCandidates);
+    const before = structuredClone(opening);
+    getOpeningView(opening, hakoId);
+    getOpeningView(opening, visitors[0]);
+    assert.deepEqual(opening, before);
+  }
+  assert.deepEqual([...seen].sort((a, b) => a - b), Array.from({ length: 11 }, (_, index) => index + 1));
+});
+
+test('NO.4 and NO.11 can be initial choices and restored pending draws keep the same three options', () => {
+  for (const powerId of [4, 11]) {
+    const opening = beforePower();
+    opening.initialPowerCandidates = [1, 4, 11];
+    const saved = JSON.parse(JSON.stringify(opening));
+    const expected = getOpeningView(opening, hakoId).initialPowerOptions;
+    assert.deepEqual(getOpeningView(saved, hakoId).initialPowerOptions, expected);
+    chooseInitialPower(saved, hakoId, powerId);
+    assert.equal(saved.initialPowerId, powerId);
+    assert.equal(saved.initialPowerIgnoresNotebookRequirement, true);
+    assertPublicOpening(saved);
+  }
+});
+
+test('legacy pending openings have stable three-card choices and retain already selected powers', t => {
+  const opening = beforePower();
+  delete opening.initialPowerCandidates;
+  const before = structuredClone(opening);
+  t.mock.method(Math, 'random', () => { throw new Error('read-only views must not draw cards'); });
+  const options = getOpeningView(opening, hakoId).initialPowerOptions;
+  assert.deepEqual(options.map(card => card.id), [1, 4, 11]);
+  assert.deepEqual(getOpeningView(JSON.parse(JSON.stringify(opening)), hakoId).initialPowerOptions, options);
+  assert.deepEqual(opening, before);
+  t.mock.restoreAll();
+  chooseInitialPower(opening, hakoId, 4);
+  assert.equal(getOpeningView(opening, hakoId).initialPowerId, 4);
   assertPublicOpening(opening);
 });
 
@@ -361,8 +442,7 @@ test('all opening views copy nested secret options, inspected tokens and public 
   inspectInitialRoom(opening, hakoId, 'children_room');
   const inspectedBefore = structuredClone(opening);
   const inspected = getOpeningView(opening, hakoId);
-  inspected.inspectedRoom.corners[0].token.id = 'changed';
-  inspected.inspectedRoom.corners[0].token.type = 'changed';
+  inspected.inspectedRoom.corners[0].name = 'changed';
   inspected.inspectedRoom.corners.push({ id: 'changed', token: null });
   inspected.hidingTargets.push('changed');
   assert.deepEqual(opening, inspectedBefore);
@@ -370,6 +450,7 @@ test('all opening views copy nested secret options, inspected tokens and public 
   const powerBefore = structuredClone(opening);
   const power = getOpeningView(opening, hakoId);
   power.hidingUnderToken.id = 'changed';
+  power.lastInspectedRoom.corners[0].token.id = 'changed';
   power.initialPowerOptions[0].name = 'changed';
   const publicView = getOpeningView(opening, visitors[0]);
   publicView.itemChoices[0].playerId = 'changed';

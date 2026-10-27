@@ -79,7 +79,7 @@ test('mobile item choices show effects before picking and update active and nigh
   state = await act(hako, 'place_remains', { cornerId: 'hall_clock' });
   state = await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(hako, 'choose_initial_hiding', { cornerId: 'children_bed' });
-  state = await act(hako, 'choose_initial_power', { powerId: 1 });
+  state = await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
   await act(first, 'silent_reveal', { index: 0 });
   await page.getByTestId('active-item-select').waitFor();
   for (const itemId of ['dowsing_rod', 'suitcase']) {

@@ -27,6 +27,7 @@ function fixture() {
   placeRemains(opening, hako, 'hall_clock');
   inspectInitialRoom(opening, hako, 'children_room');
   chooseInitialHiding(opening, hako, 'children_bed');
+  opening.initialPowerCandidates = [1, 4, 11];
   chooseInitialPower(opening, hako, 1);
   return createPlay(setup, opening, { numbers: [0, 1, 2, 3, 4, 5] });
 }

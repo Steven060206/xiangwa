@@ -1,4 +1,5 @@
-import { MAP_TILES, getTile } from './maps.mjs';
+import { MAP_TILES, getTile, getLogicalRoomId, getLogicalRooms } from './maps.mjs';
+import { powerCard } from './powers.mjs';
 
 // These twelve supplied cards are confirmed; a selected edition may inject its own draft pool.
 export const INITIAL_ITEMS = Object.freeze([
@@ -23,10 +24,17 @@ const TOOLS = Object.freeze([
 ].map(tool => Object.freeze(tool)));
 const POWER_NAMES = [null, '就在你身旁', '马上就到哟', '打不开的门', '动来动去', '我在你身后',
   '好想打开它', '快把它给我', '我的玛丽小姐', '虚假的回应', '鬼来电', '虚假的哭喊'];
-const INITIAL_POWER_IDS = [1, 2, 3, 5, 6, 7, 8, 9, 10];
+const INITIAL_POWER_IDS = Array.from({ length: 11 }, (_, index) => index + 1);
+// Pending openings from the previous version have no draw. Keep their three
+// choices stable across read-only snapshots and restarts until one is selected.
+const LEGACY_INITIAL_POWER_CANDIDATES = [1, 4, 11];
+
+function initialPowerCandidates(opening) {
+  return opening.initialPowerCandidates ?? LEGACY_INITIAL_POWER_CANDIDATES;
+}
 const PASSWORD_NUMBERS = [1, 2, 3, 4, 5, 6];
 const SAFE_CORNER = 'study_desk';
-const HIDING_ROOM_IDS = ['children_room', 'dark_room'];
+const HIDING_ROOM_IDS = ['children_room', 'study_room'];
 
 function shuffled(values) {
   const result = [...values];
@@ -98,7 +106,8 @@ export function getItemDraftView(draft) {
 }
 
 function getRooms(opening) {
-  return opening.placements.flatMap(placement => getTile(placement.tileId).rooms);
+  const rooms = getLogicalRooms();
+  return opening.placements.map(placement => rooms.find(room => room.tileId === placement.tileId));
 }
 
 function getCorners(opening) {
@@ -145,6 +154,7 @@ export function createOpening(setup, { hakoId, itemChoices } = {}) {
     hidingCornerId: null,
     hidingUnderToken: null,
     initialPowerId: null,
+    initialPowerCandidates: shuffled(INITIAL_POWER_IDS).slice(0, 3),
     initialPowerIgnoresNotebookRequirement: false,
     powerDeck: [],
     emptyBoxTokens: Array.from({ length: 24 }, (_, index) => ({ id: `empty_box_${index + 1}`, type: 'empty_box' })),
@@ -206,8 +216,9 @@ export function placeRemains(opening, playerId, cornerId) {
 
 export function inspectInitialRoom(opening, playerId, roomId) {
   assertHakoPhase(opening, playerId, 'hiding_room');
+  roomId = getLogicalRoomId(roomId);
   if (!HIDING_ROOM_IDS.includes(roomId) || !getRooms(opening).some(room => room.id === roomId)) {
-    throw new Error('只能选择儿童房或深色房间中的一个查看并进行初始潜伏。');
+    throw new Error('初始潜伏只能选择儿童房或书房／深色房间地图板。');
   }
   opening.inspectedRoomId = roomId;
   opening.phase = 'hiding_corner';
@@ -216,7 +227,7 @@ export function inspectInitialRoom(opening, playerId, roomId) {
 
 export function chooseInitialHiding(opening, playerId, cornerId) {
   assertHakoPhase(opening, playerId, 'hiding_corner');
-  const room = getRooms(opening).find(candidate => candidate.id === opening.inspectedRoomId);
+  const room = getRooms(opening).find(candidate => candidate.id === getLogicalRoomId(opening.inspectedRoomId));
   if (!room?.corners.some(corner => corner.id === cornerId)) throw new Error('初始潜伏须选择刚才查看的怨房内的角落。');
   opening.hidingUnderToken = copyToken(opening.cornerTokens[cornerId]);
   opening.cornerTokens[cornerId] = { id: 'hako', type: 'hako' };
@@ -225,23 +236,23 @@ export function chooseInitialHiding(opening, playerId, cornerId) {
   return getOpeningView(opening, playerId);
 }
 
-// The opening board is an immutable record once play begins. Reconstruct only
-// the room Hako actually inspected, including the piece moved to the direction area.
+// Only the piece replaced by Hako is revealed during ordinary hiding. Legacy
+// opening records also return that one piece, never the other room contents.
 export function getInitialRoomMemory(opening) {
   if (!opening?.hidingCornerId || !opening.inspectedRoomId) return null;
-  const room = getRooms(opening).find(candidate => candidate.id === opening.inspectedRoomId);
-  if (!room) return null;
-  return { id: room.id, cycle: 0, corners: room.corners.map(corner => ({ id: corner.id,
-    token: copyToken(corner.id === opening.hidingCornerId ? opening.hidingUnderToken : opening.cornerTokens[corner.id]),
-  })) };
+  const room = getRooms(opening).find(candidate => candidate.id === getLogicalRoomId(opening.inspectedRoomId));
+  if (!room?.corners.some(corner => corner.id === opening.hidingCornerId)) return null;
+  return { id: room.id, cycle: 0, corners: [{ id: opening.hidingCornerId,
+    token: copyToken(opening.hidingUnderToken),
+  }] };
 }
 
 export function chooseInitialPower(opening, playerId, powerId) {
   assertHakoPhase(opening, playerId, 'power');
-  if (!Number.isInteger(powerId) || !INITIAL_POWER_IDS.includes(powerId)) {
-    throw new Error('初始能力须从NO.1至NO.10选择，但不能选择NO.4“动来动去”。');
+  if (!Number.isInteger(powerId) || !initialPowerCandidates(opening).includes(powerId)) {
+    throw new Error('初始能力须从系统抽出的三张候选中选择。');
   }
-  // NO.11 joins the remaining numbered cards; silent mode removes NO.12.
+  // Both unchosen candidates return to the numbered deck; silent mode removes NO.12.
   // Despair must be present for its confirmed draw-and-return-to-bottom rule to apply.
   const powerDeck = shuffled([...Array.from({ length: 11 }, (_, index) => index + 1)
     .filter(id => id !== powerId), 'despair']);
@@ -264,12 +275,11 @@ export function getOpeningView(opening, playerId) {
     itemChoices: copyChoices(opening.itemChoices),
     corners: corners.map(corner => ({ ...corner, occupied: opening.cornerTokens[corner.id] !== null })),
   };
-  // The initial choice is public because its corresponding notebook is marked as unlocked.
+  if (playerId !== opening.hakoId) return view;
   if (opening.initialPowerId !== null) {
     view.initialPowerId = opening.initialPowerId;
     view.initialPowerName = POWER_NAMES[opening.initialPowerId];
   }
-  if (playerId !== opening.hakoId) return view;
   if (opening.password) view.password = [...opening.password];
   if (opening.weakness) view.weakness = opening.weakness;
   if (opening.remainsCornerId) view.remainsCornerId = opening.remainsCornerId;
@@ -287,12 +297,12 @@ export function getOpeningView(opening, playerId) {
     view.hidingRooms = getRooms(opening).filter(room => HIDING_ROOM_IDS.includes(room.id))
       .map(room => ({ id: room.id, name: room.name }));
   } else if (opening.phase === 'hiding_corner') {
-    const room = getRooms(opening).find(candidate => candidate.id === opening.inspectedRoomId);
-    view.inspectedRoom = { id: room.id, corners: room.corners.map(corner => ({ id: corner.id, token: copyToken(opening.cornerTokens[corner.id]) })) };
+    const room = getRooms(opening).find(candidate => candidate.id === getLogicalRoomId(opening.inspectedRoomId));
+    view.inspectedRoom = { id: room.id, corners: room.corners.map(corner => ({ id: corner.id, name: corner.name })) };
     view.hidingTargets = room.corners.map(corner => corner.id);
   } else if (opening.phase === 'power') {
     view.lastInspectedRoom = getInitialRoomMemory(opening);
-    view.initialPowerOptions = INITIAL_POWER_IDS.map(id => ({ id, name: POWER_NAMES[id] }));
+    view.initialPowerOptions = initialPowerCandidates(opening).map(id => powerCard(id));
   }
   return view;
 }

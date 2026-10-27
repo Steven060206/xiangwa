@@ -35,6 +35,15 @@ test('four browser sessions complete private opening, powers, exploration, item 
   });
   const serverOptions = { dataFile: join(directory, 'rooms.json'), deck, silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
     const play = createPlay(setup, opening, options);
+    // Keep this power-specific midgame scenario deterministic after the real
+    // private three-card draft, without adding or removing any numbered card.
+    const selected = play.powers.hand[0];
+    if (selected.id !== 1) {
+      const index = play.powers.deck.indexOf(1);
+      assert.ok(index >= 0);
+      play.powers.deck[index] = selected.id;
+      selected.id = 1;
+    }
     const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_2');
     assert.ok(source, 'The unused password 2 must be in the initial token pool');
     const before = Object.values(play.tokens).filter(Boolean).map(token => token.id).sort();
@@ -91,7 +100,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
 
   const privateKeys = new Set(['password', 'weakness', 'passwordOptions', 'weaknessOptions',
     'remainsCornerId', 'remainsTargets', 'inspectedRoom', 'hidingRooms', 'hidingTargets',
-    'hidingCornerId', 'hidingUnderToken', 'initialPowerOptions', 'cornerTokens', 'powerDeck', 'lastInspectedRoom',
+    'hidingCornerId', 'hidingUnderToken', 'initialPowerOptions', 'initialPowerId', 'initialPowerName',
+    'initialPowerCandidates', 'cornerTokens', 'powerDeck', 'lastInspectedRoom',
     'hand', 'activationOptions', 'rearrangement', 'pathInspection', 'cryRooms', 'lastDraw',
     'truth', 'canLie', 'answerOptions']);
   // A declared target's cornerId is public. Hako/ghost locations and unrevealed contents
@@ -158,15 +168,16 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(await page.locator('.inspected-tokens > [data-corner-id]').count(), room.corners.length);
     for (const corner of room.corners) {
       const row = page.locator(`.inspected-tokens > [data-corner-id="${corner.id}"]`);
-      assert.equal(await row.isVisible(), true, 'Every corner must be visible before choosing a hiding location');
-      const expected = corner.token?.type === 'weapon'
+      assert.equal(await row.isVisible(), true, 'Every public corner name must be visible before choosing a hiding location');
+      const expected = !Object.hasOwn(corner, 'token') ? null
+        : corner.token?.type === 'weapon'
         ? { white_stick: '白木棒', gasoline: '汽油', rusty_chain: '锈锁链' }[corner.token.tool]
         : corner.token ? names[corner.token.type] : '无标志';
-      assert.ok(expected, `Missing test name for ${corner.token?.type}`);
+      if (Object.hasOwn(corner, 'token')) assert.ok(expected, `Missing test name for ${corner.token?.type}`);
       const option = page.getByTestId(selectId).locator(`option[value="${corner.id}"]`);
       for (const text of [await row.innerText(), await option.textContent()]) {
         assert.ok(text.includes(numberedCornerName(corner.id)), 'Room list and location option share the map number and full name');
-        assert.ok(text.includes(expected), `Room list and location option must identify ${expected}`);
+        if (expected) assert.ok(text.includes(expected), `Room list and location option must identify ${expected}`);
         if (corner.token?.number !== undefined) assert.ok(text.includes(`数字${corner.token.number}`));
       }
     }
@@ -461,30 +472,35 @@ test('four browser sessions complete private opening, powers, exploration, item 
   await hakoPage.screenshot({ path: 'test-results/opening-hako.png', fullPage: true });
 
   const initialRoomContents = structuredClone(state.opening.inspectedRoom);
-  const initialRoomText = await hakoPage.locator('.inspected-tokens > [data-corner-id] > dd').allTextContents();
+  assert.ok(initialRoomContents.corners.every(corner => !Object.hasOwn(corner, 'token')));
   const initialHiding = state.opening.hidingTargets[0];
   await hakoPage.getByTestId('initial-hiding-select').selectOption(initialHiding);
   state = await performAction(hakoPage, 'choose_initial_hiding', () => hakoPage.getByTestId('confirm-initial-hiding').click());
   assert.equal(state.opening.hidingCornerId, initialHiding);
-  assert.deepEqual(state.opening.lastInspectedRoom, { ...initialRoomContents, cycle: 0 });
+  assert.deepEqual(state.opening.lastInspectedRoom, { id: initialRoomContents.id, cycle: 0,
+    corners: [{ id: initialHiding, token: state.opening.hidingUnderToken }] });
   const roomMemory = hakoPage.getByTestId('hiding-room-memory');
   assert.equal(await roomMemory.isVisible(), true);
-  assert.deepEqual(await roomMemory.locator('dd').allTextContents(), initialRoomText);
+  const initialRoomText = await roomMemory.locator('dd').allTextContents();
+  assert.equal(initialRoomText.length, 1, 'Only the replaced piece is remembered');
+  const initialCandidates = structuredClone(state.opening.initialPowerOptions);
   await assertVisitorPrivacy('power');
   await hakoPage.reload();
   await hakoPage.getByTestId('initial-power-select').waitFor();
   assert.deepEqual(await roomMemory.locator('dd').allTextContents(), initialRoomText, 'Opening room memory survives refresh');
-  for (const id of [7, 8]) assert.equal(await hakoPage.locator(`#initial-power-select option[value="${id}"]`).isDisabled(), false,
-    'Confirmed NO7 and NO8 powers are available as opening choices');
+  assert.equal(await hakoPage.locator('#initial-power-select option').count(), 3,
+    'Exactly the dealt three cards are available as opening choices');
   const restoredHako = await getState(identities[0]);
   await waitForSSE(restoredHako.version);
   assert.equal(restoredHako.you, identities[0].playerId);
   assert.deepEqual(restoredHako.opening.password, [1, 3, 6]);
   assert.equal(restoredHako.opening.weakness, 'gasoline');
   assert.equal(restoredHako.opening.hidingCornerId, initialHiding);
+  assert.deepEqual(restoredHako.opening.initialPowerOptions, initialCandidates, 'Refresh preserves the private three-card draw');
   await assertVisitorPrivacy('power');
 
-  await hakoPage.getByTestId('initial-power-select').selectOption('1');
+  const chosenInitial = initialCandidates[0];
+  await hakoPage.getByTestId('initial-power-select').selectOption(String(chosenInitial.id));
   state = await performAction(hakoPage, 'choose_initial_power', () => hakoPage.getByTestId('confirm-initial-power').click());
   assert.equal(state.phase, 'practice');
   assert.equal(state.round.phase, 'visitor_reveal');
@@ -493,7 +509,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.ok(state.round.visitors.every(visitor => visitor.roomId === 'hall_room'));
   for (const page of pages) {
     await page.getByTestId('practice-panel').waitFor();
-    assert.equal(await page.getByTestId('initial-power').textContent(), '初始箱娃之力：就在你身旁');
+    if (page === hakoPage) assert.match(await page.getByTestId('initial-power').textContent(), new RegExp(chosenInitial.name));
+    else assert.equal(await page.getByTestId('initial-power').count(), 0, 'The selected initial power stays private');
   }
   await hakoPage.getByTestId('hako-location').waitFor();
   await assertVisitorPrivacy();
@@ -572,7 +589,12 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.powers.handCount, 1, 'A used ordinary ability returns to hako hand');
   assert.deepEqual(state.round.powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
   for (const page of pages) {
-    assert.match(await page.getByTestId('power-last-activation').innerText(), /发动了就在你身旁/);
+    const activationText = await page.getByTestId('power-last-activation').innerText();
+    if (page === hakoPage) assert.match(activationText, /发动了就在你身旁/);
+    else {
+      assert.match(activationText, /发动了能力/);
+      assert.equal(activationText.includes('就在你身旁'), false, 'NO.1 stays anonymous unless Hako explicitly reveals it');
+    }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
       'Power preparation and activation controls fit desktop and mobile viewports');
   }
@@ -597,16 +619,20 @@ test('four browser sessions complete private opening, powers, exploration, item 
     'Selecting the checkbox must wait for hiding confirmation before covering the public X');
   for (const page of pages.slice(1)) assert.equal(await page.getByTestId('hide-face-down').count(), 0);
   const nextHiding = state.round.hako.hidingTargets[0];
-  const laterRoomContents = structuredClone(state.round.hako.inspectedRoom);
-  const laterRoomText = await hakoPage.locator('.inspected-tokens > [data-corner-id] > dd')
-    .evaluateAll(cells => cells.map(cell => cell.firstChild.textContent));
+  assert.ok(state.round.hako.inspectedRoom.corners.every(corner => !Object.hasOwn(corner, 'token')
+    || corner.id === 'children_toys' && corner.token.type === 'empty_box' && corner.token.faceUp === true),
+  'The already public face-up X is visible; covered pieces remain unknown');
   await hakoPage.getByTestId('hiding-select').selectOption(nextHiding);
   state = await performAction(hakoPage, 'hako_hide', () => hakoPage.getByTestId('confirm-hiding').click());
   assert.equal(state.round.hako.cornerId, nextHiding);
   assert.equal(state.round.silent.cycle, 2);
-  assert.deepEqual(state.round.hako.lastInspectedRoom, { ...laterRoomContents, cycle: 1 });
+  assert.equal(state.round.hako.lastInspectedRoom.id, hidingRoom);
+  assert.equal(state.round.hako.lastInspectedRoom.cycle, 1);
+  assert.equal(state.round.hako.lastInspectedRoom.corners.length, 1);
+  assert.equal(state.round.hako.lastInspectedRoom.corners[0].id, nextHiding);
   assert.equal(await roomMemory.isVisible(), true);
-  assert.deepEqual(await roomMemory.locator('dd').allTextContents(), laterRoomText);
+  const laterRoomText = await roomMemory.locator('dd').allTextContents();
+  assert.equal(laterRoomText.length, 1);
   assert.match(await roomMemory.innerText(), /之后的取放变化不会自动更新/);
   await hakoPage.setViewportSize({ width: 390, height: 844 });
   await roomMemory.screenshot({ path: 'test-results/hiding-memory-mobile.png' });
@@ -639,7 +665,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   const recipient = identities[recipientIndex];
   const recipientPage = pages[recipientIndex];
   const bystanderIndices = [0, identities.findIndex((person, index) => index > 0 && index !== interruptedIndex && index !== recipientIndex)];
-  assert.ok(state.round.visitors.every(visitor => visitor.roomId === 'dark_room'), 'The three visitors can use same-room free actions');
+  assert.ok(state.round.visitors.every(visitor => visitor.roomId === 'study_room'), 'The three visitors share the logical study board for free actions');
   state = await performAction(explorerPage, 'silent_reveal', () => explorerPage.getByTestId('silent-card-0').click());
   assert.equal(state.round.phase, 'visitor_action');
   const peek = explorerPage.locator('[data-testid="peek-target"][data-corner-id="dark_wardrobe"]');

@@ -1,7 +1,7 @@
-import { MAP_TILES } from '/shared/maps.mjs';
+import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
 
-const rooms = MAP_TILES.flatMap(tile => tile.rooms);
+const rooms = getLogicalRooms();
 const selections = new Map();
 const roomName = id => rooms.find(room => room.id === id)?.name || '未知房间';
 const playerName = (state, id) => state.players.find(player => player.id === id)?.name || '访问者';
@@ -219,7 +219,7 @@ function publicPowers(container, state, powers) {
     section.append(cry);
   }
   if (powers.lastActivation) {
-    const activation = node('p', 'small-note', `箱娃发动了${powers.lastActivation.name}。`);
+    const activation = node('p', 'small-note', powers.lastActivation.name ? `箱娃发动了${powers.lastActivation.name}。` : '箱娃发动了能力。');
     activation.dataset.testid = 'power-last-activation';
     section.append(activation);
   }
@@ -299,6 +299,7 @@ function activatePowers(container, state, powers, locked, action) {
       let room;
       let door;
       let steal;
+      const publish = card.id <= 4 ? checkbox(group, `power-public-${option.slot}`, '主动公开本次能力名称', locked || !option.canActivate) : null;
       if (option.rooms?.length) room = select(group, `power-room-${option.slot}`, '选择作用房间', option.rooms, locked || !option.canActivate);
       if (option.doors?.length) door = select(group, `power-door-${option.slot}`, '选择要封锁的门', option.doors.map((value, index) => ({ id: index, name: value.name || `${roomName(value.fromRoomId)} — ${roomName(value.toRoomId)}` })), locked || !option.canActivate);
       if (card.id === 7) {
@@ -310,6 +311,7 @@ function activatePowers(container, state, powers, locked, action) {
       if (card.id === 8) group.append(node('p', 'small-note', '诅咒从人偶持有者的下次翻牌回合起生效，本次不补翻。'));
       const activate = button(`发动${card.name}`, 'activate-power', locked || !option.canActivate || Boolean(steal && !steal.value), () => {
         const payload = { slot: option.slot };
+        if (publish?.checked) payload.public = true;
         if (room) payload.roomId = room.value;
         if (door) {
           const target = option.doors[Number(door.value)];
@@ -372,22 +374,16 @@ function rearrangePowers(container, state, powers, locked, action) {
 function inspectPath(container, state, powers, locked, action) {
   if (!powers.pathRooms?.length && !powers.pathInspection) return;
   const controls = node('section', 'exploration-section practice-controls');
-  controls.append(node('h3', '', '查看移动途中房间'));
+  controls.append(node('h3', '', '选择移动路线'));
   if (powers.pathRooms?.length) {
     const room = select(controls, 'path-room-select', '选择本次路径上的房间', powers.pathRooms, locked);
-    controls.append(button('查看途中房间', 'inspect-path-room', locked || !room.value, () => action('inspect_path_room', { roomId: room.value }), true));
+    controls.append(button('确认途经房间', 'inspect-path-room', locked || !room.value, () => action('inspect_path_room', { roomId: room.value }), true));
   }
   if (powers.pathInspection) {
     const inspection = powers.pathInspection;
     controls.append(node('p', 'small-note', `${roomName(inspection.roomId)} · 仅你可见`));
-    const list = node('dl', 'inspected-tokens');
+    const list = node('p', 'small-note', '再选择终点潜伏角落；确认后仅查看被替换的棋子。');
     list.dataset.testid = 'path-inspection';
-    for (const corner of inspection.corners) {
-      const row = node('div');
-      const actors = (corner.actors || []).map(actor => actor.type === 'hako' ? '箱娃' : `${playerName(state, actor.playerId)}（箱人）`);
-      row.append(node('dt', '', cornerName(corner.id)), node('dd', '', [...(corner.token ? [tokenName(corner.token)] : []), ...actors].join('、') || '无标志'));
-      list.append(row);
-    }
     controls.append(list);
   }
   container.append(controls);

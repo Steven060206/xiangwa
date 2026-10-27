@@ -288,3 +288,11 @@ input,select{caret-color:var(--accent)}
   .in-game .setup-sidebar{height:auto;min-height:200px;overflow:visible}
   .in-game .draft-panel{height:auto;overflow:visible}
 }
+.corner-location{cursor:pointer;touch-action:manipulation}
+.corner-location:focus .corner-mark,.corner-location.selected-corner .corner-mark{stroke:var(--accent);stroke-width:2.4;fill:#f6d7b3}
+.selected-corner-name{display:block;flex-basis:100%;color:var(--accent);font-weight:600}
+.board-caption:has(.selected-corner-name){flex-wrap:wrap}
+.cry-map-marker{pointer-events:none}
+.cry-room-outline{fill:none;stroke:#a43e29;stroke-width:2;stroke-dasharray:4 2}
+.cry-room-badge{fill:#a43e29;stroke:#fff8ea;stroke-width:.7}
+.cry-room-label{fill:#fff8ea;font-size:7px;font-weight:600}

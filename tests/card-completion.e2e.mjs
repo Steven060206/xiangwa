@@ -21,6 +21,14 @@ function fixture({ slots = [], hand = [], possessions = [] } = {}) {
       ...play.powers.slots.filter(Boolean).map(card => card.id)].map(String).sort();
     const beforeTokens = tokenIds();
     const beforeCards = cardIds();
+    // Normalize this trusted midgame hand while preserving every real card.
+    const selected = play.powers.hand[0];
+    if (selected.id !== 1) {
+      const index = play.powers.deck.indexOf(1);
+      assert.ok(index >= 0);
+      play.powers.deck[index] = selected.id;
+      selected.id = 1;
+    }
     for (const [visitorIndex, tokenId, cornerId] of possessions) {
       const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === tokenId);
       assert.ok(source, `The trusted fixture must find the real piece ${tokenId}`);
@@ -108,8 +116,8 @@ async function game(t, fixtureOptions, items = ['smartphone', 'deduction', 'walk
   await act(people[0], 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
   await act(people[0], 'place_remains', { cornerId: 'living_sofa' });
   await act(people[0], 'inspect_initial_room', { roomId: 'children_room' });
-  await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await act(people[0], 'choose_initial_power', { powerId: 1 });
+  state = await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
+  await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
   for (let index = 0; index < people.length; index++) {
     const context = await browser.newContext({ viewport: index === 1 ? { width: 390, height: 844 } : { width: 1280, height: 900 } });
     await context.addInitScript(person => {

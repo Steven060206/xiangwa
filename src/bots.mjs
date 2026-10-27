@@ -2,7 +2,7 @@
 // decisions stateless so neither another seat's hand nor hidden board can leak in.
 const ITEM_ORDER = ['deduction', 'night_vision', 'stethoscope', 'ventriloquist_doll',
   'relic_ring', 'dowsing_rod', 'smartphone', 'spirit_pen', 'suitcase', 'nightmare_letter', 'shrine_bell', 'walkie_talkie'];
-const POWER_ORDER = [5, 7, 6, 8, 1, 2, 3, 10, 9, 11];
+const POWER_ORDER = [5, 7, 6, 8, 1, 2, 3, 10, 9, 4, 11];
 
 function pick(values, random) {
   return values?.length ? values[Math.min(values.length - 1, Math.floor(random() * values.length))] : null;
@@ -47,7 +47,7 @@ function hasItem(round, itemId) {
 
 function knownTokens(round) {
   return [...(round.inventory?.tokens ?? []), ...(round.discarded ?? []).flatMap(entry => entry.tokens),
-    ...(round.sharedTokens?.token ? [round.sharedTokens.token] : [])];
+    ...(round.sharedTokens?.token ? [round.sharedTokens.token] : []), ...(round.publicDiscoveries ?? []).map(entry => entry.token).filter(Boolean)];
 }
 
 function safeAction(round, resolution, random) {

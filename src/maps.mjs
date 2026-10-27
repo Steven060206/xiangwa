@@ -121,3 +121,19 @@ export const MAP_TILES = [
 export function getTile(id) {
   return MAP_TILES.find(tile => tile.id === id);
 }
+
+// Printed subdivisions keep their geometry and corner numbering, but each board
+// is one game room. Accept old subdivision IDs when restoring existing games.
+const LOGICAL_ROOMS = MAP_TILES.map(tile => ({
+  ...tile.rooms[0], id: tile.rooms[0].id, name: tile.name, tileId: tile.id,
+  corners: tile.rooms.flatMap(room => room.corners),
+  haunted: tile.rooms.some(room => room.haunted),
+}));
+
+export function getLogicalRoomId(roomId) {
+  return MAP_TILES.find(tile => tile.rooms.some(room => room.id === roomId))?.rooms[0].id ?? roomId;
+}
+
+export function getLogicalRooms() {
+  return LOGICAL_ROOMS;
+}

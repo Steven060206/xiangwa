@@ -133,7 +133,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       initialItems: room.draft ? getItemDraftView(room.draft).choices : [],
       opening: room.opening && !room.play ? getOpeningView(room.opening, playerId) : null,
       round,
-      initialPower: room.opening?.initialPowerId ? {
+      initialPower: room.opening?.hakoId === playerId && room.opening?.initialPowerId ? {
         id: room.opening.initialPowerId,
         name: getOpeningView(room.opening, playerId).initialPowerName,
       } : null,
@@ -387,6 +387,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'safe_guess':
       case 'use_weapon':
       case 'show_token':
+      case 'publish_token':
       case 'offer_exchange':
       case 'respond_exchange':
       case 'drop_token':
@@ -422,6 +423,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           safe_guess: `${player.name} 完成了保险箱尝试。`,
           use_weapon: `${player.name} 声明了使用讨伐道具，等待箱娃确认。`,
           show_token: `${player.name} 向另一名访问者展示了标志。`,
+          publish_token: `${player.name} 向所有玩家公开了一条发现。`,
           offer_exchange: `${player.name} 提出了物品交换。`,
           respond_exchange: `${player.name} 处理了交换请求。`,
           drop_token: `${player.name} 在空角落留下了一枚标志。`,
@@ -435,8 +437,8 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           recall_power: '箱娃回收了可用能力。',
           begin_hako_action: '访问者闭眼，箱娃开始行动。',
           activate_power: '箱娃发动了能力。',
-          power_rearrange: '箱娃完成了标志调整。',
-          inspect_path_room: '箱娃正在移动。',
+          power_rearrange: '箱娃完成了能力处理。',
+          inspect_path_room: '箱娃正在行动。',
           extinguisher_response: input.use ? `${player.name} 使用灭火器，跳过本次箱娃行动。` : '灭火器响应已完成。',
           surrender: `${player.name}${input.agree === false ? ' 撤回了投降提议。' : ' 提出了投降。'}`,
         }[input.type];

@@ -6,6 +6,7 @@ import { createPowers, startPowerStage, applyPowerAction, getPowersView, powerCa
   powerHidingTargets, restrictPowerMoves, afterPowerMove, hasActivePower, isPowerMoveForced } from './powers.mjs';
 import { declareItem, resolveItem, answerItem, getItemView, itemResolutionView } from './items.mjs';
 import { revealWithEffects, syncNoiseEffects, getNoiseEffectsView } from './noise-effects.mjs';
+import { getLogicalRoomId } from './maps.mjs';
 
 const TAKEABLE = new Set(['key', 'password', 'doll', 'weakness_clue', 'weapon', 'amulet', 'extinguisher']);
 const NAMES = { hako: '箱娃', box_person: '箱人', notebook: '手记', empty_box: '空箱', safe: '转轮式保险箱',
@@ -16,7 +17,8 @@ const clone = value => structuredClone(value);
 const tokenView = token => token ? { ...clone(token), name: token.type === 'weapon' ? TOOL_NAMES[token.tool]
   : token.type === 'weakness_clue' ? `${TOOL_NAMES[token.tool]}无效`
     : token.type === 'password' ? `密码${token.number}`
-      : token.type === 'notebook' ? `手记${token.number}` : NAMES[token.type] } : null;
+      : token.type === 'notebook' ? `手记${token.number}` : NAMES[token.type],
+  ...(token.type === 'notebook' ? { power: powerCard({ id: token.number }) } : {}) } : null;
 
 function visitor(play, id) { return play.round.visitors.find(player => player.id === id); }
 function alive(play, id) { return visitor(play, id)?.status === 'alive'; }
@@ -29,7 +31,7 @@ function hasItem(play, id, itemId) { return inventory(play, id)?.items.some(item
 function hasToken(play, id, type) { return inventory(play, id)?.tokens.some(token => token.type === type); }
 function roomOf(cornerId) { return getCornerRoom(cornerId)?.id; }
 function corners(play, roomId) {
-  return [...getRoom(roomId).corners, ...Object.values(play.extraCorners).filter(corner => corner.roomId === roomId)];
+  return [...getRoom(roomId).corners, ...Object.values(play.extraCorners).filter(corner => getLogicalRoomId(corner.roomId) === getLogicalRoomId(roomId))];
 }
 function ghostOf(play, id) { return play.ghosts.find(ghost => ghost.playerId === id); }
 function actorsAt(play, cornerId) {
@@ -64,10 +66,10 @@ function assertFree(play, id) {
 function assertSameRoom(play, fromId, targetId) {
   const from = assertAlive(play, fromId);
   const target = assertAlive(play, targetId);
-  if (fromId === targetId || from.roomId !== target.roomId) throw new Error('请选择同一房间内的其他存活访问者。');
+  if (fromId === targetId || getLogicalRoomId(from.roomId) !== getLogicalRoomId(target.roomId)) throw new Error('请选择同一房间内的其他存活访问者。');
 }
 function assertCorner(play, id, cornerId, { mustBeOccupied = false, mustBeEmpty = false } = {}) {
-  if (!Object.hasOwn(play.tokens, cornerId) || roomOf(cornerId) !== visitor(play, id)?.roomId) {
+  if (!Object.hasOwn(play.tokens, cornerId) || roomOf(cornerId) !== getLogicalRoomId(visitor(play, id)?.roomId)) {
     throw new Error('只能选择自己当前房间内的角落。');
   }
   if (mustBeOccupied && !occupied(play, cornerId)) throw new Error('空角落不能窥探。');
@@ -107,6 +109,7 @@ function beginHakoStage(play) {
   if (play.result || play.round.silent.phase !== 'hako_phase' || play.resolution) return;
   if (play.hakoStage?.cycle === play.round.silent.cycle) return;
   play.ringAllies = [];
+  play.totalRounds = (play.totalRounds ?? Math.max(0, play.round.silent.cycle - 1)) + 1;
   play.hakoStage = { cycle: play.round.silent.cycle, done: [], inspections: {} };
   startPowerStage(play);
 }
@@ -151,7 +154,7 @@ export function createPlay(setup, opening, { numbers } = {}) {
     availableItems: INITIAL_ITEMS.filter(item => !opening.itemChoices.some(choice => choice.itemId === item.id)).map(clone),
     notebooks: [], ghosts: [], discarded: [], removedTokens: [], publicNumbers: [],
     safeOpened: false, resolution: null, exchangeOffers: [], nextOfferId: 1, surrenderVotes: [],
-    sharedTokens: {}, ringAllies: [], hakoStage: null, result: null,
+    sharedTokens: {}, publicDiscoveries: [], totalRounds: 0, ringAllies: [], hakoStage: null, result: null,
     powers: createPowers(opening), extraCorners: {}, placedItems: [], itemResults: {}, itemEvents: [],
     interruption: null, inheritanceQueue: [],
     lastBlockedWait: null, hidingMemories: { [opening.hakoId]: getInitialRoomMemory(opening) },
@@ -421,29 +424,26 @@ function assertHiding(play, id) {
   if (id !== play.round.hakoId && !play.hakoStage.inspections[play.round.hakoId]) throw new Error('请等待箱娃先结束阶段能力并开始潜伏。');
 }
 function inspectHidingRoom(play, id, roomId) {
+  roomId = getLogicalRoomId(roomId);
   assertHiding(play, id);
   if (play.hakoStage.inspections[id]) throw new Error('请在已查看的房间选择角落，不能再次查看其他房间。');
   const targetIds = id === play.round.hakoId ? powerHidingTargets(play, actorHiding(play, id).cornerId)
     : ordinaryHidingTargets(play, actorHiding(play, id).cornerId);
   if (!targetIds.some(cornerId => roomOf(cornerId) === roomId)) throw new Error('只能查看当前或相邻房间的角落。');
   play.hakoStage.inspections[id] = roomId;
-  play.hidingMemories ??= {};
-  play.hidingMemories[id] = { ...inspectedRoomView(play, roomId), cycle: play.round.silent.cycle };
 }
 function hide(play, id, action) {
   assertHiding(play, id);
   if (action.type === 'hako_hide' && id !== play.round.hakoId) throw new Error('只有箱娃可以进行此操作。');
   if (action.type === 'ghost_hide' && id === play.round.hakoId) throw new Error('只有箱人可以进行此操作。');
-  const inspected = play.hakoStage.inspections[id];
+  const inspected = getLogicalRoomId(play.hakoStage.inspections[id]);
   if (!inspected || roomOf(action.cornerId) !== inspected) throw new Error('请先查看目标房间，再选择该房间内的潜伏角落。');
   const targets = id === play.round.hakoId ? powerHidingTargets(play, actorHiding(play, id).cornerId)
     : ordinaryHidingTargets(play, actorHiding(play, id).cornerId);
   if (!targets.includes(action.cornerId)) throw new Error('只能潜伏到当前或相邻房间的角落。');
-  // An older save may already be waiting for its hiding confirmation.
-  if (play.hidingMemories?.[id]?.id !== inspected || play.hidingMemories?.[id]?.cycle !== play.round.silent.cycle) {
-    play.hidingMemories ??= {};
-    play.hidingMemories[id] = { ...inspectedRoomView(play, inspected), cycle: play.round.silent.cycle };
-  }
+  play.hidingMemories ??= {};
+  play.hidingMemories[id] = { id: inspected, cycle: play.round.silent.cycle,
+    replacedCornerId: action.cornerId, corners: [{ id: action.cornerId, token: tokenView(play.tokens[action.cornerId]) }] };
   const faceDown = action.faceDownCornerIds ?? [];
   if (!Array.isArray(faceDown) || new Set(faceDown).size !== faceDown.length
       || faceDown.some(cornerId => roomOf(cornerId) !== inspected || play.tokens[cornerId]?.type !== 'empty_box')) {
@@ -549,6 +549,25 @@ function showToken(play, id, action) {
   if (!token) throw new Error('请选择自己持有的标志。');
   play.sharedTokens[action.targetId] = { kind: 'shown_token', fromId: id, token: clone(token) };
 }
+function publishToken(play, id, action) {
+  assertAlive(play, id);
+  let token;
+  let cornerId;
+  const found = play.resolution;
+  if (found?.playerId === id && found.token?.id === action.tokenId) {
+    token = found.token;
+    cornerId = found.cornerId;
+  } else {
+    assertFree(play, id);
+    token = inventory(play, id).tokens.find(piece => piece.id === action.tokenId);
+  }
+  if (!token) throw new Error('只能公开自己持有或本次窥探发现的标志。');
+  play.publicDiscoveries ??= [];
+  if (play.publicDiscoveries.some(entry => entry.playerId === id && entry.token.id === token.id
+      && entry.cornerId === cornerId)) throw new Error('这条发现已经公开。');
+  play.publicDiscoveries.push({ playerId: id, token: clone(token), ...(cornerId ? { cornerId } : {}),
+    cycle: play.round.silent.cycle });
+}
 function dropToken(play, id, action) {
   assertFree(play, id);
   assertCorner(play, id, action.cornerId, { mustBeEmpty: true });
@@ -583,8 +602,11 @@ export function applyPlayAction(previous, playerId, action) {
   if (previous.result) throw new Error('本局已经结束。');
   if (!action || typeof action.type !== 'string') throw new Error('请选择回合操作。');
   const play = clone(previous);
+  // Saved games may still use the printed sub-area names as room IDs.
+  for (const player of play.round.visitors) if (player.roomId) player.roomId = getLogicalRoomId(player.roomId);
+  if (action.roomId) action = { ...action, roomId: getLogicalRoomId(action.roomId) };
   if (play.interruption && action.type !== 'extinguisher_response') throw new Error('请先等待灭火器持有者回应。');
-  if (play.resolution && !['resolve_peek', 'safe_guess', 'bequeath', 'answer_item', 'choose_forced_peek'].includes(action.type)) {
+  if (play.resolution && !['resolve_peek', 'safe_guess', 'bequeath', 'answer_item', 'choose_forced_peek', 'publish_token'].includes(action.type)) {
     throw new Error('请先等待当前窥探或遗物继承结算完成。');
   }
   if (play.round.pendingAction && !['resolve_visitor_action', 'activate_power'].includes(action.type)) {
@@ -594,6 +616,7 @@ export function applyPlayAction(previous, playerId, action) {
     throw new Error('鬼来电生效中，只能沿最短路径移动至客厅。');
   }
   switch (action.type) {
+    case 'publish_token': publishToken(play, playerId, action); break;
     case 'peek': declarePeek(play, playerId, action); break;
     case 'resolve_peek': resolvePeek(play, playerId, action); break;
     case 'safe_guess': guessSafe(play, playerId, action); break;
@@ -639,7 +662,7 @@ export function applyPlayAction(previous, playerId, action) {
 function ordinaryHidingTargets(play, cornerId) {
   const base = getHidingTargets(play.round.placements, cornerId);
   const roomIds = new Set(base.map(roomOf));
-  return [...base, ...Object.values(play.extraCorners).filter(corner => roomIds.has(corner.roomId)).map(corner => corner.id)].sort();
+  return [...base, ...Object.values(play.extraCorners).filter(corner => roomIds.has(getLogicalRoomId(corner.roomId))).map(corner => corner.id)].sort();
 }
 function publicCorners(play) {
   return Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id),
@@ -647,10 +670,9 @@ function publicCorners(play) {
       ? { faceUp: true, token: tokenView(play.tokens[id]) } : {}) }));
 }
 function inspectedRoomView(play, roomId) {
-  return { id: roomId, corners: corners(play, roomId).map(({ id: cornerId }) => ({
-    id: cornerId, token: tokenView(play.tokens[cornerId]),
-    actors: actorsAt(play, cornerId).map(actor => ({ playerId: actor.playerId, type: actor.type })),
-  })) };
+  return { id: getLogicalRoomId(roomId), corners: corners(play, roomId).map(({ id }) => ({ id,
+    ...(play.tokens[id]?.type === 'empty_box' && play.tokens[id].faceUp && !actorsAt(play, id).length
+      ? { token: tokenView(play.tokens[id]) } : {}) })) };
 }
 function hidingView(play, id) {
   const actor = actorHiding(play, id);
@@ -660,14 +682,16 @@ function hidingView(play, id) {
   const finished = play.hakoStage?.done.includes(id) ?? false;
   const targets = canHide && !finished ? id === play.round.hakoId ? powerHidingTargets(play, actor.cornerId)
     : ordinaryHidingTargets(play, actor.cornerId) : [];
-  const inspected = canHide && !finished ? play.hakoStage?.inspections[id] : null;
+  const inspected = canHide && !finished ? getLogicalRoomId(play.hakoStage?.inspections[id]) : null;
   const memory = play.hidingMemories?.[id] ?? (id === play.round.hakoId ? getInitialRoomMemory(play.opening) : null);
+  const replaced = memory?.corners.find(corner => corner.id === (memory.replacedCornerId || actor.cornerId));
   return {
     cornerId: actor.cornerId, roomId: roomOf(actor.cornerId), finished,
     hidingRooms: [...new Set(targets.map(roomOf))].map(roomId => ({ id: roomId, name: getRoom(roomId).name })),
     hidingTargets: inspected ? targets.filter(cornerId => roomOf(cornerId) === inspected) : [],
     ...(inspected ? { inspectedRoom: inspectedRoomView(play, inspected) } : {}),
-    ...(memory ? { lastInspectedRoom: clone(memory) } : {}),
+    ...(replaced ? { lastInspectedRoom: { id: getLogicalRoomId(memory.id), cycle: memory.cycle,
+      corners: [clone(replaced)] } } : {}),
   };
 }
 function resolutionView(play, id) {
@@ -698,6 +722,7 @@ function resolutionView(play, id) {
 export function getPlayView(play, playerId) {
   assertPlayer(play, playerId);
   const view = getRoundView(play.round, playerId);
+  view.totalRounds = play.totalRounds ?? Math.max(0, play.round.silent.cycle - 1) + (play.hakoStage ? 1 : 0);
   view.mode = 'exploration';
   const player = visitor(play, playerId);
   const canAct = alive(play, playerId) && play.round.silent.phase === 'visitor_action'
@@ -707,7 +732,7 @@ export function getPlayView(play, playerId) {
     && !play.round.pendingAction && !play.resolution && !play.result && !play.interruption;
   view.phase = play.result ? 'game_over' : play.resolution ? 'visitor_resolution' : view.phase;
   view.visitors = play.round.visitors.map(player => ({ id: player.id, status: player.status,
-    ...(player.status === 'alive' ? { roomId: player.roomId } : {}) }));
+    ...(player.status === 'alive' ? { roomId: getLogicalRoomId(player.roomId) } : {}) }));
   // getRoundView may calculate movement for a dead seat; never retain its public position.
   view.moveTargets = canAct ? restrictPowerMoves(play, playerId, view.moveTargets) : [];
   if (view.pendingAction) {
@@ -720,13 +745,14 @@ export function getPlayView(play, playerId) {
   }
   view.inventory = player ? { tokens: inventory(play, playerId).tokens.map(tokenView), items: inventory(play, playerId).items.map(itemView) }
     : { tokens: [], items: [] };
+  view.canPublishTokens = canFree;
   const canChoose = canAct && !isPowerMoveForced(play, playerId);
   view.peekTargets = canChoose ? corners(play, player.roomId).filter(corner => occupied(play, corner.id)).map(corner => corner.id) : [];
   view.weapons = canChoose ? inventory(play, playerId).tokens.filter(token => token.type === 'weapon').map(tokenView) : [];
   view.weaponTargets = canChoose ? corners(play, player.roomId).map(corner => corner.id) : [];
   view.dropTargets = canFree ? corners(play, player.roomId).filter(corner => !occupied(play, corner.id)).map(corner => corner.id) : [];
   view.exchangePartners = canFree ? play.round.visitors.filter(target => target.id !== playerId && target.status === 'alive'
-    && target.roomId === player.roomId).map(target => ({ id: target.id, roomId: target.roomId,
+    && getLogicalRoomId(target.roomId) === getLogicalRoomId(player.roomId)).map(target => ({ id: target.id, roomId: getLogicalRoomId(target.roomId),
     tokenCount: inventory(play, target.id).tokens.length, itemCount: inventory(play, target.id).items.length })) : [];
   view.exchangeOffers = play.exchangeOffers.filter(offer => offer.fromId === playerId || offer.targetId === playerId).map(offer => ({
     ...clone(offer),
@@ -734,13 +760,15 @@ export function getPlayView(play, playerId) {
     giveItems: clone(inventory(play, offer.fromId).items.filter(item => offer.giveItemIds.includes(item.id))),
   }));
   view.sharedTokens = play.sharedTokens[playerId] ? clone(play.sharedTokens[playerId]) : null;
+  view.publicDiscoveries = (play.publicDiscoveries || []).map(entry => ({ ...clone(entry), token: tokenView(entry.token) }));
   if (view.sharedTokens?.token) view.sharedTokens.token = tokenView(view.sharedTokens.token);
   view.resolution = resolutionView(play, playerId);
   view.notebooks = play.notebooks.map(tokenView);
   view.cornerState = alive(play, playerId) && play.powers.step === 'action' && play.hakoStage?.publicCorners
     ? clone(play.hakoStage.publicCorners) : publicCorners(play);
   view.extraCorners = clone(Object.values(play.extraCorners));
-  view.blockedDoors = clone(play.round.blockedDoors);
+  view.blockedDoors = play.round.blockedDoors.filter(door => playerId === play.round.hakoId || door.public === true)
+    .map(({ from, to }) => ({ from: getLogicalRoomId(from), to: getLogicalRoomId(to) }));
   view.blockedWait = play.lastBlockedWait?.cycle === play.round.silent.cycle ? clone(play.lastBlockedWait) : null;
   view.powers = getPowersView(play, playerId);
   view.noiseEffects = getNoiseEffectsView(play, playerId);

@@ -80,8 +80,10 @@ async function preparePlay(client, { powerId = 7, items = ['walkie_talkie', 'spi
   await ok(client, hako, 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
   await ok(client, hako, 'place_remains', { cornerId: 'living_sofa' });
   await ok(client, hako, 'inspect_initial_room', { roomId: 'children_room' });
-  await ok(client, hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await ok(client, hako, 'choose_initial_power', { powerId });
+  state = await ok(client, hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
+  const selected = state.opening.initialPowerOptions.find(card => card.id === powerId)
+    ?? state.opening.initialPowerOptions[0];
+  await ok(client, hako, 'choose_initial_power', { powerId: selected.id });
   return people;
 }
 
@@ -98,9 +100,14 @@ function carryToken(play, playerId, predicate) {
 }
 
 function setInitialPower(play, powerId) {
-  const index = play.powers.hand.findIndex(card => card.id === powerId);
-  assert.ok(index >= 0, 'The fixture uses the selected initial power exactly once');
-  play.powers.slots[0] = { ...play.powers.hand.splice(index, 1)[0], faceUp: false };
+  const selected = play.powers.hand.shift();
+  assert.ok(selected, 'The fixture starts with one real selected card');
+  if (selected.id !== powerId) {
+    const index = play.powers.deck.indexOf(powerId);
+    assert.ok(index >= 0, 'The fixture target must be a real card in the deck');
+    play.powers.deck[index] = selected.id;
+  }
+  play.powers.slots[0] = { id: powerId, ignoreThreshold: selected.id === powerId, faceUp: false };
 }
 
 async function stream(client, person) {
@@ -281,7 +288,7 @@ test('NO.8 curse, its attached card and the remaining required reveal survive se
   await assertRestored(client, people);
   let disk = JSON.parse(await readFile(client.dataFile, 'utf8')).rooms[0].play;
   assert.equal(disk.noiseEffects.mary.playerId, first.playerId);
-  assert.deepEqual(disk.noiseEffects.mary.card, { id: 8, ignoreThreshold: true });
+  assert.deepEqual(disk.noiseEffects.mary.card, { id: 8, ignoreThreshold: cursed.initialPower.id === 8 });
   await ok(client, hako, 'resolve_visitor_action');
   await ok(client, second, 'silent_reveal', { index: 1 });
   await finishMove(client, hako, second);

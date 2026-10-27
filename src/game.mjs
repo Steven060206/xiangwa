@@ -1,4 +1,4 @@
-import { MAP_TILES, getTile } from './maps.mjs';
+import { MAP_TILES, getTile, getLogicalRoomId } from './maps.mjs';
 
 const SIDES = ['N', 'E', 'S', 'W'];
 const STEPS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -111,6 +111,9 @@ export function getConnections(placements) {
   const edges = new Map();
   const roomIds = new Set(placements.flatMap(p => getTile(p.tileId).rooms.map(room => room.id)));
   function add(from, to, kind) {
+    from = getLogicalRoomId(from);
+    to = getLogicalRoomId(to);
+    if (from === to) return;
     const key = `${[from, to].sort().join(':')}:${kind}`;
     if (!edges.has(key)) edges.set(key, { from, to, kind });
   }

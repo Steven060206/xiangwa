@@ -1,12 +1,12 @@
 import { getConnections } from './game.mjs';
-import { getTile } from './maps.mjs';
+import { getTile, getLogicalRoomId, getLogicalRooms } from './maps.mjs';
 import { getRoom, getCornerRoom, getMoveTargets, getHidingTargets } from './movement.mjs';
 import { getStealOptions, stealPossession } from './theft.mjs';
 
 const clone = value => structuredClone(value);
 const CARDS = {
   1: ['就在你身旁', 5, 'stage', '本次潜伏可选择当前楼层任意房间。'],
-  2: ['马上就到哟', 3, 'stage', '本次最多移动两个房间；可以查看途中房间。'],
+  2: ['马上就到哟', 3, 'stage', '须先发动再移动；本次最多移动两块地图板，先选择途经房间，再选择最终潜伏角落。'],
   3: ['打不开的门', 0, 'stage', '封锁一扇实际相连的门至下一箱娃阶段；下一阶段不能再次发动。'],
   4: ['动来动去', 0, 'stage', '秘密查看一个房间，再重排未被潜伏者盖住的角落标志。'],
   5: ['我在你身后', 6, 'stage', '杀死箱娃同房访问者；公开八枚手记时也杀死箱人同房访问者。'],
@@ -49,22 +49,20 @@ export function createPowers(opening) {
 }
 
 function roomOf(cornerId) {
-  if (typeof cornerId === 'string' && cornerId.startsWith('suitcase:')) {
-    const roomId = cornerId.slice('suitcase:'.length);
-    return getRoom(roomId)?.id;
-  }
   return getCornerRoom(cornerId)?.id;
 }
 function rooms(play) {
-  return play.round.placements.flatMap(placement => getTile(placement.tileId).rooms);
+  const tileIds = new Set(play.round.placements.map(placement => placement.tileId));
+  return getLogicalRooms().filter(room => tileIds.has(room.tileId));
 }
 function roomCorners(play, roomId, ctx = {}) {
+  roomId = getLogicalRoomId(roomId);
   const base = ctx.corners ? ctx.corners(roomId).map(corner => typeof corner === 'string' ? corner : corner.id)
     : getRoom(roomId)?.corners.map(corner => corner.id) ?? [];
-  return [...new Set([...base, ...Object.values(play.extraCorners ?? {}).filter(corner => corner.roomId === roomId).map(corner => corner.id)])];
+  return [...new Set([...base, ...Object.values(play.extraCorners ?? {}).filter(corner => getLogicalRoomId(corner.roomId) === roomId).map(corner => corner.id)])];
 }
 function allCornerIds(play) { return Object.keys(play.tokens); }
-function atRoom(ctx, cornerId) { return ctx.roomOf ? ctx.roomOf(cornerId) : roomOf(cornerId); }
+function atRoom(ctx, cornerId) { return getLogicalRoomId(ctx.roomOf ? ctx.roomOf(cornerId) : roomOf(cornerId)); }
 function phase(play) { return play.round.silent.phase; }
 function cycle(play) { return play.round.silent.cycle; }
 function assertHako(play, id) {
@@ -106,6 +104,7 @@ export function startPowerStage(play) {
   powers.manageUsed = false;
   powers.step = 'preparation';
   powers.lastDraw = null;
+  powers.announcement = null;
   powers.movement = {};
   powers.rearrangement = null;
   powers.falseCryPending = false;
@@ -117,7 +116,7 @@ function cry(play, action, ctx) {
   const powers = play.powers;
   if (powers.cryUsed || powers.manageUsed) throw new Error('每阶段只能在设置或回收前哭喊一次。');
   const actualRoomId = atRoom(ctx, play.round.hidingCornerId);
-  const announcedRoomId = action.roomId ?? actualRoomId;
+  const announcedRoomId = getLogicalRoomId(action.roomId ?? actualRoomId);
   if (!rooms(play).some(room => room.id === announcedRoomId)) throw new Error('请选择本局地图内的房间。');
   if (announcedRoomId !== actualRoomId && !hasActivePower(play, 11)) throw new Error('只有设置虚假的哭喊时才能指向其他房间。');
   powers.cryUsed = true;
@@ -241,27 +240,33 @@ function activate(play, action, ctx) {
   if (error) throw new Error(error);
   if (powerCard(card).timing === 'stage') assertStageAction(play);
   const interruptedId = powerCard(card).timing === 'interrupt' ? interruptPlayer(play) : null;
-  play.powers.lastActivation = { powerId: card.id, name: powerCard(card).name, cycle: cycle(play) };
+  play.powers.lastActivation = { powerId: card.id, name: powerCard(card).name, cycle: cycle(play),
+    ...(action.public === true ? { public: true } : {}) };
   if (card.id === 1 || card.id === 2) {
     play.powers.movement[card.id === 1 ? 'sameFloor' : 'twoRooms'] = true;
   } else if (card.id === 3) {
+    const fromRoomId = getLogicalRoomId(action.fromRoomId);
+    const toRoomId = getLogicalRoomId(action.toRoomId);
     const door = actualDoors(play).find(candidate => (
-      candidate.fromRoomId === action.fromRoomId && candidate.toRoomId === action.toRoomId
-    ) || (candidate.fromRoomId === action.toRoomId && candidate.toRoomId === action.fromRoomId));
+      candidate.fromRoomId === fromRoomId && candidate.toRoomId === toRoomId
+    ) || (candidate.fromRoomId === toRoomId && candidate.toRoomId === fromRoomId));
     if (!door) throw new Error('只能封锁实际相连的门，不能封锁楼梯或墙壁。');
-    play.round.blockedDoors.push({ from: door.fromRoomId, to: door.toRoomId, sourcePowerId: 3 });
+    play.round.blockedDoors.push({ from: door.fromRoomId, to: door.toRoomId, sourcePowerId: 3,
+      public: action.public === true });
     play.powers.cooldowns[3] = cycle(play) + 1;
   } else if (card.id === 4) {
-    if (!rooms(play).some(room => room.id === action.roomId)) throw new Error('请选择本局地图内的房间。');
-    const cornerIds = roomCorners(play, action.roomId, ctx).filter(cornerId => !ctx.actorsAt(cornerId).length);
-    play.powers.rearrangement = { roomId: action.roomId, cornerIds, slot: action.slot };
-    card.faceUp = true;
+    const roomId = getLogicalRoomId(action.roomId);
+    if (!rooms(play).some(room => room.id === roomId)) throw new Error('请选择本局地图内的房间。');
+    const cornerIds = roomCorners(play, roomId, ctx).filter(cornerId => !ctx.actorsAt(cornerId).length);
+    play.powers.rearrangement = { roomId, cornerIds, slot: action.slot };
+    card.faceUp = action.public === true;
+    if (action.public === true) card.public = true;
     return;
   } else if (card.id === 5) {
     const killers = [{ playerId: play.round.hakoId, cornerId: play.round.hidingCornerId }];
     if (play.notebooks.length >= 8) killers.push(...play.ghosts.filter(ghost => !ghost.banished));
     const deaths = play.round.visitors.filter(player => player.status === 'alive').flatMap(player => {
-      const killer = killers.find(actor => atRoom(ctx, actor.cornerId) === player.roomId);
+      const killer = killers.find(actor => atRoom(ctx, actor.cornerId) === getLogicalRoomId(player.roomId));
       return killer ? [{ playerId: player.id, killerCornerId: killer.cornerId }] : [];
     });
     releaseSlot(play, action.slot);
@@ -324,12 +329,13 @@ function assertStageActionForRearrangement(play) {
 function inspectPath(play, action, ctx) {
   assertStageAction(play);
   if (!play.powers.movement.twoRooms) throw new Error('请先发动马上就到哟。');
-  if (play.powers.movement.pathRoomId) throw new Error('本次途中房间已经查看，不能反复查看其他路径。');
+  if (play.powers.movement.pathRoomId) throw new Error('本次途经房间已经选择，不能反复选择其他路径。');
   const origin = atRoom(ctx, play.round.hidingCornerId);
-  if (!getMoveTargets(play.round.placements, origin, { actor: 'hako' }).includes(action.roomId)) {
-    throw new Error('只能查看从当前位置经过的相邻房间。');
+  const roomId = getLogicalRoomId(action.roomId);
+  if (!getMoveTargets(play.round.placements, origin, { actor: 'hako' }).includes(roomId)) {
+    throw new Error('只能选择从当前位置经过的相邻房间。');
   }
-  play.powers.movement.pathRoomId = action.roomId;
+  play.powers.movement.pathRoomId = roomId;
 }
 
 export function applyPowerAction(play, id, action, ctx) {
@@ -349,6 +355,7 @@ export function applyPowerAction(play, id, action, ctx) {
 }
 
 function roomFloor(play, roomId) {
+  roomId = getLogicalRoomId(roomId);
   return play.round.placements.find(placement => getTile(placement.tileId).rooms.some(room => room.id === roomId))?.floor;
 }
 export function powerHidingTargets(play, cornerId, actorId = play.round.hakoId) {
@@ -359,10 +366,11 @@ export function powerHidingTargets(play, cornerId, actorId = play.round.hakoId) 
   const targetRooms = new Set(standardRooms);
   const movement = actorId === play.round.hakoId ? play.powers?.movement ?? {} : {};
   if (movement.twoRooms && movement.pathRoomId) {
+    const pathRoomId = getLogicalRoomId(movement.pathRoomId);
     targetRooms.clear();
     targetRooms.add(origin);
-    targetRooms.add(movement.pathRoomId);
-    for (const id of getMoveTargets(play.round.placements, movement.pathRoomId, { actor: 'hako' })) targetRooms.add(id);
+    targetRooms.add(pathRoomId);
+    for (const id of getMoveTargets(play.round.placements, pathRoomId, { actor: 'hako' })) targetRooms.add(id);
   }
   if (movement.sameFloor) {
     const floor = roomFloor(play, origin);
@@ -383,7 +391,7 @@ export function restrictPowerMoves(play, visitorId, targets) {
       if (!distances.has(next)) { distances.set(next, distances.get(queue[index]) + 1); queue.push(next); }
     }
   }
-  const roomId = play.round.visitors.find(player => player.id === visitorId)?.roomId;
+  const roomId = getLogicalRoomId(play.round.visitors.find(player => player.id === visitorId)?.roomId);
   const current = distances.get(roomId);
   if (current === undefined) return [];
   return targets.filter(target => distances.has(target) && distances.get(target) === current - 1);
@@ -411,12 +419,16 @@ export function getPowersView(play, id) {
   const preparation = hako && phase(play) === 'hako_phase' && powers.step === 'preparation' && !play.result && !play.resolution;
   const canManage = preparation && !powers.manageUsed;
   const view = {
-    slots: powers.slots.map((card, slot) => ({ slot, occupied: !!card,
-      ...(card ? { faceUp: card.faceUp === true, ...(hako || card.faceUp ? { card: powerCard(card) } : {}) } : {}),
-      ...(hako ? { canRecall: !!card && canManage && !(card.id === 10 && powers.ghostCall.active) } : {}) })),
+    slots: powers.slots.map((card, slot) => {
+      const faceUp = card?.faceUp === true && (card.id > 4 || card.public === true);
+      return { slot, occupied: !!card,
+        ...(card ? { faceUp, ...(hako || faceUp ? { card: powerCard(card) } : {}) } : {}),
+        ...(hako ? { canRecall: !!card && canManage && !(card.id === 10 && powers.ghostCall.active) } : {}) };
+    }),
     handCount: powers.hand.length, deckCount: powers.deck.length,
-    announcement: clone(powers.announcement), step: powers.step,
-    lastActivation: clone(powers.lastActivation),
+    announcement: powers.announcement ? { ...clone(powers.announcement), roomId: getLogicalRoomId(powers.announcement.roomId) } : null, step: powers.step,
+    lastActivation: !hako && powers.lastActivation && powers.lastActivation.powerId <= 4
+      && powers.lastActivation.public !== true ? { cycle: powers.lastActivation.cycle } : clone(powers.lastActivation),
     canCry: preparation && !powers.cryUsed && !powers.manageUsed,
     canManage, canBegin: preparation,
     ghostCall: { active: powers.ghostCall.active, mode: 'first_arrival' },
@@ -444,7 +456,6 @@ export function getPowersView(play, id) {
     && phase(play) === 'hako_phase' && powers.step === 'action'
     && !play.hakoStage?.inspections[play.round.hakoId] && !play.hakoStage?.done.includes(play.round.hakoId)
     ? getMoveTargets(play.round.placements, roomOf(play.round.hidingCornerId), { actor: 'hako' }).map(roomId => ({ id: roomId, name: getRoom(roomId).name })) : [];
-  if (powers.movement.pathRoomId) view.pathInspection = { roomId: powers.movement.pathRoomId,
-    corners: roomCorners(play, powers.movement.pathRoomId).map(cornerId => viewCorner(play, cornerId)) };
+  if (powers.movement.pathRoomId) view.pathInspection = { roomId: getLogicalRoomId(powers.movement.pathRoomId) };
   return view;
 }

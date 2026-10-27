@@ -98,7 +98,7 @@ async function expectMobile(page) {
 function assertVisitorPrivacy(value) {
   const privateKeys = new Set(['password', 'weakness', 'passwordOptions', 'weaknessOptions', 'remainsCornerId',
     'hidingCornerId', 'hidingUnderToken', 'hidingTargets', 'hidingRooms', 'inspectedRoom', 'cornerTokens', 'lastInspectedRoom',
-    'initialPowerOptions', 'powerDeck', 'hand', 'truth', 'canLie', 'answerOptions']);
+    'initialPowerOptions', 'initialPowerId', 'initialPowerName', 'initialPowerCandidates', 'powerDeck', 'hand', 'truth', 'canLie', 'answerOptions']);
   function visit(child) {
     if (!child || typeof child !== 'object') return;
     for (const [key, nested] of Object.entries(child)) {
@@ -189,7 +189,7 @@ test('a mobile human Hako adds three bots and confirms their exploration actions
   state = await act(page, 'inspect_initial_room', () => page.getByTestId('inspect-initial-room').click());
   await page.getByTestId('initial-hiding-select').selectOption(state.opening.hidingTargets[0]);
   state = await act(page, 'choose_initial_hiding', () => page.getByTestId('confirm-initial-hiding').click());
-  await page.getByTestId('initial-power-select').selectOption('1');
+  await page.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions[0].id));
   await act(page, 'choose_initial_power', () => page.getByTestId('confirm-initial-power').click());
 
   for (let turn = 0; turn < 2; turn++) {

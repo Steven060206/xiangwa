@@ -99,13 +99,15 @@ async function play(request, people) {
     ['place_remains', { cornerId: 'living_sofa' }],
     ['inspect_initial_room', { roomId: 'children_room' }],
     ['choose_initial_hiding', { cornerId: 'children_cabinet' }],
-    ['choose_initial_power', { powerId: 1 }],
   ];
   let result;
   for (const [type, input] of entries) {
     result = await action(request, people[0], type, input);
     assert.equal(result.status, 200);
   }
+  const candidates = result.body.opening.initialPowerOptions;
+  result = await action(request, people[0], 'choose_initial_power', { powerId: candidates[0].id });
+  assert.equal(result.status, 200);
   return result.body;
 }
 

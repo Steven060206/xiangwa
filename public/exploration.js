@@ -1,8 +1,8 @@
-import { MAP_TILES } from '/shared/maps.mjs';
+import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
 import { renderAbilities, renderActiveItems } from './abilities.js';
 
-const rooms = MAP_TILES.flatMap(tile => tile.rooms);
+const rooms = getLogicalRooms();
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
 const playerName = (state, id) => state.players.find(player => player.id === id)?.name || '访问者';
 const selections = new Map();
@@ -109,7 +109,7 @@ export function explorationDescription(state) {
       if (round.powers?.step === 'preparation') return isHako ? '可以先哭喊，再设置或回收能力；准备好后开始箱娃行动。' : '等待箱娃决定是否哭喊并设置能力。';
       const actor = isHako ? round.hako : ghost;
       if (actor?.finished) return '你已完成潜伏，等待其他箱人或箱娃行动。';
-      if (actor && actor.status !== 'banished') return actor.inspectedRoom ? '已查看房间。选择一个角落潜伏。' : '先选择合法房间查看角落，再选择潜伏位置。';
+      if (actor && actor.status !== 'banished') return actor.inspectedRoom ? '选择一个角落潜伏，确认后仅查看被替换的棋子。' : '先选择合法房间，再选择潜伏角落；确认后仅查看被替换的棋子。';
       return '箱娃与箱人正在暗处行动。全部潜伏完毕后继续翻牌。';
     }
     default: return '等待下一步行动。';
@@ -138,6 +138,20 @@ function publicProgress(container, state) {
   const notebookText = node('p', 'small-note', text);
   notebookText.dataset.testid = 'public-notebooks';
   section.append(notebookText);
+  for (const token of notebooks) if (token.power) {
+    const explanation = node('details', 'notebook-power');
+    explanation.dataset.testid = 'notebook-power';
+    explanation.append(node('summary', '', `手记${token.number} · ${token.power.name}`), node('p', 'small-note', token.power.description));
+    section.append(explanation);
+  }
+  if (round.publicDiscoveries?.length) {
+    const discoveries = node('div');
+    discoveries.dataset.testid = 'public-discoveries';
+    discoveries.append(node('h3', '', '玩家公开的发现'));
+    for (const entry of round.publicDiscoveries) discoveries.append(node('p', 'small-note',
+      `${playerName(state, entry.playerId)}：${tokenName(entry.token)}${entry.cornerId ? `（发现时：${cornerName(entry.cornerId)}）` : '（公开时持有）'}`));
+    section.append(discoveries);
+  }
   if (round.safe) {
     const safe = node('p', 'small-note', round.safe.opened ? '保险箱已打开。' : `保险箱已知数字：${round.safe.publicNumbers?.length ? round.safe.publicNumbers.join('、') : '暂无'}`);
     safe.dataset.testid = 'safe-public-status';
@@ -265,6 +279,14 @@ function resolutionControls(container, state, locked, action) {
     const found = node('p', 'private-token', tokenName(resolution.token));
     found.dataset.testid = 'peek-result';
     section.append(found);
+    if (resolution.token?.power) section.append(node('p', 'small-note', `${resolution.token.power.name}：${resolution.token.power.description}`));
+    if (resolution.token && !state.round.publicDiscoveries?.some(entry => entry.playerId === state.you
+        && entry.token.id === resolution.token.id && entry.cornerId === resolution.cornerId)) {
+      const publish = button('向所有玩家公开这次发现', 'publish-peek-token', locked,
+        () => action('publish_token', { tokenId: resolution.token.id }), true);
+      publish.dataset.tokenId = resolution.token.id;
+      section.append(publish);
+    }
     let take = resolution.kind === 'notebook' || resolution.canTake !== false;
     const decision = node('div', 'decision-actions');
     const takeButton = button(resolution.kind === 'notebook' ? '公开这片手记' : '获取标志', 'resolve-peek-take', locked || resolution.canTake === false, () => { take = true; update(); }, true);
@@ -331,12 +353,12 @@ function hidingControls(container, state, locked, action, inspectedRoomTokens) {
     });
     const choice = select(container, `${prefix}hiding-select`, isHako ? '本次潜伏角落' : '箱人潜伏角落', (actor.hidingTargets || []).map(id => {
       const corner = actor.inspectedRoom.corners.find(corner => corner.id === id);
-      return { id, name: `${cornerName(id)} — ${tokenName(corner?.token)}` };
+      return { id, name: `${cornerName(id)} — ${corner?.token === undefined ? '盖放标志（潜伏后查看）' : tokenName(corner.token)}` };
     }), locked);
     container.append(button('确认潜伏', isHako ? 'confirm-hiding' : 'confirm-ghost-hiding', locked || !choice.value, () => action(isHako ? 'hako_hide' : 'ghost_hide', { cornerId: choice.value, faceDownCornerIds: faceDownChoices.filter(input => input.checked).map(input => input.dataset.cornerId) })));
   } else {
-    const choice = select(container, `${prefix}hiding-room-select`, '选择房间，查看全部角落标志', (actor.hidingRooms || []).map(value => typeof value === 'string' ? { id: value, name: roomName(value) } : value), locked);
-    container.append(button('查看这间房间', isHako ? 'inspect-hiding-room' : 'ghost-inspect-hiding-room', locked || !choice.value, () => action('inspect_hiding_room', { roomId: choice.value })));
+    const choice = select(container, `${prefix}hiding-room-select`, '选择潜伏房间', (actor.hidingRooms || []).map(value => typeof value === 'string' ? { id: value, name: roomName(value) } : value), locked);
+    container.append(button('选择这间房间', isHako ? 'inspect-hiding-room' : 'ghost-inspect-hiding-room', locked || !choice.value, () => action('inspect_hiding_room', { roomId: choice.value })));
   }
 }
 
@@ -353,6 +375,13 @@ function inventory(container, state, locked, action) {
     line.dataset.testid = 'inventory-token';
     line.dataset.tokenId = token.id;
     line.append(node('span', '', tokenName(token)));
+    if (round.canPublishTokens && !round.publicDiscoveries?.some(entry => entry.playerId === state.you
+        && entry.token.id === token.id && !entry.cornerId)) {
+      const publish = button('全局公开', 'publish-inventory-token', locked,
+        () => action('publish_token', { tokenId: token.id }), true);
+      publish.dataset.tokenId = token.id;
+      line.append(publish);
+    }
     tokens.append(line);
   }
   if (!belongings.tokens?.length) tokens.append(node('li', 'small-note', '尚未持有盖放标志。'));
@@ -507,6 +536,9 @@ export function renderExploration({ panel, state, pending, online, action, silen
   const fragment = document.createDocumentFragment();
   if (round.result) gameResult(fragment, state);
   else fragment.append(node('h2', '', '旧宅探索'));
+  const rounds = node('p', 'small-note', `总回合数：${round.totalRounds ?? 0}（每次箱娃阶段计1回合）`);
+  rounds.dataset.testid = 'total-rounds';
+  fragment.append(rounds);
   fragment.append(node('p', 'practice-scope small-note', '已接入目前所有确认规则。NO.12按无声模式规则移出游戏。'));
   if (state.initialPower) {
     const power = node('p', 'initial-power-public', `初始箱娃之力：${state.initialPower.name}`);
@@ -564,8 +596,8 @@ export function renderExploration({ panel, state, pending, online, action, silen
     visitorControls(controls, state, locked, action);
     pendingControls(controls, state, locked, action);
     if (round.phase === 'hako_reaction' && round.hako.playerId === state.you) controls.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked || Boolean(round.interruption), () => action('pass_noise_reaction')));
-    hidingControls(controls, state, locked, action, inspectedRoomTokens);
     renderAbilities({ container: controls, state, locked, action });
+    hidingControls(controls, state, locked, action, inspectedRoomTokens);
     renderActiveItems({ container: controls, state, locked, action });
   }
   fragment.append(controls);

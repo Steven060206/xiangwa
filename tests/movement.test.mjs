@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAP_TILES } from '../src/maps.mjs';
+import { MAP_TILES, getLogicalRoomId, getLogicalRooms } from '../src/maps.mjs';
 import {
   getRoom, getCornerRoom, getMoveTargets, getInitialHidingCorners, getHidingTargets,
 } from '../src/movement.mjs';
@@ -20,11 +20,17 @@ function connectedMap() {
   ];
 }
 
-test('room and corner lookups return the catalog room and reject unknown ids with undefined', () => {
+test('room and corner lookups combine each board while retaining old subdivision ids', () => {
+  assert.equal(getLogicalRooms().length, 9);
   for (const tile of MAP_TILES) {
+    const logical = getRoom(tile.rooms[0].id);
+    assert.equal(logical.tileId, tile.id);
+    assert.deepEqual(logical.corners, tile.rooms.flatMap(room => room.corners));
     for (const room of tile.rooms) {
-      assert.equal(getRoom(room.id), room);
-      for (const corner of room.corners) assert.equal(getCornerRoom(corner.id), room);
+      assert.equal(getLogicalRoomId(room.id), logical.id);
+      assert.equal(getRoom(room.id), logical);
+      for (const corner of room.corners) assert.equal(getCornerRoom(corner.id), logical);
+      assert.equal(getCornerRoom(`suitcase:${room.id}`), logical);
     }
   }
   assert.equal(getRoom('missing'), undefined);
@@ -46,14 +52,14 @@ test('aligned external doors work both ways and touching a one-sided doorway doe
     placed('study', 1, 1, -1, 2), placed('dining', 1, 1, 0, 1),
   ];
   assert.deepEqual(getMoveTargets(placements, 'hall_room'), ['living_room']);
-  assert.deepEqual(getMoveTargets(placements, 'living_room'), ['dark_room', 'hall_room']);
+  assert.deepEqual(getMoveTargets(placements, 'living_room'), ['hall_room', 'study_room']);
   assert.deepEqual(getMoveTargets(placements, 'dining_room'), ['study_room']);
-  assert.deepEqual(getMoveTargets(placements, 'study_room'), ['dark_room', 'dining_room']);
+  assert.deepEqual(getMoveTargets(placements, 'study_room'), ['dining_room', 'living_room']);
   assert.ok(!getMoveTargets(placements, 'hall_room').includes('dining_room'));
   assert.ok(!getMoveTargets(placements, 'dining_room').includes('hall_room'));
 });
 
-test('all four rotations connect the hall only to the room owning the rotated door', () => {
+test('all four rotations connect the hall to the entire board through its printed doorway', () => {
   const cases = [
     { x: -1, y: 0, rotation: 0, roomId: 'dark_room', other: 'study_room' },
     { x: 0, y: -1, rotation: 1, roomId: 'dark_room', other: 'study_room' },
@@ -62,13 +68,13 @@ test('all four rotations connect the hall only to the room owning the rotated do
   ];
   for (const { x, y, rotation, roomId, other } of cases) {
     const placements = [hall(), placed('study', 1, x, y, rotation)];
-    assert.deepEqual(getMoveTargets(placements, 'hall_room'), [roomId], `rotation ${rotation}`);
-    assert.deepEqual(getMoveTargets(placements, roomId), ['hall_room', other].sort());
-    assert.deepEqual(getMoveTargets(placements, other), [roomId]);
+    assert.deepEqual(getMoveTargets(placements, 'hall_room'), ['study_room'], `rotation ${rotation}`);
+    assert.deepEqual(getMoveTargets(placements, roomId), ['hall_room']);
+    assert.deepEqual(getMoveTargets(placements, other), ['hall_room']);
   }
 });
 
-test('split boards require their internal door and do not grant movement through the whole board', () => {
+test('printed subdivisions are one room and do not cost an internal move', () => {
   const placements = [
     hall(), placed('study', 1, 0, -1, 2), placed('bathroom', 1, -1, 0),
     placed('upstairs', 2, 0, 0, 3), placed('storage', 2, 0, -1, 3),
@@ -76,32 +82,32 @@ test('split boards require their internal door and do not grant movement through
   ];
   const expected = {
     hall_room: ['bathroom_room', 'study_room', 'upstairs_hall'],
-    study_room: ['dark_room', 'hall_room'],
-    dark_room: ['study_room'],
-    bathroom_room: ['hall_room', 'toilet_stall'],
-    toilet_stall: ['bathroom_room'],
-    upstairs_hall: ['blue_bedroom', 'hall_room', 'kitchen'],
-    blue_bedroom: ['upstairs_hall'],
-    kitchen: ['storage_room', 'upstairs_hall'],
-    storage_room: ['basement_room', 'kitchen'],
+    study_room: ['hall_room'],
+    dark_room: ['hall_room'],
+    bathroom_room: ['hall_room'],
+    toilet_stall: ['hall_room'],
+    upstairs_hall: ['hall_room', 'storage_room'],
+    blue_bedroom: ['hall_room', 'storage_room'],
+    kitchen: ['basement_room', 'upstairs_hall'],
+    storage_room: ['basement_room', 'upstairs_hall'],
     basement_room: ['storage_room'],
   };
   for (const [roomId, targets] of Object.entries(expected)) {
     assert.deepEqual(getMoveTargets(placements, roomId), targets, roomId);
-    assert.ok(!targets.includes(roomId));
+    assert.ok(!targets.includes(getLogicalRoomId(roomId)));
   }
 });
 
 test('stairs exist only when both rooms are placed and connect storage on the second floor to basement', () => {
   assert.deepEqual(getMoveTargets([hall()], 'hall_room'), []);
-  assert.deepEqual(getMoveTargets([placed('upstairs', 2, 0, 0)], 'upstairs_hall'), ['blue_bedroom']);
-  assert.deepEqual(getMoveTargets([placed('storage', 2, 0, 0)], 'storage_room'), ['kitchen']);
+  assert.deepEqual(getMoveTargets([placed('upstairs', 2, 0, 0)], 'upstairs_hall'), []);
+  assert.deepEqual(getMoveTargets([placed('storage', 2, 0, 0)], 'storage_room'), []);
   assert.deepEqual(getMoveTargets([placed('basement', -1, 0, 0)], 'basement_room'), []);
 
   const placements = connectedMap();
   assert.ok(getMoveTargets(placements, 'hall_room').includes('upstairs_hall'));
   assert.ok(getMoveTargets(placements, 'upstairs_hall').includes('hall_room'));
-  assert.deepEqual(getMoveTargets(placements, 'storage_room'), ['basement_room', 'kitchen']);
+  assert.deepEqual(getMoveTargets(placements, 'storage_room'), ['basement_room', 'upstairs_hall']);
   assert.deepEqual(getMoveTargets(placements, 'basement_room'), ['storage_room']);
 });
 
@@ -123,8 +129,8 @@ test('blocked doors work symmetrically for visitors, leave stairs open and never
   assert.deepEqual(getMoveTargets(placements, 'hall_room', options), ['children_room', 'living_room', 'upstairs_hall']);
   assert.deepEqual(getMoveTargets(placements, 'study_room', options), []);
   assert.deepEqual(getMoveTargets(placements, 'dark_room', options), []);
-  assert.deepEqual(getMoveTargets(placements, 'upstairs_hall', options), ['blue_bedroom', 'hall_room', 'kitchen']);
-  assert.deepEqual(getMoveTargets(placements, 'storage_room', options), ['basement_room', 'kitchen']);
+  assert.deepEqual(getMoveTargets(placements, 'upstairs_hall', options), ['hall_room', 'storage_room']);
+  assert.deepEqual(getMoveTargets(placements, 'storage_room', options), ['basement_room', 'upstairs_hall']);
   assert.deepEqual(getMoveTargets(placements, 'basement_room', options), ['storage_room']);
 
   const reversed = blockedDoors.map(({ from, to }) => ({ from: to, to: from }));
@@ -139,9 +145,9 @@ test('blocked doors work symmetrically for visitors, leave stairs open and never
 test('initial hiding corners include only haunted rooms actually placed on this map', () => {
   assert.deepEqual(getInitialHidingCorners([]), []);
   assert.deepEqual(getInitialHidingCorners([hall()]), []);
-  assert.deepEqual(getInitialHidingCorners([hall(), placed('study', 1, 0, -1, 2)]), ['dark_bed', 'dark_wardrobe']);
+  assert.deepEqual(getInitialHidingCorners([hall(), placed('study', 1, 0, -1, 2)]), ['dark_bed', 'dark_wardrobe', 'study_books', 'study_desk']);
   assert.deepEqual(getInitialHidingCorners(connectedMap()), [
-    'children_bed', 'children_cabinet', 'children_toys', 'dark_bed', 'dark_wardrobe',
+    'children_bed', 'children_cabinet', 'children_toys', 'dark_bed', 'dark_wardrobe', 'study_books', 'study_desk',
   ]);
 });
 
@@ -151,24 +157,24 @@ test('hiding may stay or change corners in the current room and move through one
     'dark_bed', 'dark_wardrobe', 'hall_clock', 'study_books', 'study_desk',
   ]);
   assert.deepEqual(getHidingTargets(placements, 'dark_bed'), [
-    'dark_bed', 'dark_wardrobe', 'study_books', 'study_desk',
+    'dark_bed', 'dark_wardrobe', 'hall_clock', 'study_books', 'study_desk',
   ]);
   assert.deepEqual(getHidingTargets(placements, 'hall_clock'), [
-    'children_bed', 'children_cabinet', 'children_toys', 'hall_clock',
-    'living_record', 'living_sofa', 'living_vase', 'study_books', 'study_desk', 'upstairs_armor',
+    'children_bed', 'children_cabinet', 'children_toys', 'dark_bed', 'dark_wardrobe', 'hall_clock',
+    'living_record', 'living_sofa', 'living_vase', 'study_books', 'study_desk', 'upstairs_armor', 'upstairs_bed',
   ]);
 });
 
-test('hiding traverses stairs and respects the split room on either end of the route', () => {
+test('hiding traverses stairs and includes every corner of both connected boards', () => {
   const placements = connectedMap();
   assert.deepEqual(getHidingTargets(placements, 'upstairs_armor'), [
-    'hall_clock', 'kitchen_cabinet', 'kitchen_fridge', 'upstairs_armor', 'upstairs_bed',
+    'hall_clock', 'kitchen_cabinet', 'kitchen_fridge', 'storage_box', 'upstairs_armor', 'upstairs_bed',
   ]);
   assert.deepEqual(getHidingTargets(placements, 'storage_box'), [
-    'basement_barrel', 'basement_pile', 'basement_suitcase', 'kitchen_cabinet', 'kitchen_fridge', 'storage_box',
+    'basement_barrel', 'basement_pile', 'basement_suitcase', 'kitchen_cabinet', 'kitchen_fridge', 'storage_box', 'upstairs_armor', 'upstairs_bed',
   ]);
   assert.deepEqual(getHidingTargets(placements, 'basement_barrel'), [
-    'basement_barrel', 'basement_pile', 'basement_suitcase', 'storage_box',
+    'basement_barrel', 'basement_pile', 'basement_suitcase', 'kitchen_cabinet', 'kitchen_fridge', 'storage_box',
   ]);
 });
 

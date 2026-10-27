@@ -31,6 +31,7 @@ function newOpening(firstItem = 'walkie_talkie') {
   placeRemains(opening, hakoId, 'hall_clock');
   inspectInitialRoom(opening, hakoId, 'children_room');
   chooseInitialHiding(opening, hakoId, 'children_bed');
+  opening.initialPowerCandidates = [1, 4, 11];
   return { setup, opening };
 }
 
@@ -387,7 +388,10 @@ test('hako and every surviving ghost inspect one room and hide once before silen
   for (const id of [hakoId, first, second]) {
     play = act(play, id, { type: 'inspect_hiding_room', roomId: 'children_room' });
     const privateView = getPlayView(play, id)[id === hakoId ? 'hako' : 'ghost'];
-    assert.equal(privateView.inspectedRoom.corners.find(corner => corner.id === 'children_bed').actors.length, 3);
+    assert.deepEqual(privateView.inspectedRoom.corners.find(corner => corner.id === 'children_bed'), { id: 'children_bed' });
+    const visibleEmpty = privateView.inspectedRoom.corners.find(corner => corner.id === 'children_cabinet').token;
+    if (id === hakoId) assert.equal(visibleEmpty.type, 'empty_box');
+    else assert.equal(visibleEmpty, undefined, 'Re-covered public markers no longer reveal their content');
     rejects(play, id, { type: 'inspect_hiding_room', roomId: 'children_room' });
     rejects(play, id, { type: id === hakoId ? 'hako_hide' : 'ghost_hide', cornerId: 'dark_bed' });
     play = act(play, id, { type: id === hakoId ? 'hako_hide' : 'ghost_hide', cornerId: 'children_bed',
@@ -409,13 +413,13 @@ test('hako and every surviving ghost inspect one room and hide once before silen
   assert.equal(getPlayView(play, third).ghost, undefined);
 });
 
-test('confirming initial hiding preserves the entire inspected room privately during power selection and exploration', () => {
+test('confirming initial hiding preserves only its replaced marker privately during power selection and exploration', () => {
   const { setup, opening } = newOpening();
   assert.equal(opening.phase, 'power');
   const memory = getOpeningView(opening, hakoId).lastInspectedRoom;
   assert.equal(memory.id, 'children_room');
   assert.equal(memory.cycle, 0);
-  assert.deepEqual(memory.corners.map(corner => corner.id).sort(), ['children_bed', 'children_cabinet', 'children_toys']);
+  assert.deepEqual(memory.corners.map(corner => corner.id), ['children_bed']);
   for (const corner of memory.corners) {
     assert.deepEqual(corner.token, corner.id === opening.hidingCornerId
       ? opening.hidingUnderToken : opening.cornerTokens[corner.id]);
@@ -435,7 +439,7 @@ test('confirming initial hiding preserves the entire inspected room privately du
   }
 });
 
-test('confirmed hiding retains a detached room snapshot through visitor taking and dropping until the next inspection', () => {
+test('confirmed hiding retains only its replaced marker through other corner changes until another hiding is confirmed', () => {
   let play = newPlay();
   play.tokens.children_cabinet = token('remembered-password', 'password', { number: 2 });
   play.inventories[first].tokens.push(token('later-dropped-clue', 'weakness_clue', { tool: 'white_stick' }));
@@ -444,10 +448,11 @@ test('confirmed hiding retains a detached room snapshot through visitor taking a
   play = enterHakoStage(play, first);
   const inspectedCycle = play.round.silent.cycle;
   play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
+  assert.equal(JSON.stringify(getPlayView(play, hakoId).hako.inspectedRoom).includes('remembered-password'), false);
+  play = act(play, hakoId, { type: 'hako_hide', cornerId: 'children_bed' });
   const memory = structuredClone(getPlayView(play, hakoId).hako.lastInspectedRoom);
   assert.equal(memory.cycle, inspectedCycle);
-  assert.deepEqual(memory.corners, getPlayView(play, hakoId).hako.inspectedRoom.corners);
-  play = act(play, hakoId, { type: 'hako_hide', cornerId: 'children_bed' });
+  assert.deepEqual(memory.corners.map(corner => corner.id), ['children_bed']);
   assert.equal(Object.hasOwn(getPlayView(play, hakoId).hako, 'inspectedRoom'), false);
   assert.deepEqual(getPlayView(play, hakoId).hako.lastInspectedRoom, memory);
 
@@ -462,41 +467,42 @@ test('confirmed hiding retains a detached room snapshot through visitor taking a
   const before = JSON.stringify(play);
   const detached = getPlayView(play, hakoId).hako.lastInspectedRoom;
   detached.id = 'forged-room';
-  const cabinet = detached.corners.find(corner => corner.id === 'children_cabinet');
-  cabinet.token.number = 99;
-  cabinet.actors.push({ playerId: 'forged-actor', type: 'hako' });
+  detached.corners[0].token = token('forged-marker', 'key');
   detached.corners.pop();
   assert.equal(JSON.stringify(play), before, 'History tokens, actors and arrays must all be cloned');
 
   play = enterHakoStage(play, first);
   assert.deepEqual(getPlayView(play, hakoId).hako.lastInspectedRoom, memory);
   play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
+  assert.deepEqual(getPlayView(play, hakoId).hako.lastInspectedRoom, memory, 'Choosing a room does not reveal new markers');
+  play = act(play, hakoId, { type: 'hako_hide', cornerId: 'children_cabinet' });
   const refreshed = getPlayView(play, hakoId).hako.lastInspectedRoom;
   assert.equal(refreshed.cycle, inspectedCycle + 1);
   assert.equal(refreshed.corners.find(corner => corner.id === 'children_cabinet').token.id, 'later-dropped-clue');
   assert.equal(JSON.stringify(refreshed).includes('remembered-password'), false);
 });
 
-test('each hidden actor retains only their own latest inspection and later actor movement does not update other memories', () => {
+test('each hidden actor retains only their own latest replaced marker and never another actor records', () => {
   let play = newPlay();
   addGhost(play, first, 'children_bed');
   addGhost(play, second, 'children_bed');
   play = enterHakoStage(play, third);
   play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
-  const hakoMemory = structuredClone(getPlayView(play, hakoId).hako.lastInspectedRoom);
   play = act(play, hakoId, { type: 'hako_hide', cornerId: 'children_bed' });
+  const hakoMemory = structuredClone(getPlayView(play, hakoId).hako.lastInspectedRoom);
   assert.equal(Object.hasOwn(getPlayView(play, hakoId).hako, 'inspectedRoom'), false,
     'A finished actor must stop receiving the live room view while others are still hiding');
   play = act(play, first, { type: 'inspect_hiding_room', roomId: 'children_room' });
-  const firstMemory = structuredClone(getPlayView(play, first).ghost.lastInspectedRoom);
+  assert.equal(getPlayView(play, first).ghost.lastInspectedRoom, undefined);
   play = act(play, first, { type: 'ghost_hide', cornerId: 'children_cabinet' });
+  const firstMemory = structuredClone(getPlayView(play, first).ghost.lastInspectedRoom);
   assert.equal(Object.hasOwn(getPlayView(play, hakoId).hako, 'inspectedRoom'), false);
   assert.equal(Object.hasOwn(getPlayView(play, first).ghost, 'inspectedRoom'), false);
   assert.deepEqual(getPlayView(play, hakoId).hako.lastInspectedRoom, hakoMemory);
   play = act(play, second, { type: 'inspect_hiding_room', roomId: 'children_room' });
-  const secondMemory = structuredClone(getPlayView(play, second).ghost.lastInspectedRoom);
-  assert.notDeepEqual(firstMemory.corners, secondMemory.corners, 'A later observer sees the intervening ghost movement');
   play = act(play, second, { type: 'ghost_hide', cornerId: 'children_bed' });
+  const secondMemory = structuredClone(getPlayView(play, second).ghost.lastInspectedRoom);
+  assert.notDeepEqual(firstMemory.corners, secondMemory.corners, 'Different chosen corners produce separate one-marker records');
   assert.deepEqual(getPlayView(play, hakoId).hako.lastInspectedRoom, hakoMemory);
   assert.equal(getPlayView(play, hakoId).ghost, undefined);
   for (const [id, expected] of [[first, firstMemory], [second, secondMemory]]) {
@@ -510,7 +516,7 @@ test('each hidden actor retains only their own latest inspection and later actor
   assert.equal(living.ghost, undefined);
 });
 
-test('old saves recover only initial room knowledge from opening data and never reconstruct current hidden contents', () => {
+test('old saves recover only the initially replaced marker and never reconstruct current hidden contents', () => {
   const play = newPlay();
   const expected = structuredClone(getPlayView(play, hakoId).hako.lastInspectedRoom);
   delete play.hidingMemories;
@@ -530,18 +536,22 @@ test('old saves recover only initial room knowledge from opening data and never 
   assert.equal(JSON.stringify(play), before, 'Reading a legacy save must not mutate or populate its state');
 });
 
-test('legacy saves waiting to confirm hiding preserve the room already inspected before clearing the stage', () => {
+test('legacy saves waiting to confirm hiding replace old whole-room knowledge with the single newly replaced marker', () => {
   for (const absent of [true, false]) {
     let play = newPlay();
     const initialMemory = structuredClone(getPlayView(play, hakoId).hako.lastInspectedRoom);
     play.tokens.children_cabinet = token('legacy-confirmed-password', 'password', { number: 4 });
     play = enterHakoStage(play);
     play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
-    const expected = { ...getPlayView(play, hakoId).hako.inspectedRoom, cycle: play.round.silent.cycle };
     if (absent) delete play.hidingMemories;
-    else play.hidingMemories[hakoId] = initialMemory;
+    else play.hidingMemories[hakoId] = { ...initialMemory,
+      corners: [...initialMemory.corners, { id: 'children_cabinet', token: token('legacy-secret-extra', 'key') }] };
+    if (!absent) assert.equal(JSON.stringify(getPlayView(play, hakoId).hako.lastInspectedRoom).includes('legacy-secret-extra'), false);
     play = act(play, hakoId, { type: 'hako_hide', cornerId: 'children_bed' });
-    assert.deepEqual(getPlayView(play, hakoId).hako.lastInspectedRoom, expected);
+    const memory = getPlayView(play, hakoId).hako.lastInspectedRoom;
+    assert.equal(memory.cycle, play.round.silent.cycle - 1);
+    assert.deepEqual(memory.corners.map(corner => corner.id), ['children_bed']);
+    assert.equal(JSON.stringify(memory).includes('legacy-confirmed-password'), false);
   }
 });
 
@@ -740,6 +750,61 @@ test('all visitors dying ends the game with every box person on the hako side an
   for (const id of [hakoId, ...visitors]) rejects(play, id, { type: 'inspect_hiding_room', roomId: 'hall_room' }, /已经结束/);
 });
 
+test('all corners in a printed board are peek targets without spending an internal move, including old subdivision positions', () => {
+  let play = newPlay();
+  play.round.visitors[0].roomId = 'toilet_stall';
+  play.tokens.bathroom_toilet = token('whole-board-password', 'password', { number: 2 });
+  play = reveal(play);
+  const view = getPlayView(play, first);
+  assert.equal(view.visitors[0].roomId, 'bathroom_room');
+  for (const id of ['bathroom_tub', 'bathroom_washer', 'bathroom_toilet']) assert.ok(view.peekTargets.includes(id));
+  assert.ok(!view.moveTargets.includes('toilet_stall'));
+  play = peek(play, 'bathroom_toilet');
+  assert.equal(getPlayView(play, first).resolution.token.id, 'whole-board-password');
+});
+
+test('visitors can globally publish held markers without spending an action or disclosing other possessions', () => {
+  let play = newPlay();
+  play.inventories[first].tokens.push(token('public-password', 'password', { number: 2 }), token('private-key', 'key'));
+  play.round.visitors[1].roomId = 'basement_room';
+  const silent = structuredClone(play.round.silent);
+  rejects(play, second, { type: 'publish_token', tokenId: 'public-password' });
+  rejects(play, hakoId, { type: 'publish_token', tokenId: 'public-password' });
+  play = act(play, first, { type: 'publish_token', tokenId: 'public-password' });
+  assert.deepEqual(play.round.silent, silent);
+  assert.equal(play.inventories[first].tokens.length, 2);
+  for (const id of [hakoId, ...visitors]) {
+    const view = getPlayView(play, id);
+    assert.equal(view.publicDiscoveries[0].playerId, first);
+    assert.equal(view.publicDiscoveries[0].token.id, 'public-password');
+    if (id !== first) assert.equal(JSON.stringify(view).includes('private-key'), false);
+    view.publicDiscoveries[0].token.number = 99;
+    assert.equal(getPlayView(play, id).publicDiscoveries[0].token.number, 2);
+  }
+  rejects(play, first, { type: 'publish_token', tokenId: 'public-password' });
+  rejects(play, second, { type: 'publish_token', tokenId: 'public-password' });
+});
+
+test('a current private peek may be published before taking, while its historical record survives later replacement', () => {
+  let play = newPlay();
+  play.tokens.hall_clock = token('peeked-password', 'password', { number: 4 });
+  play = peek(reveal(play), 'hall_clock');
+  assert.equal(getPlayView(play, second).publicDiscoveries.length, 0);
+  rejects(play, second, { type: 'publish_token', tokenId: 'peeked-password' });
+  const silent = structuredClone(play.round.silent);
+  const resolution = structuredClone(play.resolution);
+  play = act(play, first, { type: 'publish_token', tokenId: 'peeked-password' });
+  assert.deepEqual(play.round.silent, silent);
+  assert.deepEqual(play.resolution, resolution);
+  assert.equal(play.publicDiscoveries[0].cornerId, 'hall_clock');
+  play = act(play, first, { type: 'resolve_peek', take: true, replacement: 'empty_box' });
+  assert.equal(play.tokens.hall_clock.type, 'empty_box');
+  const publicRecord = getPlayView(play, third).publicDiscoveries[0];
+  assert.equal(publicRecord.token.id, 'peeked-password');
+  assert.equal(publicRecord.cornerId, 'hall_clock');
+  assert.equal(play.publicDiscoveries.length, 1);
+});
+
 test('nested player views detach inventories, reveals, public state, offers and inspected rooms from internal state', () => {
   let play = newPlay();
   play.inventories[first].tokens.push(token('detached-secret', 'password', { number: 4 }));
@@ -764,7 +829,7 @@ test('nested player views detach inventories, reveals, public state, offers and 
   const inspectedBefore = JSON.stringify(play);
   const view = getPlayView(play, hakoId);
   view.hako.hidingTargets.push('changed');
-  view.hako.inspectedRoom.corners[0].token.id = 'changed';
-  view.hako.inspectedRoom.corners[0].actors.push({ playerId: 'changed' });
+  view.hako.inspectedRoom.corners[0].id = 'changed';
+  view.hako.inspectedRoom.corners.push({ id: 'changed', token: token('forged', 'key') });
   assert.equal(JSON.stringify(play), inspectedBefore);
 });

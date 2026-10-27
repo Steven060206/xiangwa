@@ -52,8 +52,8 @@ test('compact desktop and mobile boards show public players and only the viewer 
   await act(people[0], 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
   await act(people[0], 'place_remains', { cornerId: 'living_sofa' });
   await act(people[0], 'inspect_initial_room', { roomId: 'children_room' });
-  await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await act(people[0], 'choose_initial_power', { powerId: 1 });
+  state = await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
+  await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
   browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
   const pages = [];
   for (let index = 0; index < 2; index++) {

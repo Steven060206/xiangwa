@@ -1,10 +1,10 @@
-import { MAP_TILES, getTile } from './maps.mjs';
+import { getTile, getLogicalRoomId, getLogicalRooms } from './maps.mjs';
 import { getConnections } from './game.mjs';
 
-const ROOMS = MAP_TILES.flatMap(tile => tile.rooms);
+const ROOMS = getLogicalRooms();
 
 export function getRoom(roomId) {
-  return ROOMS.find(room => room.id === roomId);
+  return ROOMS.find(room => room.id === getLogicalRoomId(roomId));
 }
 
 export function getCornerRoom(cornerId) {
@@ -13,7 +13,7 @@ export function getCornerRoom(cornerId) {
 }
 
 function getPlacedRooms(placements) {
-  return placements.flatMap(placement => getTile(placement.tileId).rooms);
+  return placements.map(placement => getRoom(getTile(placement.tileId).rooms[0].id));
 }
 
 function assertPlacedRoom(placements, roomId) {
@@ -23,6 +23,7 @@ function assertPlacedRoom(placements, roomId) {
 }
 
 export function getMoveTargets(placements, roomId, { actor = 'visitor', blockedDoors = [] } = {}) {
+  roomId = getLogicalRoomId(roomId);
   assertPlacedRoom(placements, roomId);
   if (!['visitor', 'hako', 'box_person'].includes(actor)) {
     throw new Error('移动角色无效。');
@@ -32,7 +33,8 @@ export function getMoveTargets(placements, roomId, { actor = 'visitor', blockedD
     const { from, to, kind } = connection;
     if (from !== roomId && to !== roomId) continue;
     if (actor === 'visitor' && kind === 'door' && blockedDoors.some(blocked => (
-      (blocked.from === from && blocked.to === to) || (blocked.from === to && blocked.to === from)
+      (getLogicalRoomId(blocked.from) === from && getLogicalRoomId(blocked.to) === to)
+      || (getLogicalRoomId(blocked.from) === to && getLogicalRoomId(blocked.to) === from)
     ))) continue;
     const target = from === roomId ? to : from;
     if (target !== roomId) targets.add(target);

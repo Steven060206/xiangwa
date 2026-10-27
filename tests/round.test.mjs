@@ -59,8 +59,8 @@ test('movement waits for the hako reaction window and advances only after resolu
   applyRoundAction(round, first, { type: 'silent_reveal', index: 0 });
   assert.ok(getRoundView(round, first).moveTargets.includes('study_room'));
   assert.deepEqual(getRoundView(round, second).moveTargets, []);
-  rejectsWithoutMutation(round, first, { type: 'move', roomId: 'dark_room' });
-  const declaration = applyRoundAction(round, first, { type: 'move', roomId: 'study_room' });
+  rejectsWithoutMutation(round, first, { type: 'move', roomId: 'storage_room' });
+  const declaration = applyRoundAction(round, first, { type: 'move', roomId: 'dark_room' });
   assert.equal(declaration.phase, 'visitor_reaction');
   assert.equal(declaration.visitors[0].roomId, 'hall_room');
   assert.deepEqual(declaration.pendingAction, {
@@ -98,19 +98,19 @@ test('exactly ten permits movement; overflow preserves an immediate reaction and
   applyRoundAction(round, hakoId, { type: 'pass_noise_reaction' });
   assert.equal(getRoundView(round, hakoId).phase, 'hako_phase');
   const beforeMove = visitors.map(id => getRoundView(round, id));
-  assert.ok(getRoundView(round, hakoId).hako.hidingTargets.includes('children_bed'));
-  rejectsWithoutMutation(round, visitors[0], { type: 'hako_hide', cornerId: 'children_bed' });
+  assert.ok(getRoundView(round, hakoId).hako.hidingTargets.includes('hall_clock'));
+  rejectsWithoutMutation(round, visitors[0], { type: 'hako_hide', cornerId: 'hall_clock' });
   rejectsWithoutMutation(round, hakoId, { type: 'hako_hide', cornerId: 'living_sofa' });
-  applyRoundAction(round, hakoId, { type: 'hako_hide', cornerId: 'children_bed' });
+  applyRoundAction(round, hakoId, { type: 'hako_hide', cornerId: 'hall_clock' });
   assert.equal(round.silent.cycle, 2);
   assert.equal(round.silent.turnPlayerId, visitors[0]);
   assert.equal(round.silent.total, 0);
-  assert.equal(round.hidingCornerId, 'children_bed');
+  assert.equal(round.hidingCornerId, 'hall_clock');
   for (let i = 0; i < visitors.length; i++) {
     const view = getRoundView(round, visitors[i]);
     assert.deepEqual(view.visitors, beforeMove[i].visitors);
     assert.deepEqual(view.hako, { playerId: hakoId });
-    assert.equal(JSON.stringify(view).includes('children_bed'), false);
+    assert.equal(JSON.stringify(view).includes('hall_clock'), false);
     assert.ok(view.silent.cards.every(card => card.status === 'down' && !Object.hasOwn(card, 'number')));
   }
 });
@@ -147,7 +147,7 @@ test('skips hold hidden markers, do not move visitors, and return markers on res
   assert.ok(getRoundView(round, visitors[0]).silent.cards.every(card => card.status === 'down'));
 });
 
-test('blocked visitor door cannot be declared and a split room needs its internal move', () => {
+test('blocked visitor doors cannot be declared and a subdivision is not a separate move target', () => {
   const round = newRound();
   round.blockedDoors.push({ from: 'study_room', to: 'hall_room' });
   applyRoundAction(round, visitors[0], { type: 'silent_reveal', index: 0 });
@@ -159,7 +159,8 @@ test('blocked visitor door cannot be declared and a split room needs its interna
   applyRoundAction(round, visitors[1], { type: 'silent_skip', index: 1 });
   applyRoundAction(round, visitors[2], { type: 'silent_skip', index: 2 });
   applyRoundAction(round, visitors[0], { type: 'silent_reveal', index: 3 });
-  assert.deepEqual(getRoundView(round, visitors[0]).moveTargets, ['dark_room', 'hall_room']);
+  assert.deepEqual(getRoundView(round, visitors[0]).moveTargets, ['children_room', 'hall_room']);
+  rejectsWithoutMutation(round, visitors[0], { type: 'move', roomId: 'dark_room' });
 });
 
 test('participant views and pending declarations are detached and never reveal another player secrets', () => {
@@ -179,4 +180,18 @@ test('participant views and pending declarations are detached and never reveal a
   assert.equal(hakoView.hako.cornerId, 'dark_wardrobe');
   hakoView.hako.hidingTargets.push('anything');
   assert.deepEqual(round, before);
+});
+
+test('legacy subdivision positions and pending movement normalize in views and resolve without rewriting reads', () => {
+  const round = newRound();
+  round.visitors[0].roomId = 'dark_room';
+  round.silent.phase = 'visitor_action';
+  round.pendingAction = { type: 'move', playerId: visitors[0], fromRoomId: 'dark_room', toRoomId: 'hall_room' };
+  const before = structuredClone(round);
+  const view = getRoundView(round, visitors[0]);
+  assert.equal(view.visitors[0].roomId, 'study_room');
+  assert.equal(view.pendingAction.fromRoomId, 'study_room');
+  assert.deepEqual(round, before);
+  applyRoundAction(round, hakoId, { type: 'resolve_visitor_action' });
+  assert.equal(round.visitors[0].roomId, 'hall_room');
 });

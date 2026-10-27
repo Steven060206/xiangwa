@@ -1,4 +1,4 @@
-import { getTile, MAP_TILES } from '/shared/maps.mjs';
+import { getTile, MAP_TILES, getLogicalRoomId } from '/shared/maps.mjs';
 
 const rooms = MAP_TILES.flatMap(tile => tile.rooms);
 const corners = rooms.flatMap(room => room.corners.map(corner => ({ ...corner, room })));
@@ -83,7 +83,7 @@ function roomLabelLayout(room, rotation) {
   return { x, y, lines };
 }
 
-export function createTileSvg(tileId, rotation = 0, extraCorners = [], players = []) {
+export function createTileSvg(tileId, rotation = 0, extraCorners = [], players = [], announcement = null) {
   const tile = getTile(tileId);
   const svg = el('svg', { viewBox: '0 0 100 100', class: 'tile-svg', role: 'img', 'aria-label': `${tile.name}，旋转${rotation * 90}度` });
   svg.append(el('title', {}, tile.name));
@@ -134,7 +134,7 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = [], players =
     for (const corner of [...room.corners, ...extra]) {
       const [x, y] = rotatePoint([corner.x, corner.y], rotation);
       const mark = el('g', { transform: `translate(${x} ${y})`, class: 'corner-location',
-        'data-corner-id': corner.id, 'aria-label': cornerName(corner.id) });
+        'data-corner-id': corner.id, 'aria-label': cornerName(corner.id), role: 'button', tabindex: '0' });
       if (corner.id.startsWith('suitcase:')) mark.setAttribute('data-testid', 'suitcase-corner');
       mark.append(el('title', {}, cornerName(corner.id)));
       mark.append(el('rect', { x: -5.5, y: -5.5, width: 11, height: 11, rx: 1, class: 'corner-mark' }));
@@ -158,7 +158,8 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = [], players =
     const { x, y, lines } = roomLabelLayout(room, rotation);
     visitors.forEach((player, index) => addPlayer(player,
       x + (index - (visitors.length - 1) / 2) * 12, Math.min(93, y + (lines.length - 1) * 5.5 + 13)));
-    for (const player of players.filter(player => player.roomId === room.id && player.cornerId)) {
+    for (const player of players.filter(player => player.cornerId && (room.corners.some(corner => corner.id === player.cornerId)
+      || extraCorners.some(corner => corner.roomId === room.id && corner.id === player.cornerId)))) {
       const corner = room.corners.find(corner => corner.id === player.cornerId)
         || extraCorners.find(corner => corner.id === player.cornerId);
       if (!corner) continue;
@@ -174,6 +175,15 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = [], players =
       const [x, y] = rotatePoint([50 + (index - (entrancePlayers.length - 1) / 2) * 12, 106], rotation);
       addPlayer(player, x, y);
     });
+  }
+  if (announcement && getLogicalRoomId(announcement.roomId) === tile.rooms[0].id) {
+    const cry = el('g', { class: 'cry-map-marker', 'data-testid': 'cry-map-marker',
+      'data-room-id': getLogicalRoomId(announcement.roomId), 'aria-label': `哭喊指向：${tile.name}` });
+    cry.append(el('title', {}, `哭喊指向：${tile.name}，保留至下一次箱娃阶段`));
+    cry.append(el('rect', { x: 3, y: 3, width: 94, height: 94, rx: 2, class: 'cry-room-outline' }));
+    cry.append(el('rect', { x: 37, y: 88, width: 26, height: 11, rx: 2, class: 'cry-room-badge' }));
+    cry.append(el('text', { x: 50, y: 94, 'text-anchor': 'middle', 'dominant-baseline': 'middle', class: 'cry-room-label' }, '哭喊'));
+    svg.append(cry);
   }
   return svg;
 }
