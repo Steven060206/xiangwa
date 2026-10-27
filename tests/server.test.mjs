@@ -491,7 +491,7 @@ test('a human visitor plays beside two bot visitors and receives automatic priva
   assert.equal(state.initialItems.length, 2);
   await delay(40);
   assert.equal((await snapshot(request, host)).body.version, state.version, 'Bots wait for the human item choice');
-  const chosen = await action(request, host, 'choose_item', { itemId: 'spirit_pen' });
+  const chosen = await action(request, host, 'choose_item', { itemId: 'ventriloquist_doll' });
   assert.equal(chosen.status, 200);
   state = chosen.body;
   while (state.phase === 'map_setup') {
@@ -525,15 +525,15 @@ test('a human visitor plays beside two bot visitors and receives automatic priva
   assert.equal(revealed.status, 200);
   assert.equal(revealed.body.round.phase, 'visitor_action');
   const questioned = await action(request, host, 'use_item', {
-    itemId: 'spirit_pen', roomId: revealed.body.round.items.roomOptions[0].id,
+    itemId: 'ventriloquist_doll', roomId: revealed.body.round.items.roomOptions[0].id,
   });
   assert.equal(questioned.status, 200);
   const waiting = await live.state(update => update.round?.resolution?.kind === 'waiting'
     && update.round.resolution.playerId === hako.id);
   assert.deepEqual(waiting.round.resolution, { kind: 'waiting', playerId: hako.id });
-  const answered = await live.state(update => update.round?.items.events.some(event => event.itemId === 'spirit_pen'
+  const answered = await live.state(update => update.round?.items.events.some(event => event.itemId === 'ventriloquist_doll'
     && event.userId === host.playerId));
-  const answer = answered.round.items.events.find(event => event.itemId === 'spirit_pen' && event.userId === host.playerId);
+  const answer = answered.round.items.events.find(event => event.itemId === 'ventriloquist_doll' && event.userId === host.playerId);
   assert.equal(typeof answer.answer, 'boolean');
   assert.equal(Object.hasOwn(answer, 'truth'), false);
 });

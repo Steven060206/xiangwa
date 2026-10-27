@@ -11,7 +11,7 @@
     "share": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/share-online.ps1",
     "share:fixed": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/share-fixed.ps1",
     "deploy:runtime": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-runtime.ps1",
-    "test": "node --test tests/game.test.mjs tests/silent.test.mjs tests/movement.test.mjs tests/round.test.mjs tests/preparation.test.mjs tests/play.test.mjs tests/items.test.mjs tests/powers.test.mjs tests/bots.test.mjs tests/card-completion.test.mjs tests/card-completion-http.test.mjs tests/server.test.mjs tests/share-online.test.mjs tests/undo.test.mjs tests/feedback-http.test.mjs tests/feedback-ui.test.mjs tests/access.test.mjs tests/runtime.test.mjs",
+    "test": "node --test tests/game.test.mjs tests/silent.test.mjs tests/movement.test.mjs tests/round.test.mjs tests/preparation.test.mjs tests/play.test.mjs tests/items.test.mjs tests/powers.test.mjs tests/bots.test.mjs tests/card-completion.test.mjs tests/card-completion-http.test.mjs tests/server.test.mjs tests/share-online.test.mjs tests/undo.test.mjs tests/feedback-http.test.mjs tests/feedback-ui.test.mjs tests/access.test.mjs tests/runtime.test.mjs tests/isolation.test.mjs",
     "test:browser": "node --test tests/browser.e2e.mjs tests/bots.e2e.mjs tests/card-completion.e2e.mjs tests/item-help.e2e.mjs tests/layout.e2e.mjs tests/feedback.e2e.mjs tests/usability.e2e.mjs tests/access.e2e.mjs",
     "verify:references": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/verify-project.ps1"
   },

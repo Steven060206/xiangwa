@@ -7,7 +7,8 @@
   [string]$Revoke = '',
   [switch]$Json,
   [switch]$Dialog,
-  [switch]$OpenBrowser
+  [switch]$OpenBrowser,
+  [switch]$Worker
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,9 @@ $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\')
 $settingsPath = Join-Path $Root 'config/runtime.json'
 $manifestPath = Join-Path $Root 'config/processes.json'
 $operationLock = $null
+$isolated = $false
+$workerProcesses = @()
+$workerJob = $null
 
 function Write-JsonFile($Path, $Value) {
   $temporary = $Path + '.tmp'
@@ -35,7 +39,7 @@ function Get-RecordedProcess($Record, [string]$Role) {
   $process = Get-Process -Id $Record.pid -ErrorAction SilentlyContinue
   if (-not $process) { return $null }
   $expectedExe = if ($Role -eq 'game') { Join-Path $Root 'bin/node.exe' } else { Join-Path $Root 'bin/cloudflared.exe' }
-  $expectedArgument = if ($Role -eq 'game') { Join-Path $Root 'app/server.mjs' } else { Join-Path $Root 'config/tunnel-run.json' }
+  $expectedArgument = if ($Role -eq 'game') { Join-Path $Root 'app/server.mjs' } elseif ($isolated) { Join-Path $Root 'state/tunnel-run.json' } else { Join-Path $Root 'config/tunnel-run.json' }
   if ($Record.executable -ne $expectedExe -or $Record.argumentPath -ne $expectedArgument -or $process.Path -ne $expectedExe -or $process.StartTime.ToUniversalTime().ToString('o') -ne $Record.startedAt) {
     throw "Recorded $Role PID identity does not match; no unrelated process will be stopped."
   }
@@ -105,12 +109,44 @@ try {
   [void][guid]::Parse($settings.tunnelId)
   if ($settings.port -lt 1 -or $settings.port -gt 65535) { throw 'Runtime port is invalid.' }
   if ($settings.hostname -notmatch '^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$') { throw 'Runtime hostname is invalid.' }
-  try { $operationLock = [IO.File]::Open((Join-Path $Root 'config/operation.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+  $isolationPath = Join-Path $Root 'config/isolation.json'
+  if (Test-Path -LiteralPath $isolationPath -PathType Leaf) {
+    $isolation = Get-Content -LiteralPath $isolationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($isolation.enabled -ne $true) { throw 'Runtime isolation setup is incomplete. Finish setup or restore it before starting.' }
+    . (Join-Path $PSScriptRoot 'runtime-isolation.ps1')
+    Assert-IsolationConfiguration $settings $isolation $Root
+    $isolated = $true
+    $manifestPath = Join-Path $Root 'state/processes.json'
+    if ($Worker) {
+      if ($Action -ne 'Start' -or [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne $isolation.sid) { throw 'The background worker must run as its dedicated ordinary account.' }
+      Remove-WorkerTraversePrivilege
+      $workerJob = New-Object XiangWa.WorkerJob
+      $readyPath = Join-Path $Root 'state/ready.json'
+      if (Test-Path -LiteralPath $readyPath -PathType Leaf) { Remove-Item -LiteralPath $readyPath -Force }
+    } elseif ($Action -ne 'Invite') {
+      $controlLock = [IO.File]::Open((Join-Path $Root 'config/controller.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+      try { $result = Invoke-IsolatedControl $Action $settings $isolation $Root } finally { $controlLock.Dispose() }
+      if ($OpenBrowser -and $Action -eq 'Start') { Start-Process $result.url }
+      if ($Dialog -and $Action -eq 'Stop') { Show-Text '箱娃已结束联机' '联机服务已停止，游戏存档和邀请码记录均已保留。' }
+      if ($Json) { Write-Output ($result | ConvertTo-Json -Depth 8 -Compress) }
+      elseif ($Action -eq 'Stop') { Write-Output 'Runtime stopped. Saved data was preserved.' }
+      else { Write-Output ("Game: {0}; tunnel: {1}; entry: {2}" -f $result.game, $result.tunnel, $result.url) }
+      exit 0
+    }
+  } elseif ($Worker) { throw 'No dedicated worker account is configured.' }
+  $lockDirectory = if ($isolated) { 'state' } else { 'config' }
+  try { $operationLock = [IO.File]::Open((Join-Path $Root "$lockDirectory/operation.lock"), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
   catch { throw 'Another runtime operation is still running. Try again after it finishes.' }
   $manifest = Read-Manifest
   # Check every live PID before changing either process.
-  $game = Get-RecordedProcess $manifest.game 'game'
-  $tunnel = Get-RecordedProcess $manifest.tunnel 'tunnel'
+  if ($isolated -and -not $Worker) {
+    $status = Get-IsolatedStatus $settings $isolation $Root (Get-IsolatedTask $isolation $Root)
+    $game = $status.game
+    $tunnel = $status.tunnel
+  } else {
+    $game = Get-RecordedProcess $manifest.game 'game'
+    $tunnel = Get-RecordedProcess $manifest.tunnel 'tunnel'
+  }
 
   if ($Action -eq 'Start') {
     if ($settings.deploymentReady -eq $false) { throw 'Runtime deployment is incomplete. Run deploy-runtime.ps1 again before starting.' }
@@ -128,6 +164,7 @@ try {
       try {
         foreach ($name in $runtimeEnvironment.Keys) { $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process'); [Environment]::SetEnvironmentVariable($name, $runtimeEnvironment[$name], 'Process') }
         $game = Start-Process -FilePath $node -ArgumentList @('--max-old-space-size=512', ('"' + $entryPoint + '"')) -WorkingDirectory (Join-Path $Root 'app') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Rotate-Log 'game.log') -RedirectStandardError (Rotate-Log 'game-error.log')
+        if ($Worker) { $workerProcesses += $game; $workerJob.Add($game.Handle) }
       } finally {
         foreach ($name in $runtimeEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name], 'Process') }
       }
@@ -150,17 +187,33 @@ try {
       }
     }
     if (-not $tunnel) {
-      $configPath = Join-Path $Root 'config/tunnel-run.json'
+      $configPath = Join-Path $Root "$lockDirectory/tunnel-run.json"
       $config = @{ tunnel = $settings.tunnelId; 'credentials-file' = (Join-Path $Root 'config/tunnel.json'); ingress = @(@{ hostname = $settings.hostname; service = "http://127.0.0.1:$($settings.port)" }, @{ service = 'http_status:404' }) }
       Write-JsonFile $configPath $config
       $binary = Join-Path $Root 'bin/cloudflared.exe'
       $tunnel = Start-Process -FilePath $binary -ArgumentList @('tunnel', '--config', ('"' + $configPath + '"'), '--no-autoupdate', '--protocol', 'http2', 'run') -WorkingDirectory $Root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Rotate-Log 'tunnel.log') -RedirectStandardError (Rotate-Log 'tunnel-error.log')
+      if ($Worker) { $workerProcesses += $tunnel; $workerJob.Add($tunnel.Handle) }
       $manifest.tunnel = Save-Record $tunnel $binary $configPath
       Write-JsonFile $manifestPath $manifest
       Start-Sleep -Milliseconds 500
       if ($tunnel.HasExited) { throw 'Tunnel process exited. Check logs/tunnel-error.log. The local game remains running.' }
     }
     $result = @{ running = $true; game = $true; tunnel = $true; url = "https://$($settings.hostname)"; port = $settings.port }
+    if ($Worker) {
+      Write-JsonFile $readyPath @{ runtimeId = $settings.runtimeId; gameStartedAt = $manifest.game.startedAt; tunnelStartedAt = $manifest.tunnel.startedAt }
+      $operationLock.Dispose()
+      $operationLock = $null
+      try {
+        while (-not $game.HasExited -and -not $tunnel.HasExited) { Start-Sleep -Milliseconds 300 }
+      } finally {
+        Stop-Recorded $manifest.tunnel 'tunnel'
+        Stop-Recorded $manifest.game 'game'
+        $manifest.tunnel = $null
+        $manifest.game = $null
+        Write-JsonFile $manifestPath $manifest
+      }
+      exit 0
+    }
     if ($OpenBrowser) { Start-Process $result.url }
   } elseif ($Action -eq 'Stop') {
     Stop-Recorded $manifest.tunnel 'tunnel'
@@ -201,9 +254,21 @@ try {
   elseif ($Action -eq 'Stop') { Write-Output 'Runtime stopped. Saved data was preserved.' }
   else { Write-Output ("Game: {0}; tunnel: {1}; entry: {2}" -f $result.game, $result.tunnel, $result.url) }
 } catch {
+  if ($Worker -and (Test-Path -LiteralPath (Join-Path $Root 'state') -PathType Container)) {
+    [IO.File]::WriteAllText((Join-Path $Root 'state/worker-error.log'), $_.Exception.Message, $utf8)
+  }
   if ($Dialog) {
     Add-Type -AssemblyName System.Windows.Forms
     [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, '箱娃联机工具', 'OK', 'Error')
   } else { [Console]::Error.WriteLine($_.Exception.Message) }
   exit 1
-} finally { if ($operationLock) { $operationLock.Dispose() } }
+} finally {
+  if ($workerJob) { $workerJob.Dispose() }
+  # Also covers failures before the worker reaches its normal monitoring loop.
+  foreach ($child in $workerProcesses) {
+    try {
+      if (-not $child.HasExited) { $child.Kill(); [void]$child.WaitForExit(10000) }
+    } catch { [Console]::Error.WriteLine('A worker child could not be stopped: ' + $_.Exception.Message) }
+  }
+  if ($operationLock) { $operationLock.Dispose() }
+}

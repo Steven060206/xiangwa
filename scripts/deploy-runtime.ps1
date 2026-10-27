@@ -64,7 +64,14 @@ if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
   $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
   if ($settings.format -ne 1 -or ([IO.Path]::GetFullPath($settings.root).TrimEnd('\') -ne $Root)) { throw 'Runtime directory identity does not match.' }
   [void][guid]::Parse($settings.runtimeId)
-  $manifestPath = Join-Path $Root 'config/processes.json'
+  $isolationPath = Join-Path $Root 'config/isolation.json'
+  if (Test-Path -LiteralPath $isolationPath -PathType Leaf) {
+    . (Join-Path $PSScriptRoot 'runtime-isolation.ps1')
+    $isolation = Get-Content -LiteralPath $isolationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-IsolationConfiguration $settings $isolation $Root
+    if ((Get-IsolatedTask $isolation $Root).State -in @(2, 4)) { throw 'Stop this runtime before updating its program files.' }
+  }
+  $manifestPath = if (Test-Path -LiteralPath (Join-Path $Root 'config/isolation.json')) { Join-Path $Root 'state/processes.json' } else { Join-Path $Root 'config/processes.json' }
   if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($role in @('game', 'tunnel')) {
@@ -98,6 +105,9 @@ foreach ($name in @('src', 'public')) {
 }
 foreach ($name in @('server.mjs', 'package.json', 'scripts/manage-invites.mjs')) { Copy-Item -LiteralPath (Join-Path $SourceRoot $name) -Destination (Join-Path $Root "app/$name") -Force }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime.ps1') -Destination (Join-Path $Root 'runtime.ps1') -Force
+foreach ($helper in @('runtime-isolation.ps1', 'setup-isolation.ps1')) {
+  if (Test-Path -LiteralPath (Join-Path $PSScriptRoot $helper) -PathType Leaf) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $helper) -Destination (Join-Path $Root $helper) -Force }
+}
 Copy-FileBytes $NodeBinary (Join-Path $Root 'bin/node.exe')
 Copy-FileBytes $TunnelBinary (Join-Path $Root 'bin/cloudflared.exe')
 $credentialPath = Join-Path $Root 'config/tunnel.json'
