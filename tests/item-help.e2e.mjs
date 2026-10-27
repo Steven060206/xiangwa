@@ -53,6 +53,7 @@ test('mobile item choices show effects before picking and update active and nigh
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await context.addInitScript(identity => sessionStorage.setItem('hako.room.session.v1', JSON.stringify(identity)), first);
   const page = await context.newPage();
+  await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${base}/?room=${hako.roomCode}`);

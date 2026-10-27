@@ -86,7 +86,7 @@ function checkbox(container, id, caption, locked) {
 function forcedPeek(container, state, locked, action) {
   const resolution = state.round.resolution;
   if (resolution?.kind !== 'forced_peek' || resolution.playerId !== state.you) return;
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls current-response');
   controls.dataset.testid = 'forced-peek';
   controls.append(node('h3', '', '好想打开它 · 强制窥探'), node('p', 'small-note', '你的原行动被打断。选择当前房间中一个有标志的角落进行窥探。'));
   const target = select(controls, 'forced-peek-target', '选择窥探角落', (resolution.cornerIds || []).map(id => ({ id, name: cornerName(id) })), locked);
@@ -100,7 +100,7 @@ function forcedPeek(container, state, locked, action) {
 function answerItem(container, state, locked, action) {
   const resolution = state.round.resolution;
   if (resolution?.kind !== 'item_answer' || resolution.playerId !== state.you || state.round.hako.playerId !== state.you) return;
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls current-response');
   controls.dataset.testid = 'item-answer';
   controls.append(node('h3', '', `回答${itemNames[resolution.itemId] || '访问者道具'}`));
   const question = resolution.itemId === 'spirit_pen'
@@ -118,7 +118,7 @@ function answerItem(container, state, locked, action) {
 
 function itemResult(container, items) {
   if (items.result?.kind !== 'phone') return;
-  const result = node('section', 'exploration-section');
+  const result = node('section', 'exploration-section personal-result');
   result.dataset.testid = 'item-private-result';
   result.append(node('h3', '', '手机照片 · 仅你可见'), node('p', 'private-token', cardName(items.result.card)));
   if (items.result.card?.description) result.append(node('p', 'small-note', items.result.card.description));
@@ -127,7 +127,7 @@ function itemResult(container, items) {
 
 function itemEvents(container, state, events) {
   if (!events?.length) return;
-  const details = node('details', 'activity-details');
+  const details = node('details', 'activity-details reference-details');
   details.dataset.testid = 'item-events';
   details.append(node('summary', '', '道具记录'));
   const list = node('ol');
@@ -143,7 +143,7 @@ function itemEvents(container, state, events) {
   container.append(details);
 }
 
-export function renderActiveItems({ container, state, locked, action }) {
+export function renderActiveItems({ container, resultContainer = container, referenceContainer = container, state, locked, action }) {
   const round = state.round;
   if (!round) return;
   locked ||= Boolean(round.result);
@@ -152,9 +152,9 @@ export function renderActiveItems({ container, state, locked, action }) {
   const items = round.items;
   if (!items) return;
   if (items.usableItems?.length && !round.result && !round.resolution && !round.pendingAction && !round.interruption) {
-    const controls = node('section', 'exploration-section practice-controls');
+    const controls = node('section', 'exploration-section practice-controls standard-actions');
     controls.dataset.testid = 'active-items';
-    controls.append(node('h3', '', '使用主动道具'));
+    controls.append(node('h3', 'action-group-heading', '使用随身道具'));
     const choice = select(controls, 'active-item-select', '选择可用道具', items.usableItems, locked);
     const description = node('p', 'item-description small-note');
     description.dataset.testid = 'active-item-description';
@@ -195,14 +195,14 @@ export function renderActiveItems({ container, state, locked, action }) {
     controls.append(targets, use);
     container.append(controls);
   }
-  itemResult(container, items);
-  itemEvents(container, state, items.events);
+  itemResult(resultContainer, items);
+  itemEvents(referenceContainer, state, items.events);
 }
 
 function publicPowers(container, state, powers) {
-  const section = node('section', 'exploration-section');
+  const section = node('section', 'exploration-section power-overview');
   section.dataset.testid = 'power-slots';
-  section.append(node('h3', '', '箱娃之力'));
+  section.append(node('h3', '', '能力与持续效果'));
   const slots = node('dl', 'round-positions');
   const isHako = state.round.hako.playerId === state.you;
   for (const slot of powers.slots || []) {
@@ -241,11 +241,12 @@ function publicPowers(container, state, powers) {
 }
 
 function managePowers(container, state, powers, locked, action) {
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.dataset.testid = 'power-preparation';
   controls.append(node('h3', '', powers.step === 'preparation' ? '箱娃阶段 · 准备' : '你的能力手牌'));
+  let hand;
   if (powers.hand?.length) {
-    const hand = node('details', 'free-actions');
+    hand = node('details', 'free-actions reference-details');
     hand.append(node('summary', '', `查看手牌（${powers.hand.length}张）`));
     const list = node('dl', 'inspected-tokens');
     for (const card of powers.hand) {
@@ -257,9 +258,9 @@ function managePowers(container, state, powers, locked, action) {
       list.append(row);
     }
     hand.append(list);
-    controls.append(hand);
   }
   if (powers.canCry) {
+    controls.append(node('h4', '', '哭喊抽牌（可选）'));
     if (powers.cryRooms?.length) {
       const room = select(controls, 'hako-cry-room', '虚假的哭喊：选择宣告房间', powers.cryRooms, locked);
       controls.append(button('哭喊并宣告房间', 'hako-cry', locked || !room.value, () => action('hako_cry', { roomId: room.value })));
@@ -268,30 +269,33 @@ function managePowers(container, state, powers, locked, action) {
   if (powers.canManage) {
     const emptySlots = (powers.slots || []).filter(slot => !slot.occupied);
     const settable = (powers.hand || []).filter(card => card.settable && card.supported !== false);
+    const recallable = (powers.slots || []).filter(slot => slot.occupied && slot.canRecall);
+    if ((emptySlots.length && settable.length) || recallable.length) controls.append(node('h4', '', '设置或回收能力（本阶段二选一）'));
     if (emptySlots.length && settable.length) {
       const power = select(controls, 'set-power-select', '设置一张手牌', settable.map(card => ({ id: card.id, name: cardName(card) })), locked);
       const slot = select(controls, 'set-power-slot', '放入可用能力栏', emptySlots.map(value => ({ id: value.slot, name: value.slot === 0 ? '左侧能力栏' : '右侧能力栏' })), locked);
       controls.append(button('设置能力', 'set-power', locked || !power.value || !slot.value, () => action('set_power', { powerId: Number(power.value), slot: Number(slot.value) }), true));
     }
-    const recallable = (powers.slots || []).filter(slot => slot.occupied && slot.canRecall);
     if (recallable.length) {
       const slot = select(controls, 'recall-power-slot', '选择回收的能力', recallable.map(value => ({ id: value.slot, name: `${value.slot === 0 ? '左栏' : '右栏'} · ${cardName(value.card)}` })), locked);
       controls.append(button('回收至手牌', 'recall-power', locked || !slot.value, () => action('recall_power', { slot: Number(slot.value) }), true));
     }
   }
-  if (powers.canBegin) controls.append(button('准备完毕，开始箱娃行动', 'begin-hako-action', locked, () => action('begin_hako_action')));
+  if (powers.canBegin) controls.append(node('p', 'small-note', '准备完成后，如需使用能力，请先发动，再选择潜伏位置。'), button('准备完毕，开始箱娃行动', 'begin-hako-action', locked, () => action('begin_hako_action')));
+  if (hand) controls.append(hand);
   if (controls.children.length > 1) container.append(controls);
 }
 
 function activatePowers(container, state, powers, locked, action) {
   if (!powers.activationOptions?.length || powers.rearrangement || state.round.resolution || state.round.interruption) return;
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.dataset.testid = 'power-activation';
   controls.append(node('h3', '', '发动已设置的能力'));
   for (const option of powers.activationOptions) {
     const card = option.card;
     const group = node('div', 'action-group');
-    group.append(node('h3', '', cardName(card)));
+    group.append(node('h4', '', cardName(card)));
+    if (card.description) group.append(node('p', 'small-note', card.description));
     if ([9, 11].includes(card.id)) {
       group.append(node('p', 'small-note', card.id === 9 ? '设置后持续生效，回答道具问题时可选择虚假答案。' : '在哭喊时选择宣告房间，无需单独发动。'));
     } else {
@@ -336,7 +340,7 @@ function activatePowers(container, state, powers, locked, action) {
 function rearrangePowers(container, state, powers, locked, action) {
   const rearrangement = powers.rearrangement;
   if (!rearrangement) return;
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls current-response');
   controls.dataset.testid = 'power-rearrangement';
   controls.append(node('h3', '', `动来动去 · ${roomName(rearrangement.roomId)}`), node('p', 'small-note', '为每个目标角落选择一份原角落内容，每份内容恰好使用一次。'));
   const corners = rearrangement.corners;
@@ -373,7 +377,7 @@ function rearrangePowers(container, state, powers, locked, action) {
 
 function inspectPath(container, state, powers, locked, action) {
   if (!powers.pathRooms?.length && !powers.pathInspection) return;
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.append(node('h3', '', '选择移动路线'));
   if (powers.pathRooms?.length) {
     const room = select(controls, 'path-room-select', '选择本次路径上的房间', powers.pathRooms, locked);
@@ -392,26 +396,26 @@ function inspectPath(container, state, powers, locked, action) {
 function extinguisherControls(container, state, locked, action) {
   const interruption = state.round.interruption;
   if (!interruption?.canRespond || state.round.result) return;
-  const controls = node('section', 'exploration-section practice-controls');
+  const controls = node('section', 'exploration-section practice-controls current-response');
   controls.dataset.testid = 'extinguisher-response';
   controls.append(node('h3', '', '灭火器 · 打断响应'), node('p', 'small-note', interruption.kind === 'noise' ? '是否消耗灭火器，直接跳过本次箱娃行动阶段？' : '是否消耗灭火器，使本次“我在你身后”无效，并跳过箱娃行动阶段？'));
   controls.append(button('使用灭火器', 'extinguisher-use', locked, () => action('extinguisher_response', { use: true })), button('放弃本次响应', 'extinguisher-pass', locked, () => action('extinguisher_response', { use: false }), true));
   container.append(controls);
 }
 
-export function renderAbilities({ container, state, locked, action }) {
+export function renderAbilities({ container, referenceContainer = container, state, locked, action }) {
   const round = state.round;
   if (!round) return;
   locked ||= Boolean(round.result);
+  extinguisherControls(container, state, locked, action);
   const powers = round.powers;
   if (powers) {
-    publicPowers(container, state, powers);
     if (round.hako.playerId === state.you && !round.result) {
       if (!round.resolution && !round.interruption) managePowers(container, state, powers, locked, action);
       activatePowers(container, state, powers, locked, action);
       rearrangePowers(container, state, powers, locked, action);
       if (!round.resolution && !round.interruption) inspectPath(container, state, powers, locked, action);
     }
+    publicPowers(referenceContainer, state, powers);
   }
-  extinguisherControls(container, state, locked, action);
 }

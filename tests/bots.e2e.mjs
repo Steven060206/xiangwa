@@ -45,6 +45,7 @@ async function createSession(t, { poll = false } = {}) {
   const errors = [];
   const openPage = async url => {
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(url);
     return page;

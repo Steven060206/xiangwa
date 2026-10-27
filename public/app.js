@@ -1,9 +1,11 @@
-import { getTile } from '/shared/maps.mjs';
+import { getTile, getLogicalRoomId, getLogicalRooms } from '/shared/maps.mjs';
+import { createFeedbackUI } from './feedback-view.js';
 import { applyUndoLock, renderUndo } from './undo.js';
 import { createTileSvg, cornerNumber, cornerName, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
+const feedback = createFeedbackUI();
 const SESSION_KEY = 'hako.room.session.v1';
 const SAVED_SESSIONS_KEY = 'hako.room.saved.v1';
 const floorName = floor => ({ 1: '一楼', 2: '二楼', '-1': '地下室' })[floor];
@@ -163,6 +165,7 @@ function receiveState(next) {
     }
   }
   render();
+  feedback.receive(next);
 }
 
 async function enterRoom(join) {
@@ -205,6 +208,7 @@ async function action(type, payload = {}) {
       playerId: identity.playerId, token: identity.token, type, expectedVersion: state.version, ...payload,
     });
     if (type === 'leave') {
+      feedback.clear();
       disconnect();
       state = null;
       saveSession(null);
@@ -484,37 +488,18 @@ function renderMapPositions(players) {
   strip.hidden = !players.length;
 }
 
-function compactPracticePanel() {
-  const panel = $('practice-panel');
-  if (panel.hidden) return;
-  // Keep the current decision ahead of history and repeated player summaries.
-  const controls = [...panel.children].find(child => child.classList.contains('practice-controls'));
-  const silent = [...panel.children].find(child => child.classList.contains('silent-section'));
-  const status = panel.querySelector(':scope > .practice-status');
-  if (!status) return;
-  let anchor = status;
-  const primary = state.round?.phase === 'visitor_reveal' ? [silent, controls] : [controls, silent];
-  for (const element of primary.filter(Boolean)) {
-    anchor.after(element);
-    anchor = element;
-  }
-}
-
 function renderSetup() {
   const setup = state.setup;
   renderDraft({ state, pending, online, action });
   renderOpening({ state, pending, online, action });
   renderPractice({ state, pending, online, action });
-  compactPracticePanel();
   $('board-section').hidden = !setup;
-  $('map-progress').hidden = !setup;
+  $('map-progress').hidden = !setup || Boolean(state.round || state.opening);
   $('setup-view').classList.toggle('has-round', Boolean(state.round || state.opening));
   $('setup-view').classList.toggle('has-draft', Boolean(state.draft));
   renderSeats($('setup-seats'), true);
   $('activity-log').replaceChildren(...state.log.slice(-8).map(message => node('li', '', typeof message === 'string' ? message : message.message || message.text || '房间状态已更新')));
   if (!setup) {
-    $('setup-title').textContent = '挑选你的初始道具';
-    $('turn-description').textContent = preparationDescription(state);
     $('drawn-title').closest('.turn-panel').hidden = true;
     $('map-complete').hidden = true;
     applyUndoLock(state);
@@ -527,8 +512,6 @@ function renderSetup() {
   const drawn = setup.drawnTileId ? getTile(setup.drawnTileId) : null;
   const locked = !canPlace();
   $('map-count').replaceChildren(document.createTextNode(setup.placements.length), node('span', '', '/ 9'));
-  $('setup-title').textContent = round ? round.result ? '今夜已有结局' : round.mode === 'exploration' ? '探索这座旧宅' : '基础回合' : state.opening ? '入宅之前，藏好秘密' : '拼出这座旧宅';
-  $('turn-description').textContent = round ? roundDescription(state) : state.opening ? preparationDescription(state) : complete ? '九块地图已就位。由房主开始配置角落标志与开局秘密。' : mine ? drawn ? '轮到你摆放地图。旋转方向，选择位置，再确认。' : '轮到你了。抽取一块地图，开启新的房间。' : `${turnPlayer?.name || '访问者'}正在${drawn ? '摆放地图' : '抽取地图'}，请稍候。`;
   $('turn-seat').textContent = complete ? '九块齐备' : mine ? '你的轮次' : '等待访问者';
   $('drawn-title').textContent = complete ? '宅邸已现' : drawn ? '本次抽到' : '轮流抽板';
   const previewKey = `${setup.drawnTileId}:${rotation}:${complete}`;
@@ -576,6 +559,78 @@ function renderSetup() {
   applyUndoLock(state);
 }
 
+function currentTask() {
+  const round = state.round;
+  const name = id => id === state.you ? '你' : state.players.find(player => player.id === id)?.name || '玩家';
+  const task = (title, description, actor, target) => ({ title, description, actor, target, mine: actor === state.you });
+  if (state.undo?.pending) {
+    const request = state.undo.pending;
+    const mine = request.requiredIds.includes(state.you) && !request.approvedIds.includes(state.you);
+    return { ...task(mine ? '请决定是否撤销' : '等待撤销决定', '当前进度已暂停。查看撤销请求，再继续游戏。', mine ? state.you : request.requestedBy, '#undo-panel'), mine };
+  }
+  if (!online) return task('正在恢复连接', '连接恢复后即可继续；你的座位与游戏进度已保留。', null, null);
+  if (round) {
+    const description = roundDescription(state);
+    if (round.result) return task('今夜已有结局', description, null, '.game-result');
+    if (round.interruption) return task(round.interruption.canRespond ? '请选择是否打断' : '等待灭火器回应', description, round.interruption.canRespond ? state.you : null, '[data-testid="extinguisher-response"]');
+    if (round.resolution) {
+      const resolution = round.resolution;
+      const titles = { inheritance: '请决定遗物去向', safe: '请尝试打开保险箱', item_answer: '请回答访问者', forced_peek: '请选择强制窥探角落', notebook: '你发现了手记', peek: '请决定是否获取标志' };
+      return task(resolution.kind === 'waiting' ? `等待${name(resolution.playerId)}完成结算` : titles[resolution.kind] || '请完成当前结算', description, resolution.playerId, '.current-response');
+    }
+    if (['visitor_reaction', 'hako_reaction'].includes(round.phase)) return task(round.hako.playerId === state.you ? round.phase === 'visitor_reaction' ? '请确认访问者行动' : '请结束反应窗口' : '等待箱娃确认', description, round.hako.playerId, '.practice-controls');
+    if (round.phase === 'hako_phase') {
+      const actor = round.hako.playerId === state.you ? round.hako : round.ghost;
+      const ghostWaiting = round.ghost && actor === round.ghost && actor.status !== 'banished' && !actor.finished && !actor.inspectedRoom && !actor.hidingRooms?.length;
+      if (ghostWaiting && round.hako.playerId !== state.you) return task('等待箱娃开始潜伏', '箱娃完成阶段能力并选择潜伏房间后，才轮到你选择潜伏位置。', round.hako.playerId, '.practice-controls');
+      const mine = actor && actor.status !== 'banished' && !actor.finished && (round.powers?.step !== 'preparation' || round.hako.playerId === state.you);
+      return task(mine ? round.powers?.step === 'preparation' ? '轮到你准备能力' : '轮到你行动与潜伏' : '等待箱娃与箱人行动', description, mine ? state.you : round.hako.finished ? null : round.hako.playerId, '.hako-sequence');
+    }
+    const actor = round.silent?.turnPlayerId;
+    return task(actor === state.you ? round.phase === 'visitor_reveal' ? '轮到你翻牌' : '轮到你行动' : `等待${name(actor)}${round.phase === 'visitor_reveal' ? '翻牌' : '行动'}`, description, actor, round.phase === 'visitor_reveal' ? '.silent-section' : '.standard-actions, .practice-controls');
+  }
+  if (state.opening) return task(state.opening.hakoId === state.you ? '请配置开局秘密' : '等待箱娃配置开局', preparationDescription(state), state.opening.hakoId, '#opening-panel');
+  if (state.draft) return task(state.draft.turnPlayerId === state.you ? '请领取初始道具' : `等待${name(state.draft.turnPlayerId)}领取道具`, preparationDescription(state), state.draft.turnPlayerId, '#draft-panel');
+  if (state.setup?.phase === 'map_ready') return task(state.hostId === state.you ? '地图齐备，可以入宅' : '等待房主开始配置', '九块地图已就位，下一步配置角落标志与开局秘密。', state.hostId, '#map-complete');
+  const actor = state.setup?.turnPlayerId;
+  const drawn = state.setup?.drawnTileId;
+  return task(actor === state.you ? drawn ? '请摆放这块地图' : '轮到你抽取地图' : `等待${name(actor)}${drawn ? '摆放' : '抽取'}地图`, actor === state.you ? drawn ? '选择旋转方向和虚线位置，预览后确认摆放。' : '先抽取一块地图，再决定放在哪里。' : '可先浏览地图，轮到你时会在这里提示。', actor, '.turn-panel');
+}
+
+function renderGameStatus() {
+  const task = currentTask();
+  $('setup-title').textContent = task.title;
+  $('turn-description').textContent = task.description;
+  $('turn-owner').textContent = task.actor === state.you ? '现在轮到你' : task.actor ? `当前：${state.players.find(player => player.id === task.actor)?.name || '玩家'}` : state.round?.result ? '本局结束' : '请稍候';
+  $('game-status').classList.toggle('needs-attention', Boolean(task.mine && online));
+  $('focus-current-action').hidden = !task.target;
+  $('focus-current-action').textContent = task.mine ? '前往操作' : '查看进度';
+  const round = state.round;
+  $('personal-status').hidden = !round;
+  if (!round) return;
+  const you = state.players.find(player => player.id === state.you);
+  const visitor = round.visitors.find(player => player.id === state.you);
+  const isHako = round.hako.playerId === state.you;
+  $('personal-role').textContent = `${you?.name || '你'} · ${isHako ? '箱娃' : visitor?.status === 'box_person' ? '箱人' : visitor?.status === 'banished' ? '已被消灭' : '访问者'}`;
+  const location = mapPlayers(state).find(player => player.id === state.you);
+  const room = location && getLogicalRooms().find(room => room.id === getLogicalRoomId(location.roomId));
+  $('personal-location').textContent = location ? `${room?.name || '正门'}${location.cornerId ? ` · ${cornerNumber(location.cornerId)}（仅你可见）` : ''}` : '';
+  $('round-context').textContent = `总回合 ${round.totalRounds ?? 0}`;
+  $('focus-inventory').textContent = isHako ? `我的能力 · ${round.powers?.hand?.length ?? 0}` : `我的物品 · ${(round.inventory?.items?.length || 0) + (round.inventory?.tokens?.length || 0)}`;
+}
+
+function focusGameSection(selector) {
+  $('setup-view').classList.remove('map-focused');
+  $('map-focus').textContent = '专看地图';
+  $('map-focus').setAttribute('aria-pressed', 'false');
+  const target = [...document.querySelectorAll(selector)].find(element => element.getClientRects().length);
+  if (!target) return;
+  for (let parent = target.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+  target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'start', inline: 'nearest' });
+}
+
 function render() {
   if (!state) return;
   $('entry-view').hidden = true;
@@ -591,8 +646,11 @@ function render() {
   if (lobby) renderLobby();
   else renderSetup();
   renderUndo({ state, pending, online, action });
+  if (!lobby) renderGameStatus();
 }
 
+$('focus-current-action').addEventListener('click', () => focusGameSection(currentTask().target || '#practice-panel'));
+$('focus-inventory').addEventListener('click', () => focusGameSection('#personal-inventory, [data-testid="power-preparation"], .hako-sequence, .power-overview'));
 $('entry-form').addEventListener('submit', event => { event.preventDefault(); enterRoom(false); });
 $('map-focus').addEventListener('click', () => {
   const focused = $('setup-view').classList.toggle('map-focused');

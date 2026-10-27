@@ -108,6 +108,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
       };
     }, person);
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     page.on('pageerror', error => errors.push(error.message));
     pages.push(page);
     await page.goto(`${base}/?room=${person.roomCode}`);

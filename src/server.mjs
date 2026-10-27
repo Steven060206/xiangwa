@@ -23,6 +23,8 @@ const staticFiles = new Map([
   ['/exploration.js', ['../public/exploration.js', 'text/javascript; charset=utf-8']],
   ['/abilities.js', ['../public/abilities.js', 'text/javascript; charset=utf-8']],
   ['/undo.js', ['../public/undo.js', 'text/javascript; charset=utf-8']],
+  ['/feedback.js', ['../public/feedback.js', 'text/javascript; charset=utf-8']],
+  ['/feedback-view.js', ['../public/feedback-view.js', 'text/javascript; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 

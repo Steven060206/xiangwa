@@ -134,7 +134,6 @@ export function renderPractice({ state, pending, online, action }) {
   const isHako = round.hako.playerId === state.you;
   const fragment = document.createDocumentFragment();
   fragment.append(node('h2', '', '基础回合'));
-  fragment.append(node('p', 'practice-scope small-note', '基础回合 · 无声翻牌、移动与潜伏。'));
   if (state.initialPower) {
     const power = node('p', 'initial-power-public', `初始箱娃之力：${state.initialPower.name}`);
     power.dataset.testid = 'initial-power';
@@ -143,9 +142,10 @@ export function renderPractice({ state, pending, online, action }) {
   const status = node('p', 'practice-status', roundDescription(state));
   status.setAttribute('role', 'status');
   fragment.append(status);
+  const references = document.createDocumentFragment();
 
   if (state.initialItems?.length) {
-    fragment.append(node('h3', '', '初始道具'));
+    references.append(node('h3', '', '初始道具'));
     const items = node('dl', 'round-positions');
     for (const item of state.initialItems) {
       const row = node('div');
@@ -155,7 +155,7 @@ export function renderPractice({ state, pending, online, action }) {
       row.append(node('dt', '', playerName(state, item.playerId)), node('dd', '', item.itemName));
       items.append(row);
     }
-    fragment.append(items);
+    references.append(items);
   }
   const positions = node('dl', 'round-positions');
   for (const visitor of round.visitors) {
@@ -166,9 +166,9 @@ export function renderPractice({ state, pending, online, action }) {
     row.append(node('dt', '', `${playerName(state, visitor.id)}${visitor.id === state.you ? '（你）' : ''}`), node('dd', '', roomName(visitor.roomId)));
     positions.append(row);
   }
-  fragment.append(positions);
+  references.append(positions);
   if (isHako && round.hako.cornerId) {
-    const location = node('p', 'hako-location', `你的潜伏位置：${cornerName(round.hako.cornerId)}`);
+    const location = node('p', 'hako-location self-position', `你的潜伏位置：${cornerName(round.hako.cornerId)}`);
     location.dataset.testid = 'hako-location';
     fragment.append(location);
   }
@@ -185,8 +185,10 @@ export function renderPractice({ state, pending, online, action }) {
   }
   if (round.pendingAction) {
     const move = round.pendingAction;
-    controls.append(node('p', 'pending-move', `${playerName(state, move.playerId)}：${roomName(move.fromRoomId)} → ${roomName(move.toRoomId)}`));
-    if (isHako) controls.append(button('确认移动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
+    const response = node('section', 'current-response');
+    response.append(node('h3', '', isHako ? '请确认访问者的移动' : '等待箱娃确认移动'), node('p', 'pending-move', `${playerName(state, move.playerId)}：${roomName(move.fromRoomId)} → ${roomName(move.toRoomId)}`));
+    if (isHako) response.append(button('确认移动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
+    controls.append(response);
   }
   if (round.phase === 'hako_reaction' && isHako) controls.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked, () => action('pass_noise_reaction')));
   if (round.phase === 'hako_phase') {
@@ -204,8 +206,10 @@ export function renderPractice({ state, pending, online, action }) {
       }
     }
   }
+  if (round.silent && round.phase === 'visitor_reveal') fragment.append(silentCards(state, locked, action));
   fragment.append(controls);
-  if (round.silent) fragment.append(silentCards(state, locked, action));
+  if (round.silent && round.phase !== 'visitor_reveal') fragment.append(silentCards(state, locked, action));
+  fragment.append(references);
   panel.replaceChildren(fragment);
 }
 
@@ -248,7 +252,7 @@ export function renderDraft({ state, pending, online, action }) {
     const line = node('li');
     line.append(node('span', '', `${player.name}${player.id === state.you ? '（你）' : ''}`));
     if (choice?.itemDescription) {
-      const detail = node('details', 'draft-chosen-item');
+      const detail = node('details', 'draft-chosen-item reference-details');
       detail.dataset.itemId = choice.itemId;
       detail.append(node('summary', '', `${itemChoiceName(choice)} · 查看效果`), node('p', 'item-description', choice.itemDescription));
       line.append(detail);
@@ -257,7 +261,6 @@ export function renderDraft({ state, pending, online, action }) {
     }
     choices.append(line);
   }
-  fragment.append(choices);
   const items = node('ul', 'item-list');
   for (const item of draft.availableItems) {
     const line = node('li');
@@ -275,7 +278,9 @@ export function renderDraft({ state, pending, online, action }) {
     }
     items.append(line);
   }
-  fragment.append(items, node('p', 'small-note', '三名访问者领完道具后，开始轮流抽板拼图。听诊器、夜视仪、归纳推理法与遗物戒指可按对应情形使用。'));
+  if (mine) fragment.append(items, node('h3', '', '各位访问者的领取进度'), choices);
+  else fragment.append(choices, node('h3', '', '待选道具与效果'), items);
+  fragment.append(node('p', 'small-note', '三名访问者领完道具后，开始轮流抽板拼图。'));
   panel.replaceChildren(fragment);
 }
 
@@ -362,7 +367,7 @@ function inspectedRoomTokens(container, inspectedRoom) {
 
 export function renderRoomMemory(container, memory) {
   if (!memory) return;
-  const section = node('section', 'exploration-section');
+  const section = node('section', 'exploration-section private-memory');
   section.dataset.testid = 'hiding-room-memory';
   const when = memory.cycle === 0 ? '开局' : `第${memory.cycle}轮`;
   section.append(node('h3', '', `被替换棋子记录 · ${roomName(memory.id)}（仅你可见）`),
@@ -396,10 +401,7 @@ export function renderOpening({ state, pending, online, action }) {
     if (phase === opening.phase) step.setAttribute('aria-current', 'step');
     progress.append(step);
   });
-  fragment.append(progress, node('p', 'practice-status', preparationDescription(state)));
-  fragment.append(node('p', 'small-note', '访问者在正门待入场。准备完成后，一起进入一楼大厅。'));
-  const occupied = opening.corners.filter(corner => corner.occupied).length;
-  fragment.append(node('p', 'small-note', `已配置角落 ${occupied} / ${opening.corners.length}，标志保持盖放。`));
+  fragment.append(node('p', 'practice-status', preparationDescription(state)));
   if (isHako) {
     const controls = node('div', 'practice-controls opening-controls');
     controls.dataset.testid = 'opening-controls';
@@ -446,5 +448,9 @@ export function renderOpening({ state, pending, online, action }) {
     }
     fragment.append(controls);
   }
+  fragment.append(progress);
+  fragment.append(node('p', 'small-note', '访问者在正门待入场。准备完成后，一起进入一楼大厅。'));
+  const occupied = opening.corners.filter(corner => corner.occupied).length;
+  fragment.append(node('p', 'small-note', `已配置角落 ${occupied} / ${opening.corners.length}，标志保持盖放。`));
   panel.replaceChildren(fragment);
 }

@@ -237,6 +237,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
       };
     });
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     pages.push(page);
     page.on('pageerror', error => browserErrors.push(error.message));
     await page.goto(`${base}/${i ? `?room=${identities[0].roomCode}` : ''}`);
@@ -886,6 +887,7 @@ for (const mode of ['sse', 'poll']) test(`closed pages recover the original seat
   const connected = page => page.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
   async function open(context, code) {
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     await page.goto(url(code));
     return page;
   }
@@ -1060,6 +1062,7 @@ test('four polling browsers retain identity, recover connections and complete fi
       } });
     });
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     pages.push(page);
     page.on('pageerror', error => browserErrors.push(error.message));
     page.on('request', request => {

@@ -296,3 +296,107 @@ input,select{caret-color:var(--accent)}
 .cry-room-outline{fill:none;stroke:#a43e29;stroke-width:2;stroke-dasharray:4 2}
 .cry-room-badge{fill:#a43e29;stroke:#fff8ea;stroke-width:.7}
 .cry-room-label{fill:#fff8ea;font-size:7px;font-weight:600}
+
+/* A stable reading order: current task, game, possessions, then reference. */
+.room-tools{display:flex;align-items:center;gap:16px;flex:none}
+.event-history-toggle{display:inline-flex;align-items:center;gap:7px;background:none;border:1px solid var(--rule);border-radius:2px;min-height:36px;padding:5px 10px;color:var(--ink);font-size:12px;white-space:nowrap}
+.event-history-toggle:hover{background:var(--paper-light);border-color:var(--muted)}
+.event-history-toggle.has-unread{color:var(--accent);border-color:#b98b77}
+#event-count{font-variant-numeric:tabular-nums;color:var(--muted)}
+.has-unread #event-count{color:var(--accent);font-weight:700}
+.in-game .game-status{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 24px;padding:14px 0 12px}
+.current-task-copy{min-width:0}
+.in-game .current-task-copy h1{font-size:27px;line-height:1.3}
+.in-game .current-task-copy p{font-size:13px;color:var(--ink);max-width:75ch}
+.status-actions{display:flex;align-items:center;gap:12px}
+.turn-owner{font-size:12px;color:var(--muted);max-width:16ch;overflow-wrap:anywhere}
+.needs-attention .turn-owner,.needs-attention .current-task-copy h1{color:var(--accent)}
+.personal-status{grid-column:1/-1;display:flex;align-items:center;gap:8px 20px;color:var(--muted);font-size:12px;min-width:0;border-top:1px solid var(--rule);padding-top:6px}
+#personal-role{font-weight:600;color:var(--ink)}
+#round-context{margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
+.personal-status .text-button{padding:0 3px;min-height:28px;font-size:12px}
+.in-game .setup-sidebar{padding-left:3px}
+.in-game .practice-status{color:var(--muted)}
+.current-response{padding:13px 14px;background:var(--paper-light);border:1px solid #b5a184;scroll-margin-top:6px}
+.current-response h3{color:var(--accent)}
+.in-game .current-response.exploration-section{margin-top:0}
+.in-game .private-resolution{margin-bottom:0}
+.current-response>p+.decision-actions{margin-top:7px}
+.action-group-heading{margin:0;font-family:var(--serif);font-size:18px}
+.standard-actions,.hako-sequence{scroll-margin-top:6px}
+.personal-inventory{scroll-margin-top:6px}
+.in-game .personal-inventory{padding-top:15px;margin-top:20px;border-top:1px solid #ad9d83}
+.personal-inventory>h3{font-size:19px}
+.inventory-item summary{font-weight:600}
+.section-meta{color:var(--muted);font-size:12px;margin-block:3px 9px}
+.reference-details>summary{cursor:pointer;min-height:32px;padding:3px 0;font-size:12px;color:var(--muted)}
+.reference-details[open]>summary{color:var(--ink)}
+.reference-details>p{margin-top:6px}
+.private-memory,.personal-result,.private-messages{font-size:13px}
+.public-progress h4{font-size:13px;font-weight:600;margin:12px 0 5px}
+.in-game .self-position{margin:6px 0 12px}
+.power-overview h3{font-size:16px}
+
+/* Native top-layer surfaces keep private feedback above the scroll containers. */
+.event-dialog{padding:0;border:0;border-radius:3px;width:min(410px,calc(100vw - 36px));max-height:calc(100dvh - 48px);background:var(--paper-light);color:var(--ink);box-shadow:0 20px 65px #100b0659;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b3a186 var(--paper-light)}
+.event-dialog::backdrop{background:#211b15a8}
+.event-highlight{position:relative;padding:48px 30px 22px;text-align:center}
+.event-close{position:absolute;top:10px;right:17px;min-height:34px}
+.event-symbol{display:grid;place-items:center;margin:0 auto 20px;width:76px;height:76px;color:var(--green);background:#e6ebde;border:1px solid #b7c2a9;border-radius:50%}
+.event-symbol svg{width:42px;height:42px}
+.event-dialog[data-tone=danger] .event-symbol,.event-dialog[data-tone=attention] .event-symbol{color:var(--accent);background:#f0e1d1;border-color:#d7b89e}
+.event-dialog[data-tone=info] .event-symbol{color:#655737;background:#eee5d0;border-color:#cdbd9b}
+.event-highlight h2{font-size:28px;line-height:1.4;text-wrap:balance}
+#event-body{font-size:14px;line-height:1.85;margin-top:14px;text-align:left}
+.event-visibility{font-size:12px;color:var(--muted);margin-top:14px}
+.event-dismiss-hint{font-size:12px;color:var(--muted);border-top:1px solid var(--rule);padding-top:14px;margin-top:22px}
+.event-companions{padding:12px 0 0;margin:14px 0 0;list-style:none;text-align:left;border-top:1px solid var(--rule);font-size:13px}
+.event-companions li+li{margin-top:9px}
+.event-dialog[open] .event-symbol{animation:event-arrival .22s cubic-bezier(.16,1,.3,1)}
+@keyframes event-arrival{from{clip-path:inset(15% round 50%);transform:scale(.94)}to{clip-path:inset(0 round 50%);transform:scale(1)}}
+.event-history{position:fixed;inset:72px 24px auto auto;margin:0;width:min(370px,calc(100vw - 24px));max-height:min(620px,75dvh);padding:18px 20px;border:1px solid #b6a588;border-radius:2px;background:var(--paper-light);color:var(--ink);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b3a186 var(--paper-light)}
+.event-history-heading{display:flex;align-items:center;justify-content:space-between;gap:15px;padding-bottom:8px}
+.event-history-heading h2{font-size:21px}
+.event-history ol{list-style:none;padding:0;margin:0}
+.event-history-entry{display:flex;align-items:baseline;justify-content:space-between;gap:14px;min-height:50px;padding:12px 0;border:0;border-top:1px solid var(--rule);background:none;color:var(--ink);text-align:left;width:100%;font-size:13px}
+.event-history-entry:hover strong{color:var(--accent)}
+.event-history-entry span{font-size:12px;white-space:nowrap;color:var(--muted)}
+#event-history-empty{padding-block:10px}
+@media(max-width:1050px){.room-tools{gap:10px}.in-game .game-status{gap:6px 16px}.personal-status{gap:8px 14px}}
+@media(max-width:720px){
+  .room-tools{gap:8px}.room-tools .connection-state{width:auto;margin:0}
+  .in-game .room-header{flex-wrap:nowrap;gap:8px}
+  .in-game .room-header .wordmark>span:last-child{display:none}
+  .in-game .room-identity{margin-left:auto;gap:6px}
+  .in-game .room-tools{gap:7px}
+  .event-history-toggle{min-height:32px;padding:4px 7px;gap:5px}
+  .in-game .game-status{gap:5px 10px;padding:9px 0}
+  .in-game .current-task-copy h1{font-size:21px;line-height:1.3}
+  .in-game .current-task-copy p{font-size:12px;line-height:1.5}
+  .status-actions{flex-direction:column;gap:2px;align-items:flex-end}
+  .turn-owner{max-width:12ch;font-size:11px;line-height:1.4;text-align:right}
+  .status-actions .button{padding:4px 9px;min-height:32px;font-size:12px}
+  .personal-status{flex-wrap:nowrap;overflow-x:auto;gap:12px;padding-top:4px;line-height:1.5;scrollbar-width:thin}
+  .personal-status>*{flex:none;white-space:nowrap}
+  .personal-status .text-button{min-height:26px}
+  .in-game .game-layout,.in-game .has-round .game-layout{grid-template-rows:minmax(300px,50%) minmax(160px,1fr)}
+  .in-game .map-focused .game-layout{grid-template-rows:minmax(0,1fr)}
+  .in-game .has-draft .game-layout{grid-template-rows:minmax(0,1fr)}
+  .event-history{top:58px;right:12px;padding:14px 16px}
+  .event-highlight{padding:45px 24px 19px}
+  .event-highlight h2{font-size:25px}
+}
+@media(max-width:720px) and (max-height:720px){
+  .in-game .game-status{padding-block:6px}
+  .in-game .game-layout,.in-game .has-round .game-layout{grid-template-rows:minmax(272px,50%) minmax(160px,1fr)}
+  .in-game .map-focused .game-layout,.in-game .has-draft .game-layout{grid-template-rows:minmax(0,1fr)}
+  .in-game .current-task-copy p{max-height:36px;overflow:auto}
+  .personal-status{padding-top:2px}
+  .in-game .board-caption:has(.selected-corner-name){display:flex;position:absolute;inset:auto 0 34px;z-index:4;padding:6px 10px}
+  .in-game .board-caption:has(.selected-corner-name)>:not(.selected-corner-name){display:none}
+}
+@media(max-height:600px){
+  .in-game .game-layout,.in-game .has-round .game-layout{grid-template-rows:auto}
+  .in-game .setup-sidebar{height:auto;min-height:200px}
+}
+@media(prefers-reduced-motion:reduce){.event-dialog[open] .event-symbol{animation:none}}

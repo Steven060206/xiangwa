@@ -131,6 +131,7 @@ async function game(t, fixtureOptions, items = ['smartphone', 'deduction', 'walk
       };
     }, people[index]);
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     page.on('pageerror', error => errors.push(error.message));
     pages.push(page);
     await page.goto(`${base}/?room=${people[index].roomCode}`);

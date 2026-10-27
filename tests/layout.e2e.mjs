@@ -69,6 +69,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
       };
     }, people[index]);
     const page = await context.newPage();
+    await page.addLocatorHandler(page.locator('#event-dialog[open]'), async () => { await page.keyboard.press('Escape'); });
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`${base}/?room=${people[index].roomCode}`);
     await page.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
