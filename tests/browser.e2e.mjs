@@ -362,11 +362,14 @@ test('four browser sessions complete private opening, powers, exploration, item 
       const roomSnapshot = url => url.pathname === `/api/rooms/${identities[2].roomCode}`;
       await pages[2].route(roomSnapshot, route => route.abort('connectionfailed'));
       await pages[2].reload();
-      await pages[2].locator('#error-banner').waitFor({ state: 'visible' });
+      await pages[2].getByTestId('entry-retry').waitFor();
+      assert.match(await pages[2].locator('#entry-status-text').textContent(), /原座位身份已保留/);
+      assert.equal(await pages[2].getByTestId('create-room').isVisible(), false,
+        'A temporary recovery failure must offer retry before allowing a duplicate seat');
       assert.equal(await pages[2].evaluate(() => JSON.parse(sessionStorage.getItem('hako.room.session.v1'))?.playerId), oldId,
         'A temporary resume failure must preserve the reserved seat credentials');
       await pages[2].unroute(roomSnapshot);
-      await pages[2].reload();
+      await pages[2].getByTestId('entry-retry').click();
       await pages[2].getByTestId('room-code-display').waitFor();
       assert.equal((await getState(identities[2])).you, oldId);
       assert.equal((await getState(identities[2])).players.length, 4);

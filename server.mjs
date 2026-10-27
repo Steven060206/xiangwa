@@ -7,7 +7,8 @@ const host = process.env.HOST ?? '0.0.0.0';
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 必须为 0 至 65535 的整数。');
 
 const dataFile = resolve(process.env.DATA_DIR ?? 'data', 'rooms.json');
-const server = createGameServer({ dataFile });
+const server = createGameServer({ dataFile, accessDirectory: resolve(process.env.ACCESS_DIR || process.env.DATA_DIR || 'data'),
+  runtimeId: process.env.XIANGWA_RUNTIME_ID || undefined });
 server.listen(port, host, () => {
   const actualPort = server.address().port;
   console.log(`《箱娃》四人地图准备：http://localhost:${actualPort}`);

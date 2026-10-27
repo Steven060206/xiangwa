@@ -15,6 +15,8 @@ let stream = null;
 let pollTimer = null;
 let pollController = null;
 let pending = false;
+let accessPending = false;
+let entryRetry = null;
 let online = false;
 let activeFloor = 1;
 let rotation = 0;
@@ -61,6 +63,43 @@ async function api(path, body, signal) {
     throw error;
   }
   return result;
+}
+
+function showEntryPanel(panel) {
+  for (const id of ['entry-status', 'access-form', 'entry-form']) $(id).hidden = id !== panel;
+}
+
+function showEntryRetry(message, retry) {
+  showEntryPanel('entry-status');
+  $('entry-status-text').textContent = message;
+  $('entry-retry').hidden = false;
+  entryRetry = retry;
+}
+
+async function checkEntryAccess() {
+  showEntryPanel('entry-status');
+  $('entry-status-text').textContent = '请稍候，正在检查入席许可。';
+  $('entry-retry').hidden = true;
+  try {
+    const access = await api('/api/access');
+    showEntryPanel(access.required && !access.authorized ? 'access-form' : 'entry-form');
+  } catch (error) {
+    showEntryRetry(`${error.message} 请重试。`, checkEntryAccess);
+  }
+}
+
+async function redeemAccess() {
+  if (accessPending || !$('access-code').reportValidity()) return;
+  accessPending = true;
+  $('redeem-access').disabled = true;
+  $('error-banner').hidden = true;
+  try {
+    await api('/api/access/redeem', { code: $('access-code').value.trim() });
+    $('access-code').value = '';
+    showEntryPanel('entry-form');
+    $('nickname').focus();
+  } catch (error) { showError(error); }
+  finally { accessPending = false; $('redeem-access').disabled = false; }
 }
 
 function sessionQuery() {
@@ -189,7 +228,10 @@ async function enterRoom(join) {
     url.searchParams.set('room', result.roomCode);
     history.replaceState(null, '', url);
     connect();
-  } catch (error) { showError(error); }
+  } catch (error) {
+    if (error.status === 401) showEntryPanel('access-form');
+    showError(error);
+  }
   finally {
     pending = false;
     $('create-room').disabled = false;
@@ -219,6 +261,7 @@ async function action(type, payload = {}) {
       const url = new URL(location.href);
       url.searchParams.delete('room');
       history.replaceState(null, '', url);
+      await checkEntryAccess();
     } else receiveState(next.state || next);
   } catch (error) { showError(error); }
   finally { pending = false; if (state) render(); }
@@ -652,6 +695,8 @@ function render() {
 $('focus-current-action').addEventListener('click', () => focusGameSection(currentTask().target || '#practice-panel'));
 $('focus-inventory').addEventListener('click', () => focusGameSection('#personal-inventory, [data-testid="power-preparation"], .hako-sequence, .power-overview'));
 $('entry-form').addEventListener('submit', event => { event.preventDefault(); enterRoom(false); });
+$('access-form').addEventListener('submit', event => { event.preventDefault(); redeemAccess(); });
+$('entry-retry').addEventListener('click', () => { if (entryRetry) entryRetry(); });
 $('map-focus').addEventListener('click', () => {
   const focused = $('setup-view').classList.toggle('map-focused');
   $('map-focus').textContent = focused ? '返回操作' : '专看地图';
@@ -721,7 +766,10 @@ const requestedRoom = new URL(location.href).searchParams.get('room');
 if (requestedRoom) $('room-code').value = requestedRoom.toUpperCase();
 
 async function resume(stored = storedSession(requestedRoom?.toUpperCase())) {
-  if (!stored?.roomCode || !stored.playerId || !stored.token) return;
+  if (!stored?.roomCode || !stored.playerId || !stored.token) { await checkEntryAccess(); return; }
+  showEntryPanel('entry-status');
+  $('entry-status-text').textContent = '请稍候，正在恢复已保存的座位。';
+  $('entry-retry').hidden = true;
   identity = stored;
   pending = true;
   $('create-room').disabled = true;
@@ -738,8 +786,9 @@ async function resume(stored = storedSession(requestedRoom?.toUpperCase())) {
     if (error.status === 403 || error.status === 404) {
       saveSession(null);
       showError(`无法恢复上次入席：${error.message} 请重新加入房间。`);
+      await checkEntryAccess();
     } else {
-      showError(`暂时无法恢复入席：${error.message} 原座位身份已保留，请刷新页面重试。`);
+      showEntryRetry(`暂时无法恢复入席：${error.message} 原座位身份已保留。`, () => resume(stored));
     }
   } finally {
     pending = false;

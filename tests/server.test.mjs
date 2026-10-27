@@ -1381,7 +1381,7 @@ test('the real entry point saves to DATA_DIR before an abrupt process restart', 
   async function boot() {
     const child = spawn(process.execPath, ['server.mjs'], {
       cwd: fileURLToPath(new URL('..', import.meta.url)),
-      env: { ...process.env, HOST: '127.0.0.1', PORT: '0', DATA_DIR: directory },
+      env: { ...process.env, HOST: '127.0.0.1', PORT: '0', DATA_DIR: directory, ACCESS_DIR: directory },
       windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
     children.push(child);
@@ -1401,8 +1401,24 @@ test('the real entry point saves to DATA_DIR before an abrupt process restart', 
     return { child, base };
   }
   const first = await boot();
+  const denied = await fetch(`${first.base}/api/rooms`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '未验证' }),
+  });
+  assert.equal(denied.status, 401, 'The real entry point enables admission protection by default');
+  const { adminKey } = JSON.parse(await readFile(join(directory, 'access.json'), 'utf8'));
+  const issued = await fetch(`${first.base}/api/access/admin`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminKey}` },
+    body: JSON.stringify({ action: 'create', maxUses: 1 }),
+  });
+  assert.equal(issued.status, 200);
+  const { code } = await issued.json();
+  const admitted = await fetch(`${first.base}/api/access/redeem`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }),
+  });
+  assert.equal(admitted.status, 200);
+  const cookie = admitted.headers.get('set-cookie').split(';')[0];
   const response = await fetch(`${first.base}/api/rooms`, { method: 'POST',
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '重启测试' }),
+    headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ name: '重启测试' }),
   });
   assert.equal(response.status, 201);
   const person = await response.json();

@@ -10,6 +10,7 @@ import { createPlay, applyPlayAction, getPlayView } from './play.mjs';
 import { copyRoom, createRoomStore } from './storage.mjs';
 import { chooseBotAction } from './bots.mjs';
 import { checkpoint, clearUndo, rememberAction, undoView, applyUndo, membershipActions } from './undo.mjs';
+import { createAccessControl, createTrafficControl } from './access.mjs';
 
 const BODY_LIMIT = 64 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -90,7 +91,10 @@ function sameToken(candidate, token) {
 }
 
 /** Each action saves its detached state before publishing it to HTTP/SSE clients. */
-export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile, botDelayMs = 700 } = {}) {
+export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile, botDelayMs = 700,
+  accessDirectory, accessNow = Date.now, limits, runtimeId } = {}) {
+  const access = accessDirectory ? createAccessControl({ directory: accessDirectory, now: accessNow }) : null;
+  const traffic = accessDirectory || limits ? createTrafficControl({ limits, now: accessNow }) : null;
   const store = createRoomStore(dataFile);
   const rooms = store.load();
   const streams = new Set();
@@ -488,14 +492,35 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       const url = new URL(request.url, 'http://localhost');
       const { pathname } = url;
       const isGet = request.method === 'GET';
+      traffic?.request();
+      if (traffic && request.method === 'POST' && request.headers.origin
+          && request.headers.origin !== `http://${request.headers.host}` && request.headers.origin !== `https://${request.headers.host}`) {
+        fail(403, '请从箱娃页面提交操作。');
+      }
       if (pathname === '/api/health') {
         if (!isGet) fail(405, '此接口仅支持 GET。');
-        sendJson(response, 200, { ok: true });
+        sendJson(response, 200, { ok: true, ...(runtimeId ? { runtimeId } : {}) });
+        return;
+      }
+      if (pathname === '/api/access') {
+        if (!isGet) fail(405, '此接口仅支持 GET。');
+        sendJson(response, 200, access?.status(request) || { required: false, authorized: true });
+        return;
+      }
+      if (pathname === '/api/access/redeem' || pathname === '/api/access/admin') {
+        if (request.method !== 'POST') fail(405, '此接口仅支持 POST。');
+        if (!access) fail(404, '未启用邀请码入口。');
+        traffic?.invite();
+        const input = await readJson(request);
+        sendJson(response, 200, pathname.endsWith('/admin') ? access.admin(request, input) : access.redeem(request, response, input.code));
         return;
       }
       if (pathname === '/api/rooms') {
         if (request.method !== 'POST') fail(405, '此接口仅支持 POST。');
+        access?.require(request);
         const input = await readJson(request);
+        access?.require(request);
+        if (traffic && rooms.size >= traffic.limits.maxRooms) fail(503, '当前房间数已达上限，请使用已有房间或稍后重试。');
         const name = nickname(input.name);
         const code = newRoomCode();
         const room = { code, hostId: null, players: [], selectingHako: false, draft: null, game: null,
@@ -509,7 +534,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const expectedMethod = endpoint === 'join' || endpoint === 'actions' ? 'POST' : 'GET';
         if (request.method !== expectedMethod) fail(405, `此接口仅支持 ${expectedMethod}。`);
         if (endpoint === 'join') {
+          access?.require(request);
           const input = await readJson(request);
+          access?.require(request);
           const room = roomFor(code);
           if (room.undoPending) fail(409, '正在等待撤销确认，请稍后加入。');
           const name = nickname(input.name);
@@ -544,6 +571,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           }
           sendJson(response, 200, snapshot(room, player.id));
           return;
+        }
+        if (traffic && (streams.size >= traffic.limits.maxStreams || player.connections.size >= traffic.limits.streamsPerPlayer)) {
+          fail(429, '同步连接过多，请关闭重复页面后重试，或使用轮询同步。');
         }
         response.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
@@ -588,12 +618,19 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       response.end(request.method === 'HEAD' ? undefined : data);
     } catch (error) {
       request.resume();
+      if (error.status === 429) response.setHeader('retry-after', '5');
       if (!response.headersSent) sendJson(response, error.status ?? 500, {
         error: error.status ? error.message : '服务器暂时无法处理请求，请重试。',
       });
       else response.end();
     }
   });
+  if (traffic) {
+    server.maxConnections = traffic.limits.maxConnections;
+    server.headersTimeout = 15000;
+    server.requestTimeout = 30000;
+    server.keepAliveTimeout = 5000;
+  }
 
   // SSE responses must end before Node can finish closing the HTTP server.
   const close = server.close.bind(server);

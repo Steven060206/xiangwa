@@ -21,7 +21,17 @@
           <p class="entry-intro">一人扮演箱娃，三人作为访问者。<br>邀朋友入席，或补齐人机独自试玩。</p>
           <div class="entry-drawing" aria-hidden="true"><svg viewBox="0 0 360 176" fill="none"><path d="M26 155H335M55 155V71L177 21L301 71V155M81 145V82H151V145M164 145V55H239V145M252 145V82H278V145M81 110H151M201 55V145M164 98H239"/><path class="drawing-accent" d="M159 155V116H184V155M162 24L177 17L192 24"/><path d="M99 91H130M99 97H130M214 67V85M221 67V85M264 95V116M101 125H131V145M177 67V84M184 67V84"/><path class="drawing-light" d="M39 159H320M47 164H310M62 168H297"/></svg><span>每一局，都是一座不同的旧宅。</span></div>
         </div>
-        <form id="entry-form" class="entry-form">
+        <section id="entry-status" class="entry-form" aria-live="polite">
+          <h2>正在确认入席</h2><p id="entry-status-text" class="form-description">请稍候，正在检查入口与已保存的座位。</p>
+          <button id="entry-retry" data-testid="entry-retry" class="button secondary" type="button" hidden>重试</button>
+        </section>
+        <form id="access-form" data-testid="access-form" class="entry-form" hidden>
+          <h2>凭邀请入宅</h2><p class="form-description">输入朋友发来的邀请码，验证后即可创建或加入房间。</p>
+          <label for="access-code">邀请码</label><input id="access-code" data-testid="access-code" name="inviteCode" type="text" placeholder="输入邀请码" maxlength="80" autocomplete="off" autocapitalize="characters" spellcheck="false" required aria-describedby="access-note">
+          <button id="redeem-access" data-testid="redeem-access" class="button primary" type="submit">验证邀请码<span aria-hidden="true">↗</span></button>
+          <p id="access-note" class="entry-note">邀请码有使用期限。已入席的玩家可继续原来的游戏。</p>
+        </form>
+        <form id="entry-form" class="entry-form" hidden>
           <h2>请留下你的名字</h2><p class="form-description">可邀请朋友，也可创建房间后补齐三个人机试玩。</p>
           <label for="nickname">昵称</label><input id="nickname" data-testid="nickname" name="nickname" type="text" placeholder="你想被怎样称呼" maxlength="16" autocomplete="nickname" required>
           <button id="create-room" data-testid="create-room" class="button primary" type="submit">创建房间<span aria-hidden="true">↗</span></button>
