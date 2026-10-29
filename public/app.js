@@ -21,6 +21,7 @@ const floorName = floor => ({ 1: '一楼', 2: '二楼', '-1': '地下室' })[flo
 let identity = null;
 let state = null;
 let stream = null;
+let reconnectTimer = null;
 let pollTimer = null;
 let pollController = null;
 let identityCheck = null;
@@ -159,6 +160,8 @@ function saveSession(value) {
 function disconnect() {
   stream?.close();
   stream = null;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   clearTimeout(pollTimer);
   pollTimer = null;
   pollController?.abort();
@@ -251,6 +254,13 @@ function connect() {
     if (stream !== connection || identity !== session) return;
     setConnection(false);
     verifyIdentity(session);
+    // HTTP errors can close EventSource permanently instead of retrying it.
+    if (connection.readyState === EventSource.CLOSED) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        if (stream === connection && identity === session) connect();
+      }, 1000);
+    }
   };
 }
 

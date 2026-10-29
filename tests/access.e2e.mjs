@@ -307,6 +307,33 @@ for (const mode of ['sse', 'poll']) {
   });
 }
 
+test('SSE resumes after gateway errors permanently close the native EventSource', { timeout: 60000 }, async t => {
+  const { base, server, page } = await fixture(t, false);
+  const visitor = await page();
+  await visitor.goto(base);
+  const identity = await enter(visitor, '关服后重连');
+  await connected(visitor);
+  const events = url => url.pathname === `/api/rooms/${identity.roomCode}/events`;
+  for (const status of [502, 503]) {
+    let failures = 0, retried;
+    const retryReceived = new Promise(resolve => { retried = resolve; });
+    await visitor.route(events, async route => {
+      await route.fulfill({ status, json: { error: '网关暂时不可用' } });
+      if (++failures === 2) retried();
+    });
+    server.closeAllConnections();
+    // The browser stops its own retries after the first HTTP error.
+    await retryReceived;
+    assert.deepEqual(await visitor.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), identity);
+    assert.equal(await visitor.locator('#room-view').isVisible(), true);
+    assert.equal(await visitor.getByTestId('ready-button').isEnabled(), false);
+    await visitor.unroute(events);
+    await connected(visitor);
+    assert.equal(await visitor.getByTestId('ready-button').isEnabled(), true);
+    assert.equal(await visitor.locator('#lobby-count').textContent(), '1 / 4 人入席');
+  }
+});
+
 for (const delayed of ['action', 'identity check']) test(`a delayed ${delayed} from a departed identity cannot replace a new room`, { timeout: 60000 }, async t => {
   const { base, page } = await fixture(t, false);
   const visitor = await page();
