@@ -307,7 +307,12 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     switch (input.type) {
       case 'restart_game': {
         hostOnly();
-        if (!room.play?.result) fail(409, '只有本局结束后才能再开一局。');
+        if (!room.selectingHako && !room.draft && !room.game && !room.opening && !room.play) {
+          fail(409, '尚未开始游戏，无需重开。');
+        }
+        if (!room.play?.result && input.abandon !== true) {
+          fail(409, '本局尚未结束，请由房主确认「结束并重开」。');
+        }
         room.selectingHako = false;
         room.draft = room.game = room.opening = room.play = null;
         for (const candidate of room.players) {

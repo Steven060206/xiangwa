@@ -18,12 +18,14 @@ export function renderUndo({ state, pending, online, action }) {
   const undo = state.undo;
   const locked = pending || !online;
   const controls = node('div', 'undo-controls');
-  const addButton = (label, id, type, payload = {}, disabled = false) => {
+  const addButton = (label, id, type, payload = {}, disabled = false, confirmation = '') => {
     const button = node('button', 'button secondary', label);
     button.type = 'button';
     button.dataset.testid = id;
     button.disabled = locked || disabled;
-    button.addEventListener('click', () => action(type, payload));
+    button.addEventListener('click', () => {
+      if (!confirmation || window.confirm(confirmation)) action(type, payload);
+    });
     controls.append(button);
   };
   if (undo?.pending) {
@@ -39,6 +41,10 @@ export function renderUndo({ state, pending, online, action }) {
     }
   } else {
     addButton('撤销上一步', 'undo-request', 'undo_request', { version: state.version }, !undo?.available);
+    if (state.hostId === state.you && state.phase !== 'lobby' && !state.round?.result) {
+      addButton('结束并重开', 'restart-current-game', 'restart_game', { abandon: true }, false,
+        '确定结束当前对局并返回大厅？本局进度、复盘、聊天和撤销记录将清空；房间和所有玩家的座位保留。');
+    }
     controls.append(node('p', 'undo-hint', undo?.available
       ? `${undo.label} ${undo.mode === 'direct' ? '自己的步骤，可直接撤回。' : '需其他在线真人同意；人机自动同意。'}`
       : '从现在起记录操作，最多可逐步撤销40步。'));

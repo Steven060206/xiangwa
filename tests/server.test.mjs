@@ -97,10 +97,10 @@ async function waitForSnapshot(request, identity, predicate, timeoutMs = 5000) {
   assert.fail(`Room did not reach the expected state: phase=${state.phase}, round=${state.round?.phase}, version=${state.version}`);
 }
 
-async function preparePlay(request, people) {
+async function preparePlay(request, people, hako = people[0]) {
   for (const person of people) await action(request, person, 'ready', { ready: true });
   assert.equal((await action(request, people[0], 'start')).body.phase, 'hako_selection');
-  let state = (await action(request, people[0], 'claim_hako')).body;
+  let state = (await action(request, hako, 'claim_hako')).body;
   for (let index = 0; index < 3; index += 1) {
     const person = people.find(person => person.playerId === state.draft.turnPlayerId);
     state = (await action(request, person, 'choose_item', { itemId: state.draft.availableItems[0].id })).body;
@@ -111,11 +111,11 @@ async function preparePlay(request, people) {
     state = (await action(request, person, 'place', state.setup.legalPlacements[0])).body;
   }
   await action(request, people[0], 'prepare_opening');
-  await action(request, people[0], 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
-  await action(request, people[0], 'place_remains', { cornerId: 'living_sofa' });
-  await action(request, people[0], 'inspect_initial_room', { roomId: 'children_room' });
-  const hidden = (await action(request, people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' })).body;
-  const result = await action(request, people[0], 'choose_initial_power', { powerId: hidden.opening.initialPowerOptions[0].id });
+  await action(request, hako, 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
+  await action(request, hako, 'place_remains', { cornerId: 'living_sofa' });
+  await action(request, hako, 'inspect_initial_room', { roomId: 'children_room' });
+  const hidden = (await action(request, hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' })).body;
+  const result = await action(request, hako, 'choose_initial_power', { powerId: hidden.opening.initialPowerOptions[0].id });
   assert.equal(result.status, 200);
   return result.body;
 }
@@ -959,6 +959,78 @@ test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a de
   assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
   state = (await snapshot(request, visitors[2])).body;
   assert.deepEqual(state, voted.body);
+});
+
+test('a box-person host can abandon a pending peek with an offline hako, saving and broadcasting the reset atomically', async t => {
+  const saved = await persistentServer(t, {
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      play.round.hidingCornerId = 'hall_clock';
+      return play;
+    },
+  });
+  const { request } = saved;
+  const people = await createFour(request);
+  const [host, visitor, , hako] = people;
+  assert.equal((await action(request, host, 'restart_game', { abandon: true })).status, 409);
+  await preparePlay(request, people, hako);
+  await action(request, host, 'silent_reveal', { index: 0 });
+  await action(request, host, 'peek', { cornerId: 'hall_clock' });
+  await action(request, hako, 'resolve_visitor_action');
+  assert.equal((await action(request, host, 'bequeath', { targetId: visitor.playerId })).status, 200);
+  await action(request, visitor, 'silent_reveal', { index: 1 });
+  assert.equal((await action(request, visitor, 'peek', { cornerId: 'hall_clock' })).status, 200);
+  const live = await stream(t, saved.base, host);
+  const before = await live.state();
+  assert.equal(before.round.phase, 'visitor_reaction');
+  assert.equal(before.round.pendingAction.type, 'peek');
+  assert.equal(before.round.visitors.find(player => player.id === host.playerId).status, 'box_person');
+  assert.equal(before.players.find(player => player.id === hako.playerId).connected, false);
+  assert.equal(before.round.result, null);
+  for (const abandon of [undefined, false, 'true']) {
+    assert.equal((await action(request, host, 'restart_game', { abandon })).status, 409);
+  }
+  assert.equal((await action(request, hako, 'restart_game', { abandon: true })).status, 403);
+  assert.equal((await action(request, host, 'restart_game', { abandon: true, expectedVersion: before.version - 1 })).status, 409);
+  assert.deepEqual((await snapshot(request, host)).body, before);
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, host, 'restart_game', { abandon: true, expectedVersion: before.version })).status, 503);
+    assert.deepEqual((await snapshot(request, host)).body, before);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const reset = await action(request, host, 'restart_game', { abandon: true, expectedVersion: before.version });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.body.phase, 'lobby');
+  assert.equal(reset.body.version, before.version + 1);
+  assert.equal(reset.body.hostId, host.playerId);
+  assert.deepEqual(reset.body.players, before.players.map(player => ({ ...player, role: 'visitor', ready: false })));
+  assert.equal(reset.body.round, null);
+  assert.equal(reset.body.undo.available, false);
+  assert.deepEqual(await live.state(), reset.body, 'Only the successfully saved reset reaches SSE');
+  assert.equal((await action(request, hako, 'resolve_visitor_action', { expectedVersion: before.version })).status, 409);
+  await live.close();
+  await checkRestart(saved, people);
+});
+
+test('hosts can abandon unfinished role selection and item drafting while preserving the original seats', async t => {
+  const { request } = await startServer(t);
+  const people = await createFour(request);
+  const [host, guest] = people;
+  for (const claim of [false, true]) {
+    for (const person of people) await action(request, person, 'ready', { ready: true });
+    let current = (await action(request, host, 'start')).body;
+    if (claim) current = (await action(request, guest, 'claim_hako')).body;
+    assert.equal(current.phase, claim ? 'item_draft' : 'hako_selection');
+    assert.equal((await action(request, host, 'restart_game')).status, 409);
+    const reset = await action(request, host, 'restart_game', { abandon: true, expectedVersion: current.version });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.body.phase, 'lobby');
+    assert.deepEqual(reset.body.players.map(player => player.id), people.map(person => person.playerId));
+    assert.ok(reset.body.players.every(player => player.role === 'visitor' && !player.ready));
+    assert.equal(reset.body.draft, null);
+  }
 });
 
 test('finished rooms restart in place over SSE and polling, persist clean lobbies and allow a different hako', async t => {

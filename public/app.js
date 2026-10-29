@@ -202,7 +202,7 @@ function connect() {
 function receiveState(next) {
   // A POST response can arrive after a newer SSE event.
   if (state && next.version < state.version) return;
-  if (state?.round && next.phase === 'lobby') {
+  if (state && state.phase !== 'lobby' && next.phase === 'lobby') {
     feedback.clear();
     activeFloor = 1;
     selectedMapCorner = '';
