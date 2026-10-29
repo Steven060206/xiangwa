@@ -44,7 +44,7 @@ async function fixture(t, protectedEntry = true) {
     assert.equal(response.status, 200, JSON.stringify(result));
     return result;
   }
-  return { base, browser, page, admin, advance: milliseconds => { clock += milliseconds; } };
+  return { base, browser, server, page, admin, advance: milliseconds => { clock += milliseconds; } };
 }
 
 async function redeem(page, code) {
@@ -219,4 +219,144 @@ test('entry and saved-seat network failures offer a retry and retain the origina
   await visitor.getByTestId('room-code-display').waitFor();
   assert.deepEqual(await visitor.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), identity);
   assert.equal(await visitor.locator('#lobby-count').textContent(), '1 / 4 人入席');
+});
+
+async function connected(page) {
+  await page.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
+}
+
+async function returnedToEntry(page, roomCode) {
+  await page.locator('#entry-view').waitFor();
+  await page.waitForFunction(({ key, code }) => !sessionStorage.getItem(key)
+    && !JSON.parse(localStorage.getItem('hako.room.saved.v1'))?.rooms?.[code], { key: sessionKey, code: roomCode });
+  assert.equal(await page.locator('#room-view').isVisible(), false);
+  assert.equal(await page.locator('#connection-banner').isVisible(), false);
+  assert.equal(new URL(page.url()).searchParams.has('room'), false);
+  assert.equal(await page.title(), '箱娃 · 旧宅入席');
+}
+
+for (const mode of ['sse', 'poll']) {
+  test(`departed seats leave the reconnect screen across tabs and lost exit responses over ${mode}`, { timeout: 60000 }, async t => {
+    const { base, page } = await fixture(t, false);
+    const host = await page();
+    await host.goto(`${base}/?sync=${mode}`);
+    const hostIdentity = await enter(host, '房主');
+    const visitor = await page();
+    await visitor.goto(`${base}/?sync=${mode}&room=${hostIdentity.roomCode}`);
+    await enter(visitor, '双标签玩家', hostIdentity.roomCode);
+    const mirror = await visitor.context().newPage();
+    await mirror.goto(visitor.url());
+    await Promise.all([connected(host), connected(visitor), connected(mirror)]);
+
+    await visitor.locator('#leave-room').click();
+    await Promise.all([returnedToEntry(visitor, hostIdentity.roomCode), returnedToEntry(mirror, hostIdentity.roomCode)]);
+    assert.match(await mirror.locator('#error-text').textContent(), /座位已失效/);
+    await enter(mirror, '重新入席', hostIdentity.roomCode);
+    await connected(mirror);
+    await host.waitForFunction(() => document.getElementById('lobby-count').textContent === '2 / 4 人入席');
+
+    // Complete each exit on the server, but discard its response in the browser.
+    for (const departing of [mirror, host]) {
+      await departing.route('**/actions', async route => {
+        assert.equal(route.request().postDataJSON().type, 'leave');
+        assert.equal((await route.fetch()).status(), 200, departing === host ? 'Host exit' : 'Visitor exit');
+        await route.abort('failed');
+      });
+      await departing.locator('#leave-room').click();
+      await returnedToEntry(departing, hostIdentity.roomCode);
+      await departing.getByTestId('nickname').waitFor();
+      assert.equal(await departing.getByTestId('create-room').isEnabled(), true);
+      assert.equal(await departing.locator('#error-banner').isVisible(), false, 'A completed exit is not reported as a network failure');
+      if (departing !== host) await host.waitForFunction(() => document.getElementById('lobby-count').textContent === '1 / 4 人入席');
+    }
+    assert.equal((await fetch(`${base}/api/rooms/${hostIdentity.roomCode}`)).status, 404, 'The last departure really deleted the room');
+  });
+
+  test(`temporary connection errors retain valid seats and resume over ${mode}`, { timeout: 60000 }, async t => {
+    const { base, server, page } = await fixture(t, false);
+    const visitor = await page();
+    await visitor.goto(`${base}/?sync=${mode}`);
+    const identity = await enter(visitor, '断线重连');
+    await connected(visitor);
+    const roomGet = url => url.pathname.startsWith(`/api/rooms/${identity.roomCode}`);
+    for (const failure of ['network', 'unavailable']) {
+      const failedRequest = visitor.waitForRequest(request => roomGet(new URL(request.url())));
+      await visitor.route(roomGet, route => failure === 'network' ? route.abort('connectionfailed')
+        : route.fulfill({ status: 503, json: { error: '服务暂时不可用' } }));
+      server.closeAllConnections();
+      await failedRequest;
+      await visitor.waitForFunction(() => document.getElementById('connection-state').textContent === '重新连接中');
+      assert.deepEqual(await visitor.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), identity);
+      assert.equal(await visitor.locator('#room-view').isVisible(), true);
+      assert.equal(await visitor.getByTestId('ready-button').isEnabled(), false);
+      await visitor.unroute(roomGet);
+      await connected(visitor);
+    }
+
+    // A refused action can be a permission error while the identity remains valid.
+    await visitor.route('**/actions', route => route.fulfill({ status: 403, json: { error: '操作权限不足' } }));
+    const checked = visitor.waitForResponse(response => new URL(response.url()).pathname === `/api/rooms/${identity.roomCode}`
+      && !new URL(response.url()).searchParams.has('poll'));
+    await visitor.getByTestId('ready-button').click();
+    assert.equal((await checked).status(), 200);
+    await visitor.locator('#error-banner').waitFor();
+    assert.match(await visitor.locator('#error-text').textContent(), /操作权限不足/);
+    assert.deepEqual(await visitor.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), identity);
+    assert.equal(await visitor.locator('#room-view').isVisible(), true);
+    assert.equal(await visitor.locator('#lobby-count').textContent(), '1 / 4 人入席');
+  });
+}
+
+for (const delayed of ['action', 'identity check']) test(`a delayed ${delayed} from a departed identity cannot replace a new room`, { timeout: 60000 }, async t => {
+  const { base, page } = await fixture(t, false);
+  const visitor = await page();
+  await visitor.goto(base);
+  const oldIdentity = await enter(visitor, '原座位');
+  const mirror = await visitor.context().newPage();
+  await mirror.goto(visitor.url());
+  await Promise.all([connected(visitor), connected(mirror)]);
+  let releaseAction, releaseCheck;
+  const actionGate = new Promise(resolve => { releaseAction = resolve; });
+  const checkGate = new Promise(resolve => { releaseCheck = resolve; });
+  t.after(() => { releaseAction(); releaseCheck(); });
+  await visitor.route('**/actions', async route => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    await actionGate;
+    await route.fulfill({ response });
+  });
+  let checked;
+  const checkStarted = new Promise(resolve => { checked = resolve; });
+  const oldRoomGet = url => url.pathname === `/api/rooms/${oldIdentity.roomCode}`;
+  await visitor.route(oldRoomGet, async route => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 404);
+    checked();
+    await checkGate;
+    await route.fulfill({ response });
+  });
+  const actionReturned = visitor.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/actions'));
+  if (delayed === 'action') {
+    await visitor.getByTestId('ready-button').click();
+    // The other tab receives the new version before it exits with the same seat.
+    await mirror.waitForFunction(() => document.getElementById('ready-button').textContent.includes('取消'));
+    await mirror.locator('#leave-room').click();
+  } else await visitor.locator('#leave-room').click();
+  await returnedToEntry(mirror, oldIdentity.roomCode);
+  await checkStarted;
+  if (delayed === 'action') releaseCheck();
+  else { releaseAction(); await actionReturned; }
+  await returnedToEntry(visitor, oldIdentity.roomCode);
+  const fresh = await enter(visitor, '新房主');
+  await connected(visitor);
+  const delayedReturned = delayed === 'action' ? actionReturned : visitor.waitForResponse(response => oldRoomGet(new URL(response.url())));
+  if (delayed === 'action') releaseAction();
+  else releaseCheck();
+  await delayedReturned;
+  // A round trip through the new connection lets any old response handler finish.
+  await visitor.getByTestId('ready-button').click();
+  await visitor.waitForFunction(() => document.getElementById('ready-button').textContent.includes('取消'));
+  assert.notEqual(fresh.roomCode, oldIdentity.roomCode);
+  assert.deepEqual(await visitor.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), fresh);
+  assert.equal(await visitor.getByTestId('room-code-display').textContent(), fresh.roomCode);
 });

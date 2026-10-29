@@ -9,10 +9,11 @@ const $ = id => document.getElementById(id);
 const feedback = createFeedbackUI();
 const chat = createChatUI(async payload => {
   if (!identity || !online) throw new Error('请等待连接恢复。');
+  const session = identity;
   const next = await api(`/api/rooms/${identity.roomCode}/actions`, {
     playerId: identity.playerId, token: identity.token, type: 'chat_send', ...payload,
   });
-  receiveState(next);
+  if (identity === session) receiveState(next);
 });
 const SESSION_KEY = 'hako.room.session.v1';
 const SAVED_SESSIONS_KEY = 'hako.room.saved.v1';
@@ -22,6 +23,8 @@ let state = null;
 let stream = null;
 let pollTimer = null;
 let pollController = null;
+let identityCheck = null;
+let leavingIdentity = null;
 let pending = false;
 let accessPending = false;
 let entryRetry = null;
@@ -162,9 +165,52 @@ function disconnect() {
   pollController = null;
 }
 
+async function returnToEntry(message = '') {
+  feedback.clear();
+  disconnect();
+  state = null;
+  saveSession(null);
+  leavingIdentity = null;
+  online = false;
+  pending = false;
+  $('create-room').disabled = false;
+  $('join-room').disabled = false;
+  $('room-view').hidden = true;
+  $('entry-view').hidden = false;
+  $('connection-banner').hidden = true;
+  $('error-banner').hidden = !message;
+  if (message) showError(message);
+  document.title = '箱娃 · 旧宅入席';
+  const url = new URL(location.href);
+  url.searchParams.delete('room');
+  history.replaceState(null, '', url);
+  await checkEntryAccess();
+}
+
+function verifyIdentity(session) {
+  if (!session || identity !== session) return Promise.resolve(false);
+  if (identityCheck?.session === session) return identityCheck.promise;
+  const check = { session };
+  check.promise = (async () => {
+    try {
+      const query = new URLSearchParams({ playerId: session.playerId, token: session.token });
+      await api(`/api/rooms/${session.roomCode}?${query}`, undefined, AbortSignal.timeout(10000));
+    } catch (error) {
+      if (identity === session && (error.status === 403 || error.status === 404)) {
+        await returnToEntry(leavingIdentity === session ? '' : '当前座位已失效，请重新加入房间。');
+        return true;
+      }
+    }
+    return false;
+  })().finally(() => { if (identityCheck === check) identityCheck = null; });
+  identityCheck = check;
+  return check.promise;
+}
+
 function connect() {
   disconnect();
   setConnection(false);
+  const session = identity;
   if (location.hostname.endsWith('.trycloudflare.com') || new URL(location.href).searchParams.get('sync') === 'poll') {
     const controller = new AbortController();
     pollController = controller;
@@ -181,22 +227,31 @@ function connect() {
       } catch (error) {
         if (controller.signal.aborted) return;
         setConnection(false);
-        if (error.status === 403 || error.status === 404) { showError(error); return; }
+        if (error.status === 403 || error.status === 404) {
+          if (identity === session) await returnToEntry(leavingIdentity === session ? '' : '当前座位已失效，请重新加入房间。');
+          return;
+        }
       }
       if (!controller.signal.aborted) pollTimer = setTimeout(poll, 1000);
     }
     poll();
     return;
   }
-  stream = new EventSource(`/api/rooms/${identity.roomCode}/events?${sessionQuery()}`);
-  stream.onopen = () => setConnection(true);
-  stream.addEventListener('state', event => {
+  const connection = new EventSource(`/api/rooms/${identity.roomCode}/events?${sessionQuery()}`);
+  stream = connection;
+  connection.onopen = () => { if (stream === connection && identity === session) setConnection(true); };
+  connection.addEventListener('state', event => {
+    if (stream !== connection || identity !== session) return;
     try {
       receiveState(JSON.parse(event.data));
       setConnection(true);
     } catch (error) { showError(error); }
   });
-  stream.onerror = () => setConnection(false);
+  connection.onerror = () => {
+    if (stream !== connection || identity !== session) return;
+    setConnection(false);
+    verifyIdentity(session);
+  };
 }
 
 function receiveState(next) {
@@ -269,6 +324,8 @@ async function enterRoom(join) {
 
 async function action(type, payload = {}) {
   if (pending || !online || !identity) return;
+  const session = identity;
+  if (type === 'leave') leavingIdentity = session;
   pending = true;
   $('error-banner').hidden = true;
   render();
@@ -276,22 +333,17 @@ async function action(type, payload = {}) {
     const next = await api(`/api/rooms/${identity.roomCode}/actions`, {
       playerId: identity.playerId, token: identity.token, type, expectedVersion: state.version, ...payload,
     });
-    if (type === 'leave') {
-      feedback.clear();
-      disconnect();
-      state = null;
-      saveSession(null);
-      online = false;
-      $('room-view').hidden = true;
-      $('entry-view').hidden = false;
-      $('connection-banner').hidden = true;
-      const url = new URL(location.href);
-      url.searchParams.delete('room');
-      history.replaceState(null, '', url);
-      await checkEntryAccess();
-    } else receiveState(next.state || next);
-  } catch (error) { showError(error); }
-  finally { pending = false; if (state) render(); }
+    if (identity !== session) return;
+    if (type === 'leave') await returnToEntry();
+    else receiveState(next.state || next);
+  } catch (error) {
+    if (identity !== session) return;
+    if ((type === 'leave' || error.status === 403 || error.status === 404) && await verifyIdentity(session)) return;
+    if (identity === session) showError(error);
+  } finally {
+    if (leavingIdentity === session) leavingIdentity = null;
+    if (identity === session) { pending = false; if (state) render(); }
+  }
 }
 
 function renderSeats(container, compact = false) {
