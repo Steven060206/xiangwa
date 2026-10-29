@@ -160,7 +160,7 @@ function publicProgress(container, state) {
   container.append(section);
 }
 
-function gameResult(container, state) {
+function gameResult(container, state, locked, action) {
   const result = state.round.result;
   const section = node('section', `game-result ${result.winner === 'visitors' ? 'visitors-win' : 'hako-win'}`);
   section.dataset.testid = 'game-result';
@@ -169,6 +169,10 @@ function gameResult(container, state) {
   section.append(node('p', '', resultReasons[result.reason] || result.reason || '本局已结束。'));
   if (result.winners?.length) section.append(node('p', 'small-note', `获胜玩家：${result.winners.map(id => playerName(state, id)).join('、')}`));
   section.append(node('p', 'small-note', '本局已结束，可展开宅邸记事回看行动。'));
+  if (state.hostId === state.you) {
+    section.append(button('再开一局', 'restart-game', locked, () => action('restart_game')));
+    section.append(node('p', 'small-note', '保留房间和座位，清空本局复盘，返回大厅重新准备、抢选角色。'));
+  } else section.append(node('p', 'small-note', '等待房主点击「再开一局」，返回大厅重新准备。'));
   container.append(section);
 }
 
@@ -658,7 +662,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
   panel.dataset.phase = round.phase;
   panel.setAttribute('aria-label', '探索回合操作');
   const fragment = document.createDocumentFragment();
-  if (round.result) gameResult(fragment, state);
+  if (round.result) gameResult(fragment, state, pending || !online, action);
   const status = node('p', 'practice-status', explorationDescription(state));
   status.setAttribute('role', 'status');
   fragment.append(status);

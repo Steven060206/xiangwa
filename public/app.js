@@ -202,6 +202,11 @@ function connect() {
 function receiveState(next) {
   // A POST response can arrive after a newer SSE event.
   if (state && next.version < state.version) return;
+  if (state?.round && next.phase === 'lobby') {
+    feedback.clear();
+    activeFloor = 1;
+    selectedMapCorner = '';
+  }
   if (next.phase === 'map_setup' && next.setup.turnPlayerId !== next.you && next.setup.preview?.placement
       && next.setup.preview.revision !== state?.setup?.preview?.revision) activeFloor = next.setup.preview.placement.floor;
   if (state && next.version === state.version) {

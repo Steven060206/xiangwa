@@ -305,6 +305,21 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     };
     let message;
     switch (input.type) {
+      case 'restart_game': {
+        hostOnly();
+        if (!room.play?.result) fail(409, '只有本局结束后才能再开一局。');
+        room.selectingHako = false;
+        room.draft = room.game = room.opening = room.play = null;
+        for (const candidate of room.players) {
+          candidate.role = 'visitor';
+          candidate.ready = !!candidate.isBot;
+        }
+        room.log = [];
+        room.chatMessages = [];
+        room.chatRevision = (room.chatRevision || 0) + 1;
+        message = `${player.name} 开启了新一局，请重新准备，开始后一起抢当箱娃。`;
+        break;
+      }
       case 'add_bots': {
         hostOnly();
         inLobby();
@@ -520,7 +535,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       default:
         fail(400, '未知操作。');
     }
-    if (membershipActions.has(input.type)) clearUndo(room);
+    if (membershipActions.has(input.type) || input.type === 'restart_game') clearUndo(room);
     else rememberAction(room, before, player.id, input.type, message);
     if (!player.isBot) room.undoPaused = false;
     mapPreviews.delete(room.code);

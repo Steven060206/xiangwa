@@ -20,7 +20,7 @@ const numberedCornerName = id => {
   return `${String(index + 1).padStart(2, '0')} · ${corner.room.name} · ${corner.name}`;
 };
 
-test('four browser sessions complete private opening, powers, exploration, item answers, exchanges and surrender', { timeout: 180000 }, async t => {
+test('four browser sessions complete private opening, powers, exploration, item answers, exchanges, surrender and rematch', { timeout: 180000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'hako-browser-'));
   let server;
   let browser;
@@ -848,16 +848,69 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.phase, 'game_over');
   assert.equal(state.round.result.winner, 'hako');
   assert.equal(state.round.result.reason, '访问者全体投降');
-  for (const page of pages) {
+  for (const [index, page] of pages.entries()) {
     await page.getByTestId('game-result').waitFor();
     assert.match(await page.getByTestId('game-result').innerText(), /箱娃胜利/);
-    assert.equal(await page.getByTestId('practice-panel').locator('button:not(:disabled)').count(), 0,
+    assert.equal(await page.getByTestId('practice-panel').locator('button:not(:disabled):not([data-testid="restart-game"])').count(), 0,
       'All round actions are locked after the result');
+    assert.equal(await page.getByTestId('restart-game').count(), index === 0 ? 1 : 0,
+      'Only the host can restart the finished game');
+    if (index === 0) assert.equal(await page.getByTestId('restart-game').isEnabled(), true);
+    else assert.match(await page.getByTestId('game-result').innerText(), /等待房主/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
       'Exploration and result controls must fit desktop and mobile viewports');
   }
   await hakoPage.screenshot({ path: 'test-results/result-desktop.png', fullPage: true });
   await pages[1].screenshot({ path: 'test-results/result-mobile.png', fullPage: true });
+
+  const previousSeats = state.players.map(({ id, name, seat }) => ({ id, name, seat }));
+  const finishedVersion = state.version;
+  assert.ok(await pages[1].locator('#event-history-list > li').count(), 'The finished game has event history to clear');
+  await pages[1].getByTestId('event-history-toggle').click();
+  await pages[1].locator('#event-history-list button').first().click();
+  assert.equal(await pages[1].evaluate(() => document.getElementById('event-dialog').open), true);
+  state = await performAction(hakoPage, 'restart_game', () => hakoPage.getByTestId('restart-game').click());
+  assert.ok(state.version > finishedVersion);
+  for (const [index, page] of pages.entries()) {
+    await page.locator('#lobby-view').waitFor({ state: 'visible' });
+    const snapshot = await getState(identities[index]);
+    assert.equal(snapshot.phase, 'lobby');
+    assert.equal(snapshot.you, identities[index].playerId);
+    assert.equal(snapshot.hostId, identities[0].playerId);
+    assert.deepEqual(snapshot.players.map(({ id, name, seat }) => ({ id, name, seat })), previousSeats);
+    assert.equal(snapshot.players.every(player => player.role === 'visitor' && !player.ready && player.connected), true);
+    for (const key of ['round', 'opening', 'setup', 'draft', 'initialPower']) assert.equal(snapshot[key], null);
+    assert.deepEqual(snapshot.initialItems, []);
+    assert.deepEqual(snapshot.chat.messages, []);
+    assert.equal(snapshot.log.length, 1, 'Only the new-game announcement remains');
+    assert.equal(await page.getByTestId('game-result').isVisible(), false);
+    assert.equal(await page.getByTestId('game-review').isVisible(), false);
+    assert.equal(await page.locator('#event-history-list > li').count(), 0);
+    assert.equal(await page.locator('#event-count').textContent(), '0');
+    assert.equal(await page.evaluate(() => document.getElementById('event-dialog').open), false,
+      'Restarting also closes an old event replay');
+    assert.equal(await page.getByTestId('ready-button').isEnabled(), true);
+  }
+  await pages[1].reload();
+  await pages[1].locator('#lobby-view').waitFor({ state: 'visible' });
+  await waitForSSE(state.version);
+  assert.equal(await pages[1].evaluate(() => JSON.parse(sessionStorage.getItem('hako.room.session.v1')).playerId), identities[1].playerId);
+  assert.deepEqual((await getState(identities[1])).players.map(({ id, name, seat }) => ({ id, name, seat })), previousSeats,
+    'Refreshing after a rematch preserves all four original seats');
+  for (const page of pages) state = await performAction(page, 'ready', () => page.getByTestId('ready-button').click());
+  state = await performAction(pages[0], 'start', () => pages[0].getByTestId('start-setup').click());
+  assert.equal(state.phase, 'hako_selection');
+  state = await performAction(pages[1], 'claim_hako', () => pages[1].getByTestId('claim-hako').click());
+  assert.equal(state.phase, 'item_draft');
+  assert.equal(state.players.find(player => player.role === 'hako').id, identities[1].playerId,
+    'The next game can assign a different player as Hako');
+  for (let choice = 0; choice < 3; choice++) {
+    const page = pages[identities.findIndex(person => person.playerId === state.draft.turnPlayerId)];
+    state = await performAction(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
+    assert.equal(state.initialItems.length, choice + 1);
+  }
+  assert.equal(state.phase, 'map_setup');
+  assert.equal(state.setup.placements.length, 1, 'The rematch starts with a fresh map');
 
   await pages[3].evaluate(() => {
     const saved = JSON.parse(sessionStorage.getItem('hako.room.session.v1'));

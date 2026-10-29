@@ -961,6 +961,131 @@ test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a de
   assert.deepEqual(state, voted.body);
 });
 
+test('finished rooms restart in place over SSE and polling, persist clean lobbies and allow a different hako', async t => {
+  const saved = await persistentServer(t);
+  const { request } = saved;
+  const people = await createFour(request);
+  const [host, first, second, third] = people;
+  assert.equal((await action(request, host, 'restart_game')).status, 409);
+  await preparePlay(request, people);
+  assert.equal((await action(request, host, 'restart_game')).status, 409);
+  assert.equal((await action(request, first, 'chat_send', {
+    channelKind: 'room', roomId: 'hall_room', text: '上一局的私密消息',
+  })).status, 200);
+  for (const person of people.slice(1)) assert.equal((await action(request, person, 'surrender')).status, 200);
+  const observer = await stream(t, saved.base, host);
+  await observer.state();
+  const guestStream = await stream(t, saved.base, first);
+  await guestStream.state();
+  await snapshot(request, second, { poll: true });
+  const ended = (await snapshot(request, host)).body;
+  assert.equal(ended.phase, 'game_over');
+  assert.equal((await action(request, first, 'restart_game', { expectedVersion: ended.version })).status, 403);
+  assert.equal((await action(request, host, 'restart_game', { expectedVersion: ended.version - 1 })).status, 409);
+  const reset = await action(request, host, 'restart_game', { expectedVersion: ended.version });
+  assert.equal(reset.status, 200);
+  const lobby = reset.body;
+  assert.equal(lobby.phase, 'lobby');
+  assert.equal(lobby.code, ended.code);
+  assert.equal(lobby.hostId, host.playerId);
+  assert.equal(lobby.version, ended.version + 1);
+  assert.deepEqual(lobby.players, ended.players.map(player => ({ ...player, role: 'visitor', ready: false })));
+  for (const field of ['round', 'setup', 'opening', 'draft', 'initialPower']) assert.equal(lobby[field], null);
+  assert.deepEqual(lobby.initialItems, []);
+  assert.deepEqual(lobby.chat.messages, []);
+  assert.equal(lobby.chat.channel, null);
+  assert.ok(lobby.chat.revision > ended.chat.revision);
+  assert.equal(lobby.undo.available, false);
+  assert.equal(lobby.undo.steps, 0);
+  assert.equal(lobby.log.length, 1);
+  assert.deepEqual(await observer.state(state => state.version === lobby.version), lobby);
+  assert.deepEqual(await guestStream.state(state => state.version === lobby.version), { ...lobby, you: first.playerId });
+  assert.deepEqual((await snapshot(request, second, { poll: true })).body, { ...lobby, you: second.playerId });
+  assert.equal((await action(request, host, 'restart_game')).status, 409);
+  assert.equal((await action(request, first, 'silent_reveal', { index: 0, expectedVersion: ended.version })).status, 409);
+  assert.equal((await action(request, host, 'undo_request', { version: lobby.version })).status, 409);
+  await observer.close();
+  await guestStream.close();
+  await checkRestart(saved, people);
+  assert.equal((await action(request, host, 'start')).status, 409, 'Humans must prepare again');
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  assert.equal((await action(request, host, 'start')).body.phase, 'hako_selection');
+  let state = (await action(request, third, 'claim_hako')).body;
+  assert.equal(state.players.find(player => player.role === 'hako').id, third.playerId);
+  assert.equal(state.initialPower, null);
+  for (let index = 0; index < 3; index++) {
+    const person = people.find(candidate => candidate.playerId === state.draft.turnPlayerId);
+    state = (await action(request, person, 'choose_item', { itemId: state.draft.availableItems[0].id })).body;
+  }
+  assert.equal(state.phase, 'map_setup');
+  assert.equal(state.setup.placements.length, 1);
+  assert.equal(state.setup.remaining, 8);
+  assert.equal(state.round, null);
+});
+
+test('restart waits for undo voting and failed saves preserve the result, review, identities and SSE', async t => {
+  const saved = await persistentServer(t);
+  const { request } = saved;
+  const people = await createFour(request);
+  const [host, guest] = people;
+  await preparePlay(request, people);
+  for (const person of people.slice(1)) await action(request, person, 'surrender');
+  const live = await stream(t, saved.base, host);
+  let before = await live.state();
+  const proposed = await action(request, guest, 'undo_request', { version: before.version });
+  assert.equal(proposed.status, 200);
+  assert.ok(proposed.body.undo.pending);
+  assert.equal((await action(request, host, 'restart_game')).status, 409);
+  await action(request, guest, 'undo_cancel', { requestId: proposed.body.undo.pending.id });
+  before = (await snapshot(request, host)).body;
+  await live.state(state => state.version === before.version);
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, host, 'restart_game', { expectedVersion: before.version })).status, 503);
+    assert.deepEqual((await snapshot(request, host)).body, before);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const reset = await action(request, host, 'restart_game', { expectedVersion: before.version });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.body.version, before.version + 1);
+  assert.deepEqual(await live.state(), reset.body, 'Failed reset must never reach the SSE stream');
+});
+
+test('rematching preserves bot seats and automatic readiness while waiting for the human to start', async t => {
+  const { base, request } = await startServer(t, { botDelayMs: 10,
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      play.result = { winner: 'hako', reason: 'all_dead', winners: [opening.hakoId] };
+      return play;
+    },
+  });
+  const host = (await request('/api/rooms', { name: '再开一局的人机房主' })).body;
+  const live = await stream(t, base, host);
+  await live.state();
+  const filled = (await action(request, host, 'add_bots')).body;
+  await action(request, host, 'ready', { ready: true });
+  await action(request, host, 'start');
+  await action(request, host, 'claim_hako');
+  await live.state(state => state.phase === 'map_ready');
+  for (const [type, input] of [
+    ['prepare_opening', {}], ['choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' }],
+    ['place_remains', { cornerId: 'living_sofa' }], ['inspect_initial_room', { roomId: 'children_room' }],
+    ['choose_initial_hiding', { cornerId: 'children_cabinet' }],
+  ]) assert.equal((await action(request, host, type, input)).status, 200);
+  const options = (await snapshot(request, host)).body.opening.initialPowerOptions;
+  assert.equal((await action(request, host, 'choose_initial_power', { powerId: options[0].id })).body.phase, 'game_over');
+  const lobby = (await action(request, host, 'restart_game')).body;
+  assert.equal(lobby.phase, 'lobby');
+  assert.deepEqual(lobby.players, filled.players);
+  await delay(50);
+  assert.equal((await snapshot(request, host)).body.version, lobby.version, 'Bots must not start or claim on their own');
+  assert.equal((await action(request, host, 'start')).status, 409);
+  await action(request, host, 'ready', { ready: true });
+  assert.equal((await action(request, host, 'start')).body.phase, 'hako_selection');
+  assert.equal((await action(request, host, 'bot_claim_hako')).body.phase, 'item_draft');
+});
+
 test('HTTP and SSE keep phone results and false answers private while allowing a forced-peek interruption', async t => {
   const { base, request } = await startServer(t, {
     createPlayState(setup, opening, options) {
