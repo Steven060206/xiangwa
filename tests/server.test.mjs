@@ -1033,6 +1033,191 @@ test('hosts can abandon unfinished role selection and item drafting while preser
   }
 });
 
+test('confirmed visitor and hako departures end the game, release seats and transfer the host atomically during undo voting', async t => {
+  for (const leavingIndex of [0, 1]) {
+    const saved = await persistentServer(t);
+    const { request } = saved;
+    const people = await createFour(request);
+    await preparePlay(request, people);
+    const leaving = people[leavingIndex];
+    const observer = people[(leavingIndex + 1) % 4];
+    const live = await stream(t, saved.base, observer);
+    await live.state();
+    const leavingLive = await stream(t, saved.base, leaving);
+    await leavingLive.state();
+    const current = (await snapshot(request, leaving)).body;
+    const proposed = await action(request, leaving, 'undo_request', { version: current.version });
+    assert.ok(proposed.body.undo.pending);
+    const before = (await snapshot(request, observer)).body;
+    await live.state(state => state.version === before.version);
+    assert.equal((await action(request, leaving, 'leave')).status, 409);
+    assert.equal((await action(request, leaving, 'leave', { endGame: true, expectedVersion: before.version - 1 })).status, 409);
+    const bytes = await readFile(saved.dataFile, 'utf8');
+    await mkdir(`${saved.dataFile}.tmp`);
+    try {
+      assert.equal((await action(request, leaving, 'leave', { endGame: true, expectedVersion: before.version })).status, 503);
+      assert.deepEqual((await snapshot(request, observer)).body, before);
+      assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+    } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+    const left = await action(request, leaving, 'leave', { endGame: true, expectedVersion: before.version });
+    assert.equal(left.status, 200);
+    const state = (await snapshot(request, observer)).body;
+    assert.equal(state.phase, 'lobby');
+    assert.equal(state.version, before.version + 1);
+    assert.equal(state.players.length, 3);
+    assert.ok(state.players.every(player => player.id !== leaving.playerId && player.role === 'visitor' && !player.ready));
+    assert.equal(state.hostId, people[leavingIndex === 0 ? 1 : 0].playerId);
+    assert.match(state.endNotice, /退出房间，本局结束/);
+    assert.equal(state.round, null);
+    assert.equal(state.undo.pending, null);
+    assert.equal(state.undo.available, false);
+    assert.equal((await snapshot(request, leaving)).status, 403, 'Leaving revokes the old identity');
+    assert.deepEqual(await live.state(), state, 'Failed departure must never enter SSE');
+    await live.close();
+    await leavingLive.close();
+    await checkRestart(saved, people.filter(person => person !== leaving));
+    assert.equal((await request(`/api/rooms/${observer.roomCode}/join`, { name: '替补' })).status, 201);
+  }
+});
+
+test('the last human explicitly leaving an active bot game deletes the room and its pending timers', async t => {
+  const saved = await persistentServer(t, { offlineGraceMs: 60 });
+  const { request } = saved;
+  const host = (await request('/api/rooms', { name: '最后一位真人' })).body;
+  const live = await stream(t, saved.base, host);
+  await live.state();
+  await action(request, host, 'add_bots');
+  await action(request, host, 'ready', { ready: true });
+  await action(request, host, 'start');
+  assert.equal((await action(request, host, 'leave', { endGame: true })).status, 200);
+  await live.close();
+  await delay(100);
+  assert.equal((await snapshot(request, host)).status, 404);
+  assert.deepEqual(JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms, []);
+});
+
+test('the host can explicitly end an active game during an unresolved undo vote without another player responding', async t => {
+  const { base, request } = await startServer(t);
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const hostLive = await stream(t, base, people[0]);
+  await hostLive.state();
+  const guestLive = await stream(t, base, people[1]);
+  await guestLive.state();
+  const before = (await snapshot(request, people[1])).body;
+  const pending = await action(request, people[1], 'undo_request', { version: before.version });
+  assert.ok(pending.body.undo.pending);
+  assert.equal((await action(request, people[1], 'restart_game', { abandon: true })).status, 403);
+  const ended = await action(request, people[0], 'restart_game', { abandon: true, expectedVersion: pending.body.version });
+  assert.equal(ended.status, 200);
+  assert.equal(ended.body.phase, 'lobby');
+  assert.match(ended.body.endNotice, /结束了本局，已返回大厅/);
+  assert.equal(ended.body.undo.pending, null);
+  assert.ok(ended.body.players.every(player => !player.ready));
+});
+
+test('all-human absence ends the game only after the grace period, with multiple tabs and reconnection canceling the timer', async t => {
+  const saved = await persistentServer(t, { offlineGraceMs: 300 });
+  const { request } = saved;
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const original = (await snapshot(request, people[0])).body;
+  await delay(350);
+  assert.equal((await snapshot(request, people[0])).body.version, original.version,
+    'Old saves and programmatic setup do not expire before a real participant connects');
+  const firstTab = await stream(t, saved.base, people[0]);
+  await firstTab.state();
+  const secondTab = await stream(t, saved.base, people[0]);
+  await secondTab.state();
+  const guest = await stream(t, saved.base, people[1]);
+  await guest.state();
+  await firstTab.close();
+  await guest.close();
+  await delay(350);
+  assert.equal((await snapshot(request, people[0])).body.phase, 'practice', 'One remaining tab keeps the game alive');
+  await secondTab.close();
+  await delay(60);
+  const reconnected = await stream(t, saved.base, people[2]);
+  await reconnected.state();
+  await delay(350);
+  assert.equal((await snapshot(request, people[2])).body.version, original.version, 'Reconnecting cancels the old timer');
+  await reconnected.close();
+  const ended = await waitForSnapshot(request, people[0], state => state.phase === 'lobby');
+  assert.equal(ended.version, original.version + 1);
+  assert.match(ended.endNotice, /所有真人.*5分钟.*自动结束/);
+  assert.equal(ended.players.length, 4);
+  assert.ok(ended.players.every(player => !player.ready && player.role === 'visitor'));
+  assert.equal(ended.round, null);
+  assert.equal(ended.undo.available, false);
+  await checkRestart(saved, people);
+});
+
+test('offline auto-ending preserves the original save on failure and retries the same ending after storage recovers', async t => {
+  const saved = await persistentServer(t, { offlineGraceMs: 60 });
+  const { request } = saved;
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const live = await stream(t, saved.base, people[0]);
+  await live.state();
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  const original = (await snapshot(request, people[0])).body;
+  const errors = [];
+  t.mock.method(console, 'error', (...values) => errors.push(values.join(' ')));
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    await live.close();
+    const deadline = Date.now() + 2000;
+    while (!errors.some(message => message.includes('自动结束房间')) && Date.now() < deadline) await delay(20);
+    assert.ok(errors.some(message => message.includes('自动结束房间')));
+    assert.equal((await snapshot(request, people[0])).body.version, original.version);
+    assert.equal((await snapshot(request, people[0])).body.phase, 'practice');
+    assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const ended = await waitForSnapshot(request, people[0], state => state.phase === 'lobby', 5000);
+  assert.equal(ended.version, original.version + 1);
+  assert.match(ended.endNotice, /自动结束/);
+});
+
+test('polling presence keeps a game alive until its lease expires, then starts the offline grace period', { timeout: 22000 }, async t => {
+  const { request } = await startServer(t, { offlineGraceMs: 60 });
+  const people = await createFour(request);
+  for (const person of people) await action(request, person, 'ready', { ready: true });
+  await action(request, people[0], 'start');
+  const polled = (await snapshot(request, people[0], { poll: true })).body;
+  await delay(150);
+  const stillOnline = (await snapshot(request, people[0])).body;
+  assert.equal(stillOnline.phase, 'hako_selection');
+  assert.equal(stillOnline.version, polled.version);
+  assert.equal(stillOnline.players[0].connected, true);
+  await delay(14900);
+  const ended = await waitForSnapshot(request, people[0], state => state.phase === 'lobby');
+  assert.equal(ended.version, polled.version + 1);
+  assert.equal(ended.players[0].connected, false);
+});
+
+test('service shutdown preserves unfinished saves and completed reviews survive all-human disconnection', async t => {
+  const saved = await persistentServer(t, { offlineGraceMs: 100 });
+  const { request } = saved;
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const live = await stream(t, saved.base, people[0]);
+  await live.state();
+  await live.close();
+  await checkRestart(saved, people);
+  await delay(150);
+  assert.equal((await snapshot(request, people[0])).body.phase, 'practice', 'A stopped service must preserve existing archives');
+  for (const person of people.slice(1)) await action(request, person, 'surrender');
+  const review = (await snapshot(request, people[0])).body;
+  const terminalLive = await stream(t, saved.base, people[0]);
+  await terminalLive.state();
+  await terminalLive.close();
+  await delay(150);
+  const after = (await snapshot(request, people[0])).body;
+  assert.equal(after.phase, 'game_over');
+  assert.equal(after.version, review.version);
+  assert.deepEqual(after.round.review, review.round.review);
+});
+
 test('finished rooms restart in place over SSE and polling, persist clean lobbies and allow a different hako', async t => {
   const saved = await persistentServer(t);
   const { request } = saved;

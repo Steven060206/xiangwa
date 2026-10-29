@@ -350,6 +350,8 @@ function renderLobby() {
   const locked = pending || !online;
   renderSeats($('lobby-seats'));
   $('lobby-title').textContent = selecting ? '谁来扮演箱娃？' : '人齐，便可进宅。';
+  $('game-end-notice').textContent = state.endNotice || '';
+  $('game-end-notice').hidden = selecting || !state.endNotice;
   $('lobby-count').textContent = `${state.players.length} / 4 人入席`;
   $('ready-button').textContent = you?.ready ? '取消准备' : '准备';
   $('ready-button').disabled = locked || !you;
@@ -775,7 +777,7 @@ $('prepare-opening').addEventListener('click', () => action('prepare_opening'));
 $('claim-hako').addEventListener('click', () => action('claim_hako'));
 $('add-bots').addEventListener('click', () => action('add_bots'));
 $('bot-claim-hako').addEventListener('click', () => action('bot_claim_hako'));
-$('leave-room').addEventListener('click', () => action('leave'));
+$('leave-room').addEventListener('click', () => action('leave', { endGame: true }));
 $('draw-tile').addEventListener('click', () => action('draw'));
 $('rotate-tile').addEventListener('click', () => {
   if (!canPlace()) return;

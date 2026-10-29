@@ -295,6 +295,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(await page.getByTestId('claim-hako').innerText(), '抢当箱娃');
     assert.equal(await page.getByTestId('restart-current-game').count(), index === 0 ? 1 : 0,
       'Only the host can end the game during role selection');
+    assert.equal(await page.getByTestId('leave-current-room').isVisible(), true,
+      'Every player can exit during role selection');
     assert.equal(await page.getByTestId('hako-claim-status').innerText(), '四人已准备，点击按钮抢当箱娃，先抢先得。');
     assert.equal(await page.getByTestId('hako-claim-status').getAttribute('aria-live'), 'polite');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
@@ -859,6 +861,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
       'All round actions are locked after the result');
     assert.equal(await page.getByTestId('restart-game').count(), index === 0 ? 1 : 0,
       'Only the host can restart the finished game');
+    assert.equal(await page.getByTestId('leave-current-room').isEnabled(), true,
+      'Every player can exit after the result');
     if (index === 0) assert.equal(await page.getByTestId('restart-game').isEnabled(), true);
     else assert.match(await page.getByTestId('game-result').innerText(), /等待房主/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
@@ -923,7 +927,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
       'The unfinished-game restart fits desktop and mobile viewports');
   }
   const activeRestart = pages[0].getByTestId('restart-current-game');
-  assert.equal(await activeRestart.innerText(), '结束并重开');
+  assert.equal(await activeRestart.innerText(), '结束本局');
   assert.equal(await activeRestart.isEnabled(), true);
   const restartRequests = [];
   const captureRestart = request => {
@@ -934,7 +938,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   const beforeCancel = await getState(identities[0]);
   const dismissed = new Promise(resolve => pages[0].once('dialog', async dialog => {
     assert.equal(dialog.type(), 'confirm');
-    assert.match(dialog.message(), /结束当前对局并返回大厅.*座位保留/);
+    assert.match(dialog.message(), /结束本局并让所有玩家返回大厅.*座位保留/);
     await dialog.dismiss();
     resolve();
   }));
@@ -967,10 +971,75 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(await page.getByTestId('ready-button').isEnabled(), true);
     assert.equal(await page.getByTestId('restart-current-game').count(), 0,
       'The active-game restart disappears after returning to the lobby');
+    assert.equal(await page.getByTestId('game-end-notice').isVisible(), true);
+    assert.match(await page.getByTestId('game-end-notice').innerText(), /结束了本局.*返回大厅/);
     assert.equal(await page.locator('#event-history-list > li').count(), 0,
       'Abandoning before exploration also clears the previous game event history');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
       'The restored lobby fits desktop and mobile viewports');
+  }
+
+  for (const page of pages) state = await performAction(page, 'ready', () => page.getByTestId('ready-button').click());
+  state = await performAction(pages[0], 'start', () => pages[0].getByTestId('start-setup').click());
+  assert.equal(state.phase, 'hako_selection');
+  const leavingIndex = 2;
+  const leavingPage = pages[leavingIndex];
+  const leaveButton = leavingPage.getByTestId('leave-current-room');
+  assert.equal(await leaveButton.innerText(), '退出房间');
+  assert.equal(await leaveButton.isEnabled(), true);
+  const leaveRequests = [];
+  const captureLeave = request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/actions')
+      && request.postDataJSON()?.type === 'leave') leaveRequests.push(request.postDataJSON());
+  };
+  leavingPage.on('request', captureLeave);
+  const beforeLeaveCancel = await getState(identities[0]);
+  const leaveDismissed = new Promise(resolve => leavingPage.once('dialog', async dialog => {
+    assert.equal(dialog.type(), 'confirm');
+    assert.equal(dialog.message(), '退出将释放你的座位，并结束当前对局，其他玩家返回大厅；确定退出？');
+    await dialog.dismiss();
+    resolve();
+  }));
+  await leaveButton.click();
+  await leaveDismissed;
+  assert.deepEqual(leaveRequests, [], 'Canceling exit sends no leave request');
+  assert.deepEqual(await getState(identities[0]), beforeLeaveCancel,
+    'Canceling exit preserves the game and all seats');
+
+  const leavingResponse = leavingPage.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/actions')
+    && response.request().postDataJSON()?.type === 'leave');
+  leavingPage.once('dialog', dialog => dialog.accept());
+  await leaveButton.click();
+  const exited = await leavingResponse;
+  assert.equal(exited.status(), 200);
+  state = await exited.json();
+  leavingPage.off('request', captureLeave);
+  assert.equal(leaveRequests.length, 1);
+  assert.equal(leaveRequests[0].endGame, true, 'Confirmed exit explicitly ends the active game');
+  await leavingPage.locator('#entry-view').waitFor({ state: 'visible' });
+  await leavingPage.locator('#entry-form').waitFor({ state: 'visible' });
+  assert.deepEqual(await leavingPage.evaluate(roomCode => ({
+    tab: sessionStorage.getItem('hako.room.session.v1'),
+    saved: JSON.parse(localStorage.getItem('hako.room.saved.v1'))?.rooms?.[roomCode] || null,
+  }), identities[leavingIndex].roomCode), { tab: null, saved: null },
+  'Exiting clears both tab and saved credentials for the released seat');
+  const remainingSeats = previousSeats.filter(player => player.id !== identities[leavingIndex].playerId);
+  for (const [index, page] of pages.entries()) {
+    if (index === leavingIndex) continue;
+    await page.waitForFunction(version => window.__hakoLastState?.version >= version, state.version);
+    await page.locator('#lobby-view').waitFor({ state: 'visible' });
+    const snapshot = await getState(identities[index]);
+    assert.equal(snapshot.phase, 'lobby');
+    assert.deepEqual(snapshot.players.map(({ id, name, seat }) => ({ id, name, seat })), remainingSeats);
+    assert.equal(snapshot.players.every(player => !player.ready && player.role === 'visitor'), true);
+    for (const key of ['round', 'opening', 'setup', 'draft', 'initialPower']) assert.equal(snapshot[key], null);
+    assert.equal(await page.getByTestId('game-end-notice').isVisible(), true);
+    assert.match(await page.getByTestId('game-end-notice').innerText(), /小满.*退出房间.*本局结束.*返回大厅/);
+    assert.match(await page.locator('#lobby-count').innerText(), /3 \/ 4/);
+    assert.equal(await page.getByTestId('leave-current-room').count(), 0);
+    assert.equal(await page.getByTestId('restart-current-game').count(), 0);
+    assert.equal(await page.getByTestId('game-result').isVisible(), false);
   }
 
   await pages[3].evaluate(() => {

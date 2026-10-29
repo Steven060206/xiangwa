@@ -95,7 +95,7 @@ function sameToken(candidate, token) {
 
 /** Each action saves its detached state before publishing it to HTTP/SSE clients. */
 export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile, botDelayMs = 700,
-  accessDirectory, accessNow = Date.now, limits, runtimeId } = {}) {
+  accessDirectory, accessNow = Date.now, limits, runtimeId, offlineGraceMs = 5 * 60 * 1000 } = {}) {
   const access = accessDirectory ? createAccessControl({ directory: accessDirectory, now: accessNow }) : null;
   const traffic = accessDirectory || limits ? createTrafficControl({ limits, now: accessNow }) : null;
   const store = createRoomStore(dataFile);
@@ -105,6 +105,8 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   const botTimers = new Map();
   const botFailures = new Map();
   const mapPreviews = new Map();
+  const offlineTimers = new Map();
+  const presenceSeen = new Set();
   let closing = false;
   try {
     for (const room of rooms.values()) {
@@ -134,6 +136,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     return {
       code: room.code,
       hostId: room.hostId,
+      endNotice: room.endNotice || '',
       phase: room.play ? round.result ? 'game_over' : 'practice' : room.opening ? 'opening_setup'
         : room.game?.phase ?? (room.draft ? 'item_draft' : room.selectingHako ? 'hako_selection' : 'lobby'),
       players: room.players.map(({ id, name, role, ready, connections, seat, isBot }) => ({
@@ -161,6 +164,53 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     const game = room.game;
     return game?.phase === 'map_setup' && game.drawnTileId
       ? `${game.turnPlayerId}:${game.drawnTileId}:${game.placements.length}` : null;
+  }
+
+  function hasGame(room) {
+    return Boolean(room && (room.selectingHako || room.draft || room.game || room.opening || room.play));
+  }
+
+  function resetGame(room, message) {
+    room.selectingHako = false;
+    room.draft = room.game = room.opening = room.play = null;
+    for (const player of room.players) {
+      player.role = 'visitor';
+      player.ready = !!player.isBot;
+    }
+    room.log = [];
+    room.chatMessages = [];
+    room.chatRevision = (room.chatRevision || 0) + 1;
+    room.endNotice = message;
+    clearUndo(room);
+  }
+
+  function scheduleOfflineEnd(room, delay = offlineGraceMs) {
+    const online = room.players.some(player => !player.isBot && (player.connections.size || polling.has(player.id)));
+    if (online) presenceSeen.add(room.code);
+    const eligible = candidate => !closing && rooms.has(candidate.code) && hasGame(candidate) && !candidate.play?.result
+      && presenceSeen.has(candidate.code)
+      && !candidate.players.some(player => !player.isBot && (player.connections.size || polling.has(player.id)));
+    if (!eligible(room)) {
+      clearTimeout(offlineTimers.get(room.code));
+      offlineTimers.delete(room.code);
+      return;
+    }
+    if (offlineTimers.has(room.code)) return;
+    const timer = setTimeout(() => {
+      offlineTimers.delete(room.code);
+      const current = rooms.get(room.code);
+      if (!current || !eligible(current)) return;
+      const next = copyRoom(current);
+      const message = '所有真人已离线超过5分钟，本局自动结束，已返回大厅。原座位保留，请重新准备。';
+      resetGame(next, message);
+      try { publish(next, message); }
+      catch (error) {
+        console.error(`自动结束房间 ${room.code} 失败：${error.message}`);
+        scheduleOfflineEnd(current, 2500);
+      }
+    }, delay);
+    timer.unref();
+    offlineTimers.set(room.code, timer);
   }
 
   function scheduleBots(room, delay = botDelayMs) {
@@ -213,6 +263,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         botTimers.delete(room.code);
         botFailures.delete(room.code);
         mapPreviews.delete(room.code);
+        clearTimeout(offlineTimers.get(room.code));
+        offlineTimers.delete(room.code);
+        presenceSeen.delete(room.code);
       }
     }
     for (const player of room.players) {
@@ -220,6 +273,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       for (const response of player.connections) response.write(event);
     }
     scheduleBots(room);
+    scheduleOfflineEnd(room);
   }
 
   function createPlayer(room, name, isBot = false) {
@@ -292,7 +346,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       publish(room, message);
       return snapshot(room, player.id);
     }
-    if (room.undoPending) fail(409, '正在等待撤销确认，请先同意、拒绝或取消撤销。');
+    const leaving = input.type === 'leave' && input.endGame === true;
+    const ending = input.type === 'restart_game' && input.abandon === true;
+    if (room.undoPending && !leaving && !ending) fail(409, '正在等待撤销确认，请先同意、拒绝或取消撤销。');
     if (input.expectedVersion !== undefined && input.expectedVersion !== room.version) {
       fail(409, '页面进度已更新，请查看最新进度后重新操作。');
     }
@@ -311,18 +367,11 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           fail(409, '尚未开始游戏，无需重开。');
         }
         if (!room.play?.result && input.abandon !== true) {
-          fail(409, '本局尚未结束，请由房主确认「结束并重开」。');
+          fail(409, '本局尚未结束，请由房主确认「结束本局」。');
         }
-        room.selectingHako = false;
-        room.draft = room.game = room.opening = room.play = null;
-        for (const candidate of room.players) {
-          candidate.role = 'visitor';
-          candidate.ready = !!candidate.isBot;
-        }
-        room.log = [];
-        room.chatMessages = [];
-        room.chatRevision = (room.chatRevision || 0) + 1;
-        message = `${player.name} 开启了新一局，请重新准备，开始后一起抢当箱娃。`;
+        message = room.play?.result ? `${player.name} 选择再开一局，已返回大厅，请重新准备。`
+          : `${player.name} 结束了本局，已返回大厅。保留原座位，请重新准备后再开始。`;
+        resetGame(room, message);
         break;
       }
       case 'add_bots': {
@@ -529,12 +578,14 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         break;
       }
       case 'leave': {
-        inLobby();
+        const ended = hasGame(room);
+        if (ended && input.endGame !== true) fail(409, '退出会结束当前对局，请确认后再退出房间。');
+        if (ended) resetGame(room, `${player.name} 退出房间，本局结束，其他玩家已返回大厅。`);
         room.players = room.players.filter(candidate => candidate.id !== player.id);
         if (!room.players.some(candidate => !candidate.isBot)) room.players = [];
         if (room.hostId === player.id) room.hostId = room.players.find(candidate => !candidate.isBot)?.id ?? null;
         for (const candidate of room.players) candidate.ready = !!candidate.isBot;
-        message = `${player.name} 离开了房间。`;
+        message = ended ? room.endNotice : `${player.name} 离开了房间。`;
         break;
       }
       default:
@@ -546,6 +597,8 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     mapPreviews.delete(room.code);
     publish(room, message);
     if (input.type === 'leave') {
+      clearTimeout(polling.get(player.id));
+      polling.delete(player.id);
       for (const response of player.connections) response.end();
       player.connections.clear();
     }
@@ -705,6 +758,9 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     for (const timeout of botTimers.values()) clearTimeout(timeout);
     botTimers.clear();
     botFailures.clear();
+    for (const timeout of offlineTimers.values()) clearTimeout(timeout);
+    offlineTimers.clear();
+    presenceSeen.clear();
     for (const timeout of polling.values()) clearTimeout(timeout);
     polling.clear();
     for (const response of streams) response.end();

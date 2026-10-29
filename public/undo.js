@@ -8,7 +8,7 @@ const node = (tag, className, text) => {
 export function applyUndoLock(state) {
   if (!state.undo?.pending) return;
   for (const element of document.querySelectorAll('#lobby-view button, #setup-view button, #setup-view select, #setup-view input')) {
-    if (!element.closest('#floor-tabs, #map-positions, #chat-panel') && !['map-focus', 'corner-guide-toggle', 'focus-current-action', 'focus-inventory'].includes(element.id)) element.disabled = true;
+    if (!element.closest('#floor-tabs, #map-positions, #chat-panel') && !['map-focus', 'corner-guide-toggle', 'focus-current-action', 'focus-inventory', 'leave-room'].includes(element.id)) element.disabled = true;
   }
 }
 
@@ -41,16 +41,23 @@ export function renderUndo({ state, pending, online, action }) {
     }
   } else {
     addButton('撤销上一步', 'undo-request', 'undo_request', { version: state.version }, !undo?.available);
-    if (state.hostId === state.you && state.phase !== 'lobby' && !state.round?.result) {
-      addButton('结束并重开', 'restart-current-game', 'restart_game', { abandon: true }, false,
-        '确定结束当前对局并返回大厅？本局进度、复盘、聊天和撤销记录将清空；房间和所有玩家的座位保留。');
-    }
     controls.append(node('p', 'undo-hint', undo?.available
       ? `${undo.label} ${undo.mode === 'direct' ? '自己的步骤，可直接撤回。' : '需其他在线真人同意；人机自动同意。'}`
       : '从现在起记录操作，最多可逐步撤销40步。'));
     if (undo?.paused) {
       controls.append(node('span', 'undo-hint', '人机已暂停，可先检查盘面。'));
       if (undo.canResume) addButton('继续人机', 'undo-resume', 'undo_resume');
+    }
+  }
+  if (state.phase !== 'lobby') {
+    if (state.hostId === state.you && !state.round?.result) {
+      addButton('结束本局', 'restart-current-game', 'restart_game', { abandon: true }, false,
+        '确定结束本局并让所有玩家返回大厅？本局进度、复盘、聊天和撤销记录将清空；房间和所有玩家的座位保留，重新准备后可开始新局。');
+    }
+    const you = state.players.find(player => player.id === state.you);
+    if (you && !you.isBot) {
+      addButton('退出房间', 'leave-current-room', 'leave', { endGame: true }, false,
+        '退出将释放你的座位，并结束当前对局，其他玩家返回大厅；确定退出？');
     }
   }
   panel.hidden = false;
