@@ -58,17 +58,27 @@ function Get-IsolatedStatus($Settings, $Isolation, [string]$RuntimeRoot, $Task) 
 function Invoke-IsolatedControl([string]$RequestedAction, $Settings, $Isolation, [string]$RuntimeRoot) {
   $task = Get-IsolatedTask $Isolation $RuntimeRoot
   if ($RequestedAction -eq 'Start') {
-    if ($task.State -notin @(2, 4)) {
-      $readyPath = Join-Path $RuntimeRoot 'state/ready.json'
-      if (Test-Path -LiteralPath $readyPath -PathType Leaf) { Remove-Item -LiteralPath $readyPath -Force }
-      [void]$task.Run($null)
+    $cancelOnFailure = $task.State -ne 4
+    try {
+      if ($task.State -notin @(2, 4)) {
+        $readyPath = Join-Path $RuntimeRoot 'state/ready.json'
+        if (Test-Path -LiteralPath $readyPath -PathType Leaf) { Remove-Item -LiteralPath $readyPath -Force }
+        [void]$task.Run($null)
+      }
+      for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        $status = Get-IsolatedStatus $Settings $Isolation $RuntimeRoot $task
+        if ($status.running) { return $status }
+        Start-Sleep -Milliseconds 250
+      }
+      throw ('The low-permission game did not start. Check state/worker-error.log and task result ' + $task.LastTaskResult + '.')
+    } catch {
+      $startError = $_
+      if ($cancelOnFailure) {
+        try { [void](Invoke-IsolatedControl 'Stop' $Settings $Isolation $RuntimeRoot) }
+        catch { throw ($startError.Exception.Message + ' Startup cleanup failed: ' + $_.Exception.Message) }
+      }
+      throw $startError
     }
-    for ($attempt = 0; $attempt -lt 60; $attempt++) {
-      $status = Get-IsolatedStatus $Settings $Isolation $RuntimeRoot $task
-      if ($status.running) { return $status }
-      Start-Sleep -Milliseconds 250
-    }
-    throw ('The low-permission game did not start. Check state/worker-error.log and task result ' + $task.LastTaskResult + '.')
   }
   if ($RequestedAction -eq 'Stop') {
     if ($task.State -in @(2, 4)) { $task.Stop(0) }

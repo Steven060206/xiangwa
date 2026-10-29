@@ -30,6 +30,35 @@ $result = Invoke-IsolatedControl 'Stop' ([pscustomobject]@{port=4175;runtimeId='
   assert.deepEqual(JSON.parse(result.output), { running: false, state: 3, stopCalls: 1 });
 });
 
+for (const scenario of [
+  { name: 'new queued task', initial: 3, afterRun: 2, runs: 1, stops: 1, final: 3 },
+  { name: 'new running task without readiness', initial: 3, afterRun: 4, runs: 1, stops: 1, final: 3 },
+  { name: 'previously queued task', initial: 2, afterRun: 2, runs: 0, stops: 1, final: 3 },
+  { name: 'existing running service', initial: 4, afterRun: 4, runs: 0, stops: 0, final: 4 },
+]) test(`startup timeout cleans a ${scenario.name} according to task ownership`, { skip: process.platform !== 'win32' }, async () => {
+  const result = await powershell(['-Command', `
+. $env:XW_TEST_HELPER
+$task = [pscustomobject]@{ State = [int]$env:XW_TEST_INITIAL; LastTaskResult = 0; StopCalls = 0; RunCalls = 0 }
+$task | Add-Member -MemberType ScriptMethod -Name Run -Value { param($argument) $this.RunCalls++; $this.State = [int]$env:XW_TEST_AFTER_RUN }
+$task | Add-Member -MemberType ScriptMethod -Name Stop -Value { param($flags) $this.StopCalls++; $this.State = 3 }
+function Get-IsolatedTask { return $task }
+function Get-IsolatedStatus { return @{running=$false} }
+function Invoke-RestMethod { throw 'The test game is not listening.' }
+function Start-Sleep { }
+$failure = ''
+try { Invoke-IsolatedControl 'Start' ([pscustomobject]@{port=4175;runtimeId='test'}) $null 'C:\\unused' | Out-Null }
+catch { $failure = $_.Exception.Message }
+@{state=$task.State;runCalls=$task.RunCalls;stopCalls=$task.StopCalls;failure=$failure} | ConvertTo-Json -Compress
+`], { XW_TEST_HELPER: fileURLToPath(new URL('../scripts/runtime-isolation.ps1', import.meta.url)),
+    XW_TEST_INITIAL: String(scenario.initial), XW_TEST_AFTER_RUN: String(scenario.afterRun) });
+  assert.equal(result.code, 0, result.output);
+  const report = JSON.parse(result.output);
+  assert.match(report.failure, /did not start/);
+  assert.equal(report.state, scenario.final);
+  assert.equal(report.runCalls, scenario.runs);
+  assert.equal(report.stopCalls, scenario.stops);
+});
+
 async function powershell(args, env = {}, timeout = 35000) {
   const parameters = [...args];
   if (parameters[0] === '-Command') parameters[1] = '$ErrorActionPreference = "Stop"; [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false); Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1"); ' + parameters[1];
@@ -253,7 +282,10 @@ test('one-click isolated Start and Stop enforce permissions, hide private files,
   assert.equal((await f.run('Stop')).code, 0);
   await assertRecordedStopped([restartedRecords.game, restartedRecords.tunnel]);
   assert.equal(await readFile(join(f.root, 'data', 'rooms.json'), 'utf8'), '{"preservedGame":42}');
-  assert.equal((await f.run('Start')).code, 0);
+  const beforeRestore = await f.run('Start');
+  const startupDetails = beforeRestore.code === 0 ? beforeRestore.output
+    : beforeRestore.output + await readFile(join(f.root, 'state', 'worker-error.log'), 'utf8').catch(() => '');
+  assert.equal(beforeRestore.code, 0, startupDetails);
   const runningAtRestore = JSON.parse(await readFile(join(f.root, 'state', 'processes.json')));
   const restored = await f.setup('Restore');
   assert.equal(restored.code, 0, restored.output);
