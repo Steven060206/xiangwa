@@ -371,7 +371,7 @@ test('Invite delegates creation, listing and revocation to the local CLI with th
   assert.equal((await f.run('Start')).code, 0);
   const defaultIssued = await f.run('Invite');
   assert.equal(defaultIssued.code, 0, defaultIssued.output);
-  assert.deepEqual(JSON.parse(await readFile(f.argsMarker)), ['--port', String(f.port), '--directory', join(f.root, 'data'), '--json', '--hours', '4', '--uses', '5']);
+  assert.deepEqual(JSON.parse(await readFile(f.argsMarker)), ['--port', String(f.port), '--directory', join(f.root, 'data'), '--json', '--hours', '0.5', '--uses', '5']);
   const issued = await f.run('Invite', ['-Hours', '2', '-Uses', '3']);
   assert.equal(issued.code, 0, issued.output);
   assert.equal(JSON.parse(issued.output).code, 'test-secret-invite');

@@ -1,7 +1,7 @@
 ﻿param(
   [ValidateSet('Start', 'Stop', 'Status', 'Invite')][string]$Action = 'Status',
   [string]$Root = $PSScriptRoot,
-  [ValidateRange(0.016666666666666666, 168)][double]$Hours = 4,
+  [ValidateRange(0.016666666666666666, 168)][double]$Hours = 0.5,
   [ValidateRange(1, 32)][int]$Uses = 5,
   [switch]$List,
   [string]$Revoke = '',

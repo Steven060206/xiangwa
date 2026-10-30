@@ -75,9 +75,9 @@ test('unprotected entry stays familiar and creates rooms without an invitation',
   await enter(visitor, '无验证试玩');
 });
 
-test('one invitation admits four browsers, protects entry, and preserves occupied seats after expiry', { timeout: 90000 }, async t => {
+test('a thirty-minute invitation admits four browsers, protects entry, and preserves occupied seats after expiry', { timeout: 90000 }, async t => {
   const { base, page, admin, advance } = await fixture(t);
-  const invite = await admin({ action: 'create', hours: 4, maxUses: 4 });
+  const invite = await admin({ action: 'create', maxUses: 4 });
   const people = [];
   for (let index = 0; index < 4; index++) {
     const visitor = await page(index === 1 ? { viewport: { width: 375, height: 667 }, isMobile: true, hasTouch: true } : {});
@@ -125,7 +125,7 @@ test('one invitation admits four browsers, protects entry, and preserves occupie
     await person.page.getByTestId('room-code-display').waitFor();
     assert.deepEqual(await person.page.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), person.identity);
   }
-  advance(4 * 60 * 60 * 1000 + 1);
+  advance(30 * 60 * 1000);
   for (const person of people) {
     await person.page.context().clearCookies();
     const context = person.page.context();

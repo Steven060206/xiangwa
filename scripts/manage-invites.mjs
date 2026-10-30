@@ -16,7 +16,7 @@ try {
   if (typeof adminKey !== 'string' || adminKey.length < 40) throw new Error('管理密钥无效。');
   const id = option('--revoke');
   const input = args.includes('--list') ? { action: 'list' } : id ? { action: 'revoke', id }
-    : { action: 'create', hours: Number(option('--hours', '4')), maxUses: Number(option('--uses', '5')) };
+    : { action: 'create', hours: Number(option('--hours', '0.5')), maxUses: Number(option('--uses', '5')) };
   const response = await fetch(`http://127.0.0.1:${port}/api/access/admin`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${adminKey}` },
     body: JSON.stringify(input), signal: AbortSignal.timeout(10000),

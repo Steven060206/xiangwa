@@ -43,7 +43,7 @@ async function fixture(t, options = {}) {
   };
   const redeem = (code, cookie, headers) => request('/api/access/redeem', { code }, cookie, headers);
   return { directory, dataFile, request, admin, issue, redeem, restart,
-    advance(ms) { clock += ms; }, get base() { return base; }, get server() { return server; } };
+    advance(ms) { clock += ms; }, get now() { return clock; }, get base() { return base; }, get server() { return server; } };
 }
 
 test('protected entry rejects creating and joining before invitation validation and keeps administration private', async t => {
@@ -85,6 +85,7 @@ test('new invitation defaults admit five browsers and retain that limit after re
   const f = await fixture(t);
   const invite = await f.issue();
   assert.equal(invite.maxUses, 5);
+  assert.equal(invite.expiresAt - f.now, 30 * 60 * 1000);
   for (let index = 0; index < 4; index++) assert.equal((await f.redeem(invite.code)).status, 200);
   await f.restart();
   assert.equal((await f.redeem(invite.code)).status, 200);
@@ -162,6 +163,74 @@ test('expiry blocks new admission while original credentials, actions, polling, 
   assert.equal(recovered.body.players.length, 1);
   assert.equal(recovered.body.players[0].ready, true);
   assert.ok(!JSON.stringify(recovered.body).includes(invite.code));
+});
+
+test('a default invitation expires at thirty minutes while a started five-player game survives actions, reconnect and restart', async t => {
+  const f = await fixture(t, { silentNumbers: [0, 1, 2, 3, 4, 5] });
+  const invite = await f.issue();
+  const people = [];
+  let cookie;
+  for (let index = 0; index < 5; index++) {
+    const accepted = await f.redeem(invite.code);
+    assert.equal(accepted.status, 200);
+    cookie = accepted.cookie;
+    const joined = await f.request(index ? `/api/rooms/${people[0].roomCode}/join` : '/api/rooms',
+      { name: `半小时玩家${index}`, ...(!index ? { playerCount: 5 } : {}) }, cookie);
+    assert.equal(joined.status, 201);
+    people.push(joined.body);
+  }
+  const [host, visitor] = people;
+  const path = `/api/rooms/${host.roomCode}`;
+  const query = new URLSearchParams({ playerId: visitor.playerId, token: visitor.token });
+  async function act(person, type, input = {}) {
+    const response = await f.request(`${path}/actions`, { playerId: person.playerId, token: person.token, type, ...input });
+    assert.equal(response.status, 200, `${type}: ${response.body.error ?? ''}`);
+    return response.body;
+  }
+  for (const person of people) await act(person, 'ready', { ready: true });
+  await act(host, 'start');
+  let state = await act(host, 'claim_hako');
+  while (state.phase === 'item_draft') {
+    state = await act(people.find(person => person.playerId === state.draft.turnPlayerId), 'choose_item',
+      { itemId: state.draft.availableItems[0].id });
+  }
+  while (state.phase === 'map_setup') {
+    const person = people.find(person => person.playerId === state.setup.turnPlayerId);
+    state = await act(person, 'draw');
+    state = await act(person, 'place', state.setup.legalPlacements[0]);
+  }
+  await act(host, 'prepare_opening');
+  await act(host, 'choose_secrets', { password: [1, 2, 3], weakness: 'gasoline' });
+  await act(host, 'place_remains', { cornerId: 'living_sofa' });
+  await act(host, 'inspect_initial_room', { roomId: 'children_room' });
+  state = await act(host, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
+  state = await act(host, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  assert.equal(state.phase, 'practice');
+  f.advance(30 * 60 * 1000 - 1);
+  assert.equal((await f.request('/api/access', undefined, cookie)).body.authorized, true);
+  f.advance(1);
+  assert.equal((await f.request('/api/access', undefined, cookie)).body.authorized, false);
+  assert.equal((await f.redeem(invite.code)).status, 401);
+  assert.equal((await f.request('/api/rooms', { name: '过期新房' }, cookie)).status, 401);
+  assert.equal((await f.request(`${path}/join`, { name: '过期新人' }, cookie)).status, 401);
+  assert.equal((await f.request(`${path}?${query}&poll=1`)).body.phase, 'practice');
+  state = await act(visitor, 'silent_reveal', { index: 0 });
+  await act(visitor, 'move', { roomId: state.round.moveTargets[0] });
+  state = await act(host, 'resolve_visitor_action');
+  assert.equal(state.phase, 'practice');
+  const controller = new AbortController();
+  const stream = await fetch(`${f.base}${path}/events?${query}`, { signal: controller.signal });
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get('content-type'), /event-stream/);
+  controller.abort();
+  await f.restart();
+  const recovered = await f.request(`${path}?${query}`);
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.phase, 'practice');
+  assert.equal(recovered.body.players.length, 5);
+  assert.equal(recovered.body.round.silent.turnPlayerId, people[2].playerId);
+  assert.equal((await f.request(`${path}?${query}&poll=1`)).status, 200);
+  await act(people[2], 'silent_reveal', { index: 1 });
 });
 
 test('revocation stops unused codes and browser permissions without removing an existing player', async t => {
@@ -296,8 +365,10 @@ test('local CLI creates, lists and revokes through its private key without chang
   }
   const invite = await run(['--hours', '2', '--uses', '3']);
   assert.equal(invite.maxUses, 3);
+  assert.equal(invite.expiresAt - f.now, 2 * 60 * 60 * 1000);
   const defaultInvite = await run([]);
   assert.equal(defaultInvite.maxUses, 5);
+  assert.equal(defaultInvite.expiresAt - f.now, 30 * 60 * 1000);
   const list = await run(['--list']);
   assert.equal(list.invites.length, 2);
   assert.ok(!JSON.stringify(list).includes(invite.code));
