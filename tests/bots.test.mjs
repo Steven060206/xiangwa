@@ -47,8 +47,8 @@ function botAct(play, id, random = () => 0.5, allBots = false) {
   return { play: applyPlayAction(play, id, action), action };
 }
 
-function setup() {
-  const state = createSetup(visitors, { deck });
+function setup(visitorIds = visitors) {
+  const state = createSetup(visitorIds, { deck });
   for (const [floor, x, y, rotation] of [
     [1, 0, -1, 2], [1, -1, 0, 0], [1, 1, 0, 0], [2, 0, 0, 0],
     [-1, 0, 0, 0], [1, -1, -1, 1], [1, -2, 0, 2], [1, 2, 0, 0],
@@ -59,15 +59,15 @@ function setup() {
   return state;
 }
 
-function opening(map = setup(), firstItem = 'deduction') {
-  const choices = [firstItem, ...['walkie_talkie', 'relic_ring', 'deduction'].filter(id => id !== firstItem)];
-  return createOpening(map, { hakoId, itemChoices: visitors.map((playerId, index) => ({ playerId,
+function opening(map = setup(), firstItem = 'deduction', visitorIds = visitors) {
+  const choices = [firstItem, ...['walkie_talkie', 'relic_ring', 'deduction', 'stethoscope'].filter(id => id !== firstItem)];
+  return createOpening(map, { hakoId, itemChoices: visitorIds.map((playerId, index) => ({ playerId,
     itemId: choices[index] })) });
 }
 
-function fixture(firstItem = 'deduction') {
-  const map = setup();
-  const state = opening(map, firstItem);
+function fixture(firstItem = 'deduction', visitorIds = visitors) {
+  const map = setup(visitorIds);
+  const state = opening(map, firstItem, visitorIds);
   chooseSecrets(state, hakoId, { password: [1, 3, 5], weakness: 'gasoline' });
   // Make fixtures reproducible without changing global randomness. This is test
   // setup only; bot decisions below always receive getPlayView's filtered data.
@@ -558,4 +558,36 @@ test('seeded games repeatedly complete hako phases using each seat own filtered 
   }
   assert.ok(maxCycle >= 4, `longest game reached only cycle ${maxCycle}`);
   assert.ok(completedStages >= 12, `only ${completedStages} hako stages completed`);
+});
+
+test('five-player seeded games reach an ending using only each bot own filtered view', () => {
+  const fourVisitors = [...visitors, 'visitor-four'];
+  const fiveIds = [hakoId, ...fourVisitors];
+  const fivePlayers = fiveIds.map(id => ({ id, name: id, role: id === hakoId ? 'hako' : 'visitor', ready: true, isBot: true }));
+  const revealed = new Set();
+  let completedStages = 0;
+  for (const seed of [3, 11]) {
+    let play = fixture('deduction', fourVisitors);
+    const random = seeded(seed);
+    const view = id => ({ phase: play.result ? 'game_over' : 'practice', you: id, hostId: human,
+      players: fivePlayers, round: getPlayView(play, id) });
+    for (let step = 0; step < 2400 && !play.result; step++) {
+      let progressed = false;
+      for (const id of fiveIds) {
+        const action = decide(view(id), random);
+        if (!action) continue;
+        try { play = applyPlayAction(play, id, action); }
+        catch (error) { assert.fail(`five-player seed ${seed}, step ${step}, ${id}, ${JSON.stringify(action)}: ${error.message}`); }
+        if (action.type === 'silent_reveal') revealed.add(id);
+        progressed = true;
+        break;
+      }
+      assert.ok(progressed, `five-player seed ${seed} stalled at cycle ${play.round.silent.cycle} in ${play.round.silent.phase}`);
+    }
+    assert.ok(play.result, `five-player seed ${seed} did not finish within 2400 decisions`);
+    completedStages += play.round.silent.cycle - 1;
+    for (const id of fiveIds) assert.equal(decide(view(id), random), null);
+  }
+  assert.deepEqual([...revealed].sort(), [...fourVisitors].sort(), 'all four visitor seats must receive turns');
+  assert.ok(completedStages >= 2, `only ${completedStages} five-player hako stages completed`);
 });

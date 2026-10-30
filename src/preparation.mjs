@@ -49,9 +49,10 @@ function shuffled(values) {
 }
 
 function assertVisitors(visitorIds) {
-  if (!Array.isArray(visitorIds) || visitorIds.length !== 3 || new Set(visitorIds).size !== 3
+  if (!Array.isArray(visitorIds) || ![3, 4].includes(visitorIds.length)
+      || new Set(visitorIds).size !== visitorIds.length
       || Array.from(visitorIds).some(id => typeof id !== 'string' || !id.trim())) {
-    throw new Error('开局准备需要三名不同的访问者。');
+    throw new Error('开局准备需要三名或四名不同的访问者。');
   }
 }
 
@@ -65,10 +66,10 @@ function copyChoices(choices) {
 
 export function createItemDraft(visitorIds, { items = INITIAL_ITEMS } = {}) {
   assertVisitors(visitorIds);
-  if (!Array.isArray(items) || items.length < 3 || new Set(items.map(item => item?.id)).size !== items.length
+  if (!Array.isArray(items) || items.length < visitorIds.length || new Set(items.map(item => item?.id)).size !== items.length
       || Array.from(items).some(item => !item || typeof item.id !== 'string' || !item.id.trim()
         || typeof item.name !== 'string' || !item.name.trim() || typeof item.description !== 'string')) {
-    throw new Error('访问者道具候选必须至少有三张不同且资料完整的卡牌。');
+    throw new Error('访问者道具候选须足够全体访问者各选一张，且卡牌须不同、资料完整。');
   }
   return {
     phase: 'item_draft',
@@ -134,14 +135,14 @@ export function createOpening(setup, { hakoId, itemChoices } = {}) {
   }
   assertVisitors(setup.visitorIds);
   if (typeof hakoId !== 'string' || !hakoId.trim() || setup.visitorIds.includes(hakoId)) {
-    throw new Error('箱娃必须是三名访问者以外的玩家。');
+    throw new Error('箱娃必须是访问者以外的玩家。');
   }
-  if (!Array.isArray(itemChoices) || itemChoices.length !== 3
-      || new Set(itemChoices.map(choice => choice?.playerId)).size !== 3
-      || new Set(itemChoices.map(choice => choice?.itemId)).size !== 3
+  if (!Array.isArray(itemChoices) || itemChoices.length !== setup.visitorIds.length
+      || new Set(itemChoices.map(choice => choice?.playerId)).size !== setup.visitorIds.length
+      || new Set(itemChoices.map(choice => choice?.itemId)).size !== setup.visitorIds.length
       || Array.from(itemChoices).some(choice => !choice || !setup.visitorIds.includes(choice.playerId)
         || typeof choice.itemId !== 'string' || !choice.itemId.trim())) {
-    throw new Error('三名访问者须先各选择一张不同的初始道具。');
+    throw new Error('所有访问者须先各选择一张不同的初始道具。');
   }
   const opening = {
     phase: 'secrets',

@@ -16,9 +16,10 @@ function makeCards(numbers) {
 }
 
 export function createSilentRound(visitorIds, { numbers } = {}) {
-  if (!Array.isArray(visitorIds) || visitorIds.length !== 3 || new Set(visitorIds).size !== 3
+  if (!Array.isArray(visitorIds) || ![3, 4].includes(visitorIds.length)
+      || new Set(visitorIds).size !== visitorIds.length
       || Array.from(visitorIds).some(id => typeof id !== 'string' || !id.trim())) {
-    throw new Error('无声模式需要三名不同的访问者。');
+    throw new Error('无声模式需要三名或四名不同的访问者。');
   }
   return {
     phase: 'visitor_reveal',

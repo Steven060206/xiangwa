@@ -11,8 +11,8 @@ const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
 const hakoId = 'hako';
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 
-function completedSetup() {
-  const setup = createSetup(visitors, { deck });
+function completedSetup(visitorIds = visitors) {
+  const setup = createSetup(visitorIds, { deck });
   const positions = [
     [1, 0, -1, 2], [1, -1, 0, 0], [1, 1, 0, 0], [2, 0, 0, 0],
     [-1, 0, 0, 0], [1, -1, -1, 1], [1, -2, 0, 2], [1, 2, 0, 0],
@@ -128,6 +128,47 @@ test('visitors choose distinct initial items in seat order and the draft stops a
   assert.deepEqual(view.choices.map(({ playerId, itemId }) => ({ playerId, itemId })), itemChoices());
   assert.equal(view.availableItems.length, INITIAL_ITEMS.length - 3);
   rejectsWithoutMutation(draft, () => chooseItem(draft, visitors[0], first.id));
+});
+
+test('five-player preparation waits for all four distinct items and keeps opening secrets from the fourth visitor', () => {
+  const fourVisitors = [...visitors, 'visitor-d'];
+  const draft = createItemDraft(fourVisitors);
+  for (let index = 0; index < fourVisitors.length; index++) {
+    assert.equal(draft.phase, 'item_draft');
+    assert.equal(draft.turnPlayerId, fourVisitors[index]);
+    chooseItem(draft, fourVisitors[index], INITIAL_ITEMS[index].id);
+  }
+  assert.equal(draft.phase, 'items_ready');
+  assert.equal(draft.turnPlayerId, null);
+  assert.equal(getItemDraftView(draft).availableItems.length, INITIAL_ITEMS.length - 4);
+  const setup = completedSetup(fourVisitors);
+  const options = { hakoId, itemChoices: draft.choices };
+  for (const itemChoices of [draft.choices.slice(0, 3), [...draft.choices, draft.choices[0]],
+    draft.choices.map((choice, index) => index === 3 ? { ...choice, itemId: draft.choices[0].itemId } : choice),
+    draft.choices.map((choice, index) => index === 3 ? { ...choice, playerId: 'outsider' } : choice)]) {
+    assert.throws(() => createOpening(setup, { hakoId, itemChoices }), /道具/);
+  }
+  assert.throws(() => createOpening(setup, { ...options, hakoId: fourVisitors[3] }), /箱娃/);
+  assert.throws(() => createItemDraft(fourVisitors, { items: INITIAL_ITEMS.slice(0, 3) }), /道具/);
+  for (const invalid of [[...fourVisitors, 'visitor-e'], [...visitors, visitors[0]], [...visitors, ''],
+    [...visitors, 4], ['a', 'b', , 'd']]) {
+    assert.throws(() => createItemDraft(invalid), /访问者/);
+    assert.throws(() => createOpening({ ...setup, visitorIds: invalid }, options), /访问者/);
+  }
+  const opening = createOpening(setup, options);
+  chooseSecrets(opening, hakoId, { password: [1, 3, 5], weakness: 'gasoline' });
+  placeRemains(opening, hakoId, 'hall_clock');
+  inspectInitialRoom(opening, hakoId, 'children_room');
+  chooseInitialHiding(opening, hakoId, 'children_bed');
+  chooseInitialPower(opening, hakoId, opening.initialPowerCandidates[0]);
+  assert.equal(opening.phase, 'opening_ready');
+  assert.deepEqual(opening.visitorIds, fourVisitors);
+  for (const playerId of fourVisitors) {
+    const view = getOpeningView(opening, playerId);
+    assert.equal(view.itemChoices.length, 4);
+    assert.deepEqual(Object.keys(view).sort(), ['phase', 'hakoId', 'itemChoices', 'corners'].sort());
+    assert.equal(view.corners.length, 24);
+  }
 });
 
 test('item draft views detach participant ids, choices, card names and descriptions', () => {

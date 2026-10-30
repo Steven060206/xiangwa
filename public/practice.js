@@ -281,7 +281,7 @@ export function renderDraft({ state, pending, online, action }) {
   }
   if (mine) fragment.append(items, node('h3', '', '各位访问者的领取进度'), choices);
   else fragment.append(choices, node('h3', '', '待选道具与效果'), items);
-  fragment.append(node('p', 'small-note', '三名访问者领完道具后，开始轮流抽板拼图。'));
+  fragment.append(node('p', 'small-note', `${state.players.filter(player => player.role === 'visitor').length === 4 ? '四名' : '三名'}访问者领完道具后，开始轮流抽板拼图。`));
   panel.replaceChildren(fragment);
 }
 

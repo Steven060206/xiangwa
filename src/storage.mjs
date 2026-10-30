@@ -27,17 +27,19 @@ export function createRoomStore(filePath) {
         if (data.format !== 1 || !Array.isArray(data.rooms)) throw new Error('不支持的存档格式');
         const rooms = new Map();
         for (const room of data.rooms) {
+          if (room.playerCount === undefined) room.playerCount = 4;
           if (!/^[A-Z2-9]{6}$/.test(room.code) || rooms.has(room.code)
+              || ![4, 5].includes(room.playerCount)
               || !Number.isSafeInteger(room.version) || room.version < 0 || !Array.isArray(room.log)
               || room.log.some(entry => typeof entry !== 'string')
-              || !Array.isArray(room.players) || !room.players.length || room.players.length > 4
+              || !Array.isArray(room.players) || !room.players.length || room.players.length > room.playerCount
               || !room.players.some(player => player.id === room.hostId && !player.isBot)
               || new Set(room.players.map(player => player.id)).size !== room.players.length
               || new Set(room.players.map(player => player.seat)).size !== room.players.length
               || (room.selectingHako !== undefined && typeof room.selectingHako !== 'boolean')
               || room.players.filter(player => player.role === 'hako').length > 1
               || (room.selectingHako && (room.draft || room.game || room.opening || room.play
-                || room.players.length !== 4 || room.players.some(player => !player.ready || player.role === 'hako')))
+                || room.players.length !== room.playerCount || room.players.some(player => !player.ready || player.role === 'hako')))
               || (room.draft && !room.players.some(player => player.role === 'hako'))) {
             throw new Error('房间数据无效');
           }
@@ -63,7 +65,7 @@ export function createRoomStore(filePath) {
                 || !player.name.trim() || typeof player.token !== 'string' || !player.token
                 || !['hako', 'visitor'].includes(player.role) || typeof player.ready !== 'boolean'
                 || (player.isBot !== undefined && typeof player.isBot !== 'boolean')
-                || !Number.isInteger(player.seat) || player.seat < 0 || player.seat > 3) {
+                || !Number.isInteger(player.seat) || player.seat < 0 || player.seat >= room.playerCount) {
               throw new Error('玩家数据无效');
             }
             player.connections = new Set();

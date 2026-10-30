@@ -72,7 +72,7 @@ export function createAccessControl({ directory, now = Date.now }) {
       return { ok: true };
     }
     if (input.action !== 'create') reject(400, '未知的邀请码管理操作。');
-    const { hours = 4, maxUses = 4 } = input;
+    const { hours = 4, maxUses = 5 } = input;
     if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 1 / 60 || hours > 168
         || !Number.isInteger(maxUses) || maxUses < 1 || maxUses > 32) reject(400, '有效期须为1分钟至7天，验证名额须为1至32个浏览器。');
     const next = structuredClone(state);

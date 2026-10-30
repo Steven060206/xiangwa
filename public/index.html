@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#29251f">
-  <meta name="description" content="箱娃四人联机桌游 · 与朋友或人机一起拼出这座旧宅。">
+  <meta name="description" content="箱娃四至五人联机桌游 · 与朋友或人机一起拼出这座旧宅。">
   <title>箱娃 · 旧宅入席</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/chat.css">
@@ -15,11 +15,11 @@
   <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-text"></span><button id="dismiss-error" class="text-button" aria-label="关闭错误提示">关闭</button></div>
   <main id="app">
     <section id="entry-view" class="entry-view" aria-labelledby="entry-title">
-      <header class="entry-header"><a class="wordmark" href="/" aria-label="箱娃首页"><span class="seal" aria-hidden="true">箱</span><span>箱娃</span></a><span class="edition">四人联机 · 无声模式</span></header>
+      <header class="entry-header"><a class="wordmark" href="/" aria-label="箱娃首页"><span class="seal" aria-hidden="true">箱</span><span>箱娃</span></a><span class="edition">四至五人联机 · 无声模式</span></header>
       <div class="entry-layout">
         <div class="entry-copy">
           <h1 id="entry-title">旧宅已开门。<br>一人，也可入席。</h1>
-          <p class="entry-intro">一人扮演箱娃，三人作为访问者。<br>邀朋友入席，或补齐人机独自试玩。</p>
+          <p class="entry-intro">一人扮演箱娃，三至四人作为访问者。<br>邀朋友入席，或补齐人机独自试玩。</p>
           <div class="entry-drawing" aria-hidden="true"><svg viewBox="0 0 360 176" fill="none"><path d="M26 155H335M55 155V71L177 21L301 71V155M81 145V82H151V145M164 145V55H239V145M252 145V82H278V145M81 110H151M201 55V145M164 98H239"/><path class="drawing-accent" d="M159 155V116H184V155M162 24L177 17L192 24"/><path d="M99 91H130M99 97H130M214 67V85M221 67V85M264 95V116M101 125H131V145M177 67V84M184 67V84"/><path class="drawing-light" d="M39 159H320M47 164H310M62 168H297"/></svg><span>每一局，都是一座不同的旧宅。</span></div>
         </div>
         <section id="entry-status" class="entry-form" aria-live="polite">
@@ -33,8 +33,9 @@
           <p id="access-note" class="entry-note">邀请码有使用期限。已入席的玩家可继续原来的游戏。</p>
         </form>
         <form id="entry-form" class="entry-form" hidden>
-          <h2>请留下你的名字</h2><p class="form-description">可邀请朋友，也可创建房间后补齐三个人机试玩。</p>
+          <h2>请留下你的名字</h2><p class="form-description">可邀请朋友，也可创建房间后补齐人机试玩。</p>
           <label for="nickname">昵称</label><input id="nickname" data-testid="nickname" name="nickname" type="text" placeholder="你想被怎样称呼" maxlength="16" autocomplete="nickname" required>
+          <div class="player-count-choice"><label for="player-count">建房人数</label><select id="player-count" data-testid="player-count" name="playerCount"><option value="4">四人 · 一名箱娃，三名访问者</option><option value="5">五人 · 一名箱娃，四名访问者</option></select></div>
           <button id="create-room" data-testid="create-room" class="button primary" type="submit">创建房间<span aria-hidden="true">↗</span></button>
           <div class="form-divider"><span>已有朋友在等你？</span></div>
           <label for="room-code">房间码</label><div class="join-row"><input id="room-code" data-testid="room-code" name="roomCode" type="text" placeholder="输入房间码" maxlength="10" autocapitalize="characters" autocomplete="off" spellcheck="false"><button id="join-room" data-testid="join-room" class="button secondary" type="button">加入房间</button></div>
@@ -48,7 +49,7 @@
       <section id="undo-panel" class="undo-panel" aria-label="撤销操作" hidden></section>
       <section id="lobby-view" class="lobby-layout" aria-labelledby="lobby-title">
         <div class="lobby-main"><div class="lobby-heading"><h1 id="lobby-title">人齐，便可进宅。</h1><p id="lobby-count"></p></div><p id="game-end-notice" data-testid="game-end-notice" class="small-note" role="status" hidden></p><ol id="lobby-seats" class="seats lobby-seats"></ol><div id="hako-claim-controls" class="host-controls" hidden><div class="claim-actions"><button id="claim-hako" data-testid="claim-hako" class="button primary" aria-describedby="hako-claim-status">抢当箱娃</button><button id="bot-claim-hako" data-testid="bot-claim-hako" class="button secondary" hidden>让人机当箱娃</button></div><p id="hako-claim-status" data-testid="hako-claim-status" class="small-note" role="status" aria-live="polite">四人已准备，点击按钮抢当箱娃，先抢先得。</p></div><div class="lobby-action"><button id="ready-button" data-testid="ready-button" class="button primary">准备</button><button id="start-setup" data-testid="start-setup" class="button secondary" hidden>开始游戏</button><button id="add-bots" data-testid="add-bots" class="button secondary" hidden>补齐人机</button><span id="start-hint" class="small-note"></span></div></div>
-        <aside class="lobby-aside"><h2>入宅之前</h2><p>箱娃在暗处等待。访问者们，先一起拼出通往宅邸深处的路。</p><dl class="role-guide"><div><dt>一名箱娃</dt><dd>四人准备并开始游戏后一起抢选，先抢先得。地图完成后，配置开局秘密与初始潜伏。</dd></div><div><dt>三名访问者</dt><dd>角色确定后依次领取道具，再从箱娃左手边开始，轮流抽板拼图。</dd></div></dl><button id="leave-room" class="text-button leave-button">离开房间</button></aside>
+        <aside class="lobby-aside"><h2>入宅之前</h2><p>箱娃在暗处等待。访问者们，先一起拼出通往宅邸深处的路。</p><dl class="role-guide"><div><dt>一名箱娃</dt><dd id="hako-role-guide">全员准备并开始游戏后一起抢选，先抢先得。地图完成后，配置开局秘密与初始潜伏。</dd></div><div><dt id="visitor-role-count">三名访问者</dt><dd>角色确定后依次领取道具，再从箱娃左手边开始，轮流抽板拼图。</dd></div></dl><button id="leave-room" class="text-button leave-button">离开房间</button></aside>
       </section>
       <section id="setup-view" class="setup-layout" hidden aria-labelledby="setup-title">
         <div id="game-status" class="setup-heading game-status">
@@ -69,7 +70,7 @@
           </aside>
         </div>
       </section>
-      <footer class="room-footer"><span id="room-phase-label">箱娃 · 准备阶段</span><span>四人联机 · 无声模式</span></footer>
+      <footer class="room-footer"><span id="room-phase-label">箱娃 · 准备阶段</span><span id="room-mode-label">四人联机 · 无声模式</span></footer>
     </section>
   </main>
   <section id="event-history" data-testid="event-history" class="event-history" popover="auto" aria-label="最近事件"><div class="event-history-heading"><h2>最近事件</h2><button type="button" class="text-button" popovertarget="event-history" popovertargetaction="hide">收起</button></div><ol id="event-history-list"></ol><p id="event-history-empty" class="small-note">暂时没有新事件。获得物品和重要变化会留在这里。</p></section>

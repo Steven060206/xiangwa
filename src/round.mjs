@@ -16,7 +16,7 @@ export function createRound(setup, { hakoId, hidingCornerId, numbers } = {}) {
   }
   const silent = createSilentRound(setup.visitorIds, { numbers });
   if (typeof hakoId !== 'string' || !hakoId.trim() || setup.visitorIds.includes(hakoId)) {
-    throw new Error('箱娃必须是三名访问者以外的玩家。');
+    throw new Error('箱娃必须是访问者以外的玩家。');
   }
   if (!getInitialHidingCorners(setup.placements).includes(hidingCornerId)) {
     throw new Error('箱娃的初始潜伏角落须位于标有“怨”的房间。');

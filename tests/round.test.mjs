@@ -7,8 +7,8 @@ const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
 const hakoId = 'hako';
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 
-function completedSetup() {
-  const setup = createSetup(visitors, { deck });
+function completedSetup(visitorIds = visitors) {
+  const setup = createSetup(visitorIds, { deck });
   const targets = [
     [1, 0, -1, 2], [1, -1, 0, 0], [1, 1, 0, 0], [2, 0, 0, 0],
     [-1, 0, 0, 0], [1, -1, -1, 1], [1, -2, 0, 2], [1, 2, 0, 0],
@@ -35,6 +35,31 @@ function revealAndMove(round, playerId, index, roomId) {
   applyRoundAction(round, playerId, { type: 'move', roomId });
   applyRoundAction(round, hakoId, { type: 'resolve_visitor_action' });
 }
+
+test('five-player rounds let the fourth visitor declare movement and keep hako secrets filtered', () => {
+  const fourVisitors = [...visitors, 'visitor-d'];
+  const setup = completedSetup(fourVisitors);
+  const options = { hakoId, hidingCornerId: 'dark_wardrobe', numbers: [0, 1, 2, 3, 4, 5] };
+  assert.throws(() => createRound(setup, { ...options, hakoId: fourVisitors[3] }), /箱娃/);
+  for (const invalid of [fourVisitors.slice(0, 2), [...fourVisitors, 'visitor-e'],
+    [...visitors, visitors[0]], [...visitors, ''], ['a', 'b', , 'd']]) {
+    assert.throws(() => createRound({ ...setup, visitorIds: invalid }, options), /访问者/);
+  }
+  const round = createRound(setup, options);
+  assert.equal(round.visitors.length, 4);
+  fourVisitors.forEach((playerId, index) => {
+    assert.equal(round.silent.turnPlayerId, playerId);
+    revealAndMove(round, playerId, index, 'study_room');
+    assert.equal(round.visitors[index].roomId, 'study_room');
+  });
+  assert.equal(round.silent.turnPlayerId, fourVisitors[0]);
+  for (const playerId of fourVisitors) {
+    const view = getRoundView(round, playerId);
+    assert.equal(view.visitors.length, 4);
+    assert.deepEqual(view.hako, { playerId: hakoId });
+    assert.equal(JSON.stringify(view).includes('dark_wardrobe'), false);
+  }
+});
 
 test('round requires a complete map and an explicitly chosen haunted initial corner', () => {
   const setup = completedSetup();

@@ -135,6 +135,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
     if (setup) setup.preview = preview?.key === previewKey(room) ? preview.value : null;
     return {
       code: room.code,
+      playerCount: room.playerCount,
       hostId: room.hostId,
       endNotice: room.endNotice || '',
       phase: room.play ? round.result ? 'game_over' : 'practice' : room.opening ? 'opening_setup'
@@ -283,7 +284,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       token: randomBytes(32).toString('base64url'),
       role: 'visitor',
       ready: isBot,
-      seat: [0, 1, 2, 3].find(seat => !occupied.has(seat)),
+      seat: Array.from({ length: room.playerCount }, (_, seat) => seat).find(seat => !occupied.has(seat)),
       connections: new Set(),
       ...(isBot ? { isBot: true } : {}),
     };
@@ -377,10 +378,10 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'add_bots': {
         hostOnly();
         inLobby();
-        if (room.players.length >= 4) fail(409, '房间已经满员。');
-        while (room.players.length < 4) {
+        if (room.players.length >= room.playerCount) fail(409, '房间已经满员。');
+        while (room.players.length < room.playerCount) {
           const occupied = new Set(room.players.map(candidate => candidate.seat));
-          const seat = [0, 1, 2, 3].find(index => !occupied.has(index));
+          const seat = Array.from({ length: room.playerCount }, (_, index) => index).find(index => !occupied.has(index));
           createPlayer(room, `人机${seat + 1}号`, true);
         }
         message = `${player.name} 补齐了人机，人机已准备。`;
@@ -401,7 +402,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           if (!claimant) fail(409, '房间中没有人机。');
         }
         if (room.draft) fail(409, '箱娃角色已确定，无法再次抢选。');
-        if (!room.selectingHako) fail(409, '只有四人准备并开始游戏后，才可以抢当箱娃。');
+        if (!room.selectingHako) fail(409, '只有全员准备并开始游戏后，才可以抢当箱娃。');
         claimant.role = 'hako';
         const hakoSeat = room.players.findIndex(candidate => candidate.id === claimant.id);
         const ordered = [...room.players.slice(hakoSeat + 1), ...room.players.slice(0, hakoSeat)];
@@ -413,12 +414,12 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'start': {
         hostOnly();
         inLobby();
-        if (room.players.length !== 4 || !room.players.every(candidate => candidate.ready)) {
-          fail(409, '需要四名玩家全部准备后才能开始。');
+        if (room.players.length !== room.playerCount || !room.players.every(candidate => candidate.ready)) {
+          fail(409, `需要${room.playerCount === 5 ? '五' : '四'}名玩家全部准备后才能开始。`);
         }
         for (const candidate of room.players) candidate.role = 'visitor';
         room.selectingHako = true;
-        message = '四人已准备，游戏开始，大家一起抢当箱娃。';
+        message = `${room.playerCount === 5 ? '五' : '四'}人已准备，游戏开始，大家一起抢当箱娃。`;
         break;
       }
       case 'choose_item': {
@@ -641,8 +642,10 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         access?.require(request);
         if (traffic && rooms.size >= traffic.limits.maxRooms) fail(503, '当前房间数已达上限，请使用已有房间或稍后重试。');
         const name = nickname(input.name);
+        const playerCount = input.playerCount === undefined ? 4 : input.playerCount;
+        if (![4, 5].includes(playerCount)) fail(400, '请选择四人或五人模式。');
         const code = newRoomCode();
-        const room = { code, hostId: null, players: [], selectingHako: false, draft: null, game: null,
+        const room = { code, playerCount, hostId: null, players: [], selectingHako: false, draft: null, game: null,
           opening: null, play: null, log: [], version: 0 };
         sendJson(response, 201, addPlayer(room, name));
         return;
@@ -660,7 +663,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           if (room.undoPending) fail(409, '正在等待撤销确认，请稍后加入。');
           const name = nickname(input.name);
           if (room.selectingHako || room.draft) fail(409, '游戏已开始，无法加入新玩家。');
-          if (room.players.length >= 4) fail(409, '房间已满，最多四名玩家。');
+          if (room.players.length >= room.playerCount) fail(409, `房间已满，最多${room.playerCount === 5 ? '五' : '四'}名玩家。`);
           sendJson(response, 201, addPlayer(copyRoom(room), name));
           return;
         }

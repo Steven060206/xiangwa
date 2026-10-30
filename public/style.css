@@ -190,7 +190,8 @@ input,select{caret-color:var(--accent)}
 .map-position>span:last-child{overflow-wrap:anywhere}
 .player-number{flex:none;display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--player-color);color:#fff;font-size:12px;line-height:1;font-weight:600}
 .map-position.self-player>span:last-child{font-weight:600}
-.seat-color-0{--player-color:#923e31}.seat-color-1{--player-color:#3c6177}.seat-color-2{--player-color:#536446}.seat-color-3{--player-color:#785336}
+.seat-color-0{--player-color:#923e31}.seat-color-1{--player-color:#3c6177}.seat-color-2{--player-color:#536446}.seat-color-3{--player-color:#785336}.seat-color-4{--player-color:#73537b}
+.player-count-choice{margin-top:16px}
 .tile-svg .map-player-marker circle{fill:var(--player-color);stroke:#faf5e9;stroke-width:.8}
 .tile-svg .map-player-marker text{fill:#fff;font-family:var(--sans);font-size:7px;font-weight:600}
 .tile-svg .map-player-marker.self-player circle{stroke:#302c25;stroke-width:1.1}

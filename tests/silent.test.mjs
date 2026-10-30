@@ -9,6 +9,49 @@ const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
 const numbers = [0, 1, 2, 3, 4, 5];
 const round = (order = numbers) => createSilentRound(visitors, { numbers: order });
 
+test('four visitors rotate through the same six markers and resume after the final completed action', () => {
+  const fourVisitors = [...visitors, 'visitor-d'];
+  const state = createSilentRound(fourVisitors, { numbers });
+  assert.equal(state.cards.length, 6);
+  assert.deepEqual(state.cards.map(card => card.number), numbers);
+  for (let index = 0; index < 5; index++) {
+    const playerId = fourVisitors[index % fourVisitors.length];
+    assert.equal(state.turnPlayerId, playerId);
+    revealSilent(state, playerId, index);
+    assert.equal(state.phase, 'visitor_action');
+    finishVisitorAction(state, playerId);
+  }
+  assert.equal(state.phase, 'hako_phase');
+  assert.equal(state.trigger, 'one_hidden');
+  finishHakoPhase(state, { numbers });
+  assert.equal(state.turnPlayerId, fourVisitors[1]);
+  assert.deepEqual(state.visitorIds, fourVisitors);
+});
+
+test('overflow by the fourth visitor resumes that visitor, or the next survivor after death', () => {
+  const fourVisitors = [...visitors, 'visitor-d'];
+  for (const dies of [false, true]) {
+    const state = createSilentRound(fourVisitors, { numbers: [5, 4, 1, 2, 3, 0] });
+    for (let index = 0; index < 3; index++) {
+      revealSilent(state, fourVisitors[index], index);
+      finishVisitorAction(state, fourVisitors[index]);
+    }
+    revealSilent(state, fourVisitors[3], 3);
+    assert.equal(state.phase, 'hako_reaction');
+    assert.equal(state.total, 12);
+    assert.equal(state.resumePlayerId, fourVisitors[3]);
+    if (dies) removeSilentVisitor(state, fourVisitors[3]);
+    passNoiseReaction(state);
+    finishHakoPhase(state, { numbers });
+    assert.equal(state.turnPlayerId, dies ? fourVisitors[0] : fourVisitors[3]);
+    assert.deepEqual(state.visitorIds, dies ? visitors : fourVisitors);
+  }
+  for (const invalid of [[...fourVisitors, 'visitor-e'], [...visitors, visitors[0]], [...visitors, ''],
+    [...visitors, null], ['a', 'b', , 'd']]) {
+    assert.throws(() => createSilentRound(invalid), /访问者/);
+  }
+});
+
 function rejectsWithoutMutation(state, action) {
   const before = structuredClone(state);
   assert.throws(action, error => error instanceof Error && /[\u4e00-\u9fff]/.test(error.message));
@@ -85,10 +128,10 @@ test('initial visitor order and injected numbers are copied from caller input', 
   assert.equal(finishVisitorAction(state, visitors[0]).turnPlayerId, visitors[1]);
 });
 
-test('three distinct nonempty visitor IDs are required, including sparse-array validation', () => {
+test('three or four distinct nonempty visitor IDs are required, including sparse-array validation', () => {
   const sparse = ['visitor-a', , 'visitor-c'];
   for (const ids of [
-    undefined, null, 'abc', [], ['a', 'b'], ['a', 'b', 'c', 'd'],
+    undefined, null, 'abc', [], ['a', 'b'], ['a', 'b', 'c', 'd', 'e'],
     ['a', 'a', 'b'], ['a', 'b', ''], ['a', 'b', '  '], ['a', 'b', 3], sparse,
   ]) assert.throws(() => createSilentRound(ids), /访问者/);
 });

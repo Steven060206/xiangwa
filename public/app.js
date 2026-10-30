@@ -313,7 +313,9 @@ async function enterRoom(join) {
   $('join-room').disabled = true;
   $('error-banner').hidden = true;
   try {
-    const result = await api(join ? `/api/rooms/${encodeURIComponent(code)}/join` : '/api/rooms', { name });
+    const result = await api(join ? `/api/rooms/${encodeURIComponent(code)}/join` : '/api/rooms', {
+      name, ...(!join ? { playerCount: Number($('player-count').value) } : {}),
+    });
     saveSession({ roomCode: result.roomCode, playerId: result.playerId, token: result.token });
     receiveState(result.state);
     const url = new URL(location.href);
@@ -358,7 +360,7 @@ async function action(type, payload = {}) {
 
 function renderSeats(container, compact = false) {
   const fragment = document.createDocumentFragment();
-  for (let seat = 0; seat < 4; seat++) {
+  for (let seat = 0; seat < (state.playerCount || 4); seat++) {
     const player = state.players.find(p => p.seat === seat);
     const visitorStatus = state.round?.visitors.find(visitor => visitor.id === player?.id)?.status;
     const isGhost = visitorStatus === 'box_person';
@@ -405,6 +407,8 @@ function renderSeats(container, compact = false) {
 }
 
 function renderLobby() {
+  const playerCount = state.playerCount || 4;
+  const countName = playerCount === 5 ? '五人' : '四人';
   const you = state.players.find(p => p.id === state.you);
   const selecting = state.phase === 'hako_selection';
   const host = state.hostId === state.you;
@@ -414,21 +418,23 @@ function renderLobby() {
   $('lobby-title').textContent = selecting ? '谁来扮演箱娃？' : '人齐，便可进宅。';
   $('game-end-notice').textContent = state.endNotice || '';
   $('game-end-notice').hidden = selecting || !state.endNotice;
-  $('lobby-count').textContent = `${state.players.length} / 4 人入席`;
+  $('lobby-count').textContent = `${state.players.length} / ${playerCount} 人入席`;
+  $('visitor-role-count').textContent = playerCount === 5 ? '四名访问者' : '三名访问者';
+  $('hako-role-guide').textContent = `${countName}准备并开始游戏后一起抢选，先抢先得。地图完成后，配置开局秘密与初始潜伏。`;
   $('ready-button').textContent = you?.ready ? '取消准备' : '准备';
   $('ready-button').disabled = locked || !you;
   $('ready-button').hidden = selecting;
   $('start-setup').hidden = !host || selecting;
-  $('start-setup').disabled = locked || state.players.length !== 4 || !state.players.every(p => p.ready && p.connected);
-  $('add-bots').hidden = !host || selecting || state.players.length === 4;
-  $('add-bots').disabled = locked || !host || selecting || state.players.length === 4;
+  $('start-setup').disabled = locked || state.players.length !== playerCount || !state.players.every(p => p.ready && p.connected);
+  $('add-bots').hidden = !host || selecting || state.players.length === playerCount;
+  $('add-bots').disabled = locked || !host || selecting || state.players.length === playerCount;
   $('start-hint').hidden = selecting;
-  $('start-hint').textContent = state.players.length < 4 ? `还差 ${4 - state.players.length} 席，可邀请朋友${host ? '，或点击补齐人机一起试玩' : '，也可由房主补齐人机'}。` : !state.players.every(p => p.ready) ? hasBots ? '人机已自动准备，其他玩家准备后，房主即可开始游戏。' : '四人都准备后，房主即可开始游戏，一起抢箱娃。' : host ? '都已准备，开始游戏后一起抢箱娃。' : '都已准备，等待房主开始游戏后一起抢箱娃。';
+  $('start-hint').textContent = state.players.length < playerCount ? `还差 ${playerCount - state.players.length} 席，可邀请朋友${host ? '，或点击补齐人机一起试玩' : '，也可由房主补齐人机'}。` : !state.players.every(p => p.ready) ? hasBots ? '人机已自动准备，其他玩家准备后，房主即可开始游戏。' : `${countName}都准备后，房主即可开始游戏，一起抢箱娃。` : host ? '都已准备，开始游戏后一起抢箱娃。' : '都已准备，等待房主开始游戏后一起抢箱娃。';
   $('hako-claim-controls').hidden = !selecting;
   $('claim-hako').disabled = locked || !you || !selecting;
   $('bot-claim-hako').hidden = !selecting || !host || !hasBots;
   $('bot-claim-hako').disabled = locked || !you || !selecting || !host || !hasBots;
-  $('hako-claim-status').textContent = hasBots ? '四人已准备，可抢当箱娃，也可由房主让人机扮演箱娃。' : '四人已准备，点击按钮抢当箱娃，先抢先得。';
+  $('hako-claim-status').textContent = hasBots ? `${countName}已准备，可抢当箱娃，也可由房主让人机扮演箱娃。` : `${countName}已准备，点击按钮抢当箱娃，先抢先得。`;
   $('leave-room').disabled = locked;
   $('leave-room').hidden = selecting;
 }
@@ -805,6 +811,7 @@ function render() {
   $('entry-view').hidden = true;
   $('room-view').hidden = false;
   $('room-code-display').textContent = state.code;
+  $('room-mode-label').textContent = `${state.playerCount === 5 ? '五人' : '四人'}联机 · 无声模式`;
   const lobby = state.phase === 'lobby' || state.phase === 'hako_selection';
   $('room-view').classList.toggle('in-game', !lobby);
   $('lobby-view').hidden = !lobby;

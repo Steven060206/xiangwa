@@ -80,6 +80,29 @@ test('invalid visitor lists and injected decks are rejected', () => {
   assert.throws(() => setup(['study', ...deck.slice(0, 7)]), /地图/);
 });
 
+test('five-player setup gives each of four visitors two of the eight map placements', () => {
+  const fourVisitors = [...visitors, 'visitor-d'];
+  const game = createSetup(fourVisitors, { deck });
+  const positions = [
+    [1, 0, -1, 2], [1, -1, 0, 0], [1, 1, 0, 0], [2, 0, 0, 0],
+    [-1, 0, 0, 0], [1, -1, -1, 1], [1, -2, 0, 2], [1, 2, 0, 0],
+  ];
+  positions.forEach(([floor, x, y, rotation], index) => {
+    const playerId = fourVisitors[index % fourVisitors.length];
+    assert.equal(game.turnPlayerId, playerId);
+    drawTile(game, playerId);
+    placeTile(game, playerId, { floor, x, y, rotation });
+  });
+  assert.equal(game.phase, 'map_ready');
+  assert.equal(game.turnPlayerId, null);
+  assert.equal(game.placements.length, 9);
+  assert.deepEqual(game.visitorIds, fourVisitors);
+  for (const invalid of [[...fourVisitors, 'visitor-e'], [...visitors, visitors[0]], [...visitors, ''],
+    [...visitors, undefined], ['a', 'b', , 'd']]) {
+    assert.throws(() => createSetup(invalid), /访问者/);
+  }
+});
+
 test('only the current visitor may draw once and then place', () => {
   const game = setup();
   rejectsWithoutMutation(game, () => drawTile(game, 'hako'));

@@ -81,6 +81,29 @@ test('issued codes grant persistent HttpOnly access, normalize formatting and co
   assert.ok(!saved.includes(invite.code) && !saved.includes(first.cookie.split('=')[1]), 'Bearer codes and browser tokens are stored as digests');
 });
 
+test('new invitation defaults admit five browsers and retain that limit after restart', async t => {
+  const f = await fixture(t);
+  const invite = await f.issue();
+  assert.equal(invite.maxUses, 5);
+  for (let index = 0; index < 4; index++) assert.equal((await f.redeem(invite.code)).status, 200);
+  await f.restart();
+  assert.equal((await f.redeem(invite.code)).status, 200);
+  assert.equal((await f.redeem(invite.code)).status, 401);
+  const saved = (await f.admin({ action: 'list' })).body.invites[0];
+  assert.equal(saved.maxUses, 5);
+  assert.equal(saved.uses, 5);
+});
+
+test('explicit four-browser invitation limits remain four when restored from disk', async t => {
+  const f = await fixture(t);
+  const invite = await f.issue({ maxUses: 4 });
+  for (let index = 0; index < 2; index++) assert.equal((await f.redeem(invite.code)).status, 200);
+  await f.restart();
+  for (let index = 0; index < 2; index++) assert.equal((await f.redeem(invite.code)).status, 200);
+  assert.equal((await f.redeem(invite.code)).status, 401);
+  assert.equal((await f.admin({ action: 'list' })).body.invites[0].maxUses, 4);
+});
+
 test('public-host cookies are Secure and cross-origin invitation or room submissions fail', async t => {
   const f = await fixture(t);
   const invite = await f.issue();
@@ -273,8 +296,10 @@ test('local CLI creates, lists and revokes through its private key without chang
   }
   const invite = await run(['--hours', '2', '--uses', '3']);
   assert.equal(invite.maxUses, 3);
+  const defaultInvite = await run([]);
+  assert.equal(defaultInvite.maxUses, 5);
   const list = await run(['--list']);
-  assert.equal(list.invites.length, 1);
+  assert.equal(list.invites.length, 2);
   assert.ok(!JSON.stringify(list).includes(invite.code));
   assert.equal((await run(['--revoke', invite.id])).ok, true);
   assert.equal((await f.redeem(invite.code)).status, 401);

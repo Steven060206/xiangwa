@@ -15,9 +15,10 @@ function shuffled(ids) {
 }
 
 export function createSetup(visitorIds, { deck } = {}) {
-  if (!Array.isArray(visitorIds) || visitorIds.length !== 3 || new Set(visitorIds).size !== 3
-      || visitorIds.some(id => typeof id !== 'string' || !id.trim())) {
-    throw new Error('地图准备需要三名不同的访问者。');
+  if (!Array.isArray(visitorIds) || ![3, 4].includes(visitorIds.length)
+      || new Set(visitorIds).size !== visitorIds.length
+      || Array.from(visitorIds).some(id => typeof id !== 'string' || !id.trim())) {
+    throw new Error('地图准备需要三名或四名不同的访问者。');
   }
   if (deck !== undefined && (!Array.isArray(deck) || deck.length !== 8 || new Set(deck).size !== 8
       || deck.some(id => !DRAWABLE_IDS.includes(id)))) {
