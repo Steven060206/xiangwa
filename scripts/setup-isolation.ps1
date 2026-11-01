@@ -1,13 +1,14 @@
 ﻿param(
   [ValidateSet('Install', 'Restore', 'Status')][string]$Action = 'Status',
-  [string]$Root = 'C:\Games\XiangWa',
+  [string]$Root = $env:XIANGWA_RUNTIME_ROOT,
   [ValidatePattern('^[A-Za-z][A-Za-z0-9_-]{0,19}$')][string]$AccountName = 'XiangWaService',
-  [string[]]$ProtectedPaths = @('C:\Projects', $env:USERPROFILE),
+  [string[]]$ProtectedPaths = @($env:USERPROFILE),
   [string[]]$ProtectedVolumeRoots = @(),
   [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Root)) { throw 'Specify your own runtime directory with -Root or XIANGWA_RUNTIME_ROOT.' }
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 # Hosts launched from PowerShell 7 may inherit its module search path. Load the
 # Windows PowerShell security cmdlets that match the scheduled task's engine.

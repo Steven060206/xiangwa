@@ -4,3 +4,15 @@ playwright-report/
 *.log
 .env
 data/
+.env.*
+!.env.example
+/config/
+/state/
+/logs/
+/private/
+/backups/
+*.bundle
+*.pem
+*.key
+fixed-entry.json
+isolation-backup.json

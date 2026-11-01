@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Root = 'C:\Games\XiangWa',
+  [string]$Root = $env:XIANGWA_RUNTIME_ROOT,
   [string]$SourceRoot = (Split-Path -Parent $PSScriptRoot),
   [ValidateRange(1, 65535)][int]$Port = 4175,
   [string]$EntryFile = (Join-Path $env:LOCALAPPDATA 'XiangWa/fixed-entry.json'),
@@ -10,6 +10,7 @@
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Root)) { throw 'Specify your own runtime directory with -Root or XIANGWA_RUNTIME_ROOT.' }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\')
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
