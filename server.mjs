@@ -1,24 +1,31 @@
 import { networkInterfaces } from 'node:os';
-import { resolve } from 'node:path';
+import { join } from 'node:path';
 import { createGameServer } from './src/server.mjs';
+import { loadConfig } from './src/config.mjs';
 
-const port = Number(process.env.PORT ?? 4173);
-const host = process.env.HOST ?? '0.0.0.0';
-if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 必须为 0 至 65535 的整数。');
-
-const dataFile = resolve(process.env.DATA_DIR ?? 'data', 'rooms.json');
-const server = createGameServer({ dataFile, accessDirectory: resolve(process.env.ACCESS_DIR || process.env.DATA_DIR || 'data'),
-  runtimeId: process.env.XIANGWA_RUNTIME_ID || undefined });
-server.listen(port, host, () => {
-  const actualPort = server.address().port;
-  console.log(`《箱娃》四人地图准备：http://localhost:${actualPort}`);
-  console.log(`自动存档：${dataFile}`);
-  for (const network of Object.values(networkInterfaces()).flat()) {
-    if (network.family === 'IPv4' && !network.internal) console.log(`局域网地址：http://${network.address}:${actualPort}`);
-  }
-});
-server.on('error', error => {
+function startupError(error) {
   console.error(`服务启动失败：${error.message}`);
+  if (error.code === 'EADDRINUSE') console.error('端口已被占用，请关闭之前的游戏窗口，或在 .env 中修改 PORT。');
   process.exitCode = 1;
-});
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close());
+}
+
+try {
+  const { port, host, dataDirectory, accessDirectory, cookieSecure } = loadConfig();
+  const dataFile = join(dataDirectory, 'rooms.json');
+  const server = createGameServer({ dataFile, accessDirectory, cookieSecure,
+    runtimeId: process.env.XIANGWA_RUNTIME_ID || undefined });
+  server.on('error', startupError);
+  server.listen(port, host, () => {
+    const actualPort = server.address().port;
+    const localHost = ['0.0.0.0', '::', '127.0.0.1', '::1', 'localhost'].includes(host) ? 'localhost'
+      : host.includes(':') ? `[${host}]` : host;
+    console.log(`《箱娃》四／五人联机版：http://${localHost}:${actualPort}`);
+    console.log(`自动存档：${dataFile}`);
+    console.log('发放邀请码：双击“发放邀请码.cmd”，或另开终端运行 npm run invite。');
+    console.log('远程联机：另开终端运行 npm run share；按 Ctrl+C 停止本窗口的服务。');
+    if (['0.0.0.0', '::'].includes(host)) for (const network of Object.values(networkInterfaces()).flat()) {
+      if (network.family === 'IPv4' && !network.internal) console.log(`局域网地址：http://${network.address}:${actualPort}`);
+    }
+  });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close());
+} catch (error) { startupError(error); }

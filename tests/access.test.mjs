@@ -128,6 +128,43 @@ test('public-host cookies are Secure and cross-origin invitation or room submiss
   assert.equal((await f.request('/api/rooms', { name: '伪造' }, accepted.cookie, forged)).status, 403);
 });
 
+test('HTTP LAN cookies work for private IP addresses while public hosts keep Secure cookies', async t => {
+  const f = await fixture(t, { limits: { inviteAttemptBurst: 32 } });
+  const invite = await f.issue({ maxUses: 32 });
+  const hosts = new Map([
+    ['localhost:4173', false], ['127.0.0.2:4173', false], ['10.1.2.3:4173', false],
+    ['192.168.1.20:4173', false], ['172.16.0.2:4173', false], ['172.31.255.254:4173', false],
+    ['169.254.1.2:4173', false], ['[::1]:4173', false], ['[fd12::1]:4173', false], ['[fe80::1]:4173', false],
+    ['172.32.0.2:4173', true], ['8.8.8.8:4173', true], ['game.example.com', true],
+    ['192.168.1.2.example.com', true], ['[2001:db8::1]:4173', true],
+  ]);
+  for (const [host, expectedSecure] of hosts) {
+    const cookie = await new Promise((resolveCookie, rejectCookie) => {
+      const request = http.request(`${f.base}/api/access/redeem`, { method: 'POST',
+        headers: { host, 'content-type': 'application/json' } }, response => {
+        response.resume();
+        response.on('end', () => {
+          assert.equal(response.statusCode, 200, host);
+          resolveCookie(response.headers['set-cookie'][0]);
+        });
+      });
+      request.on('error', rejectCookie);
+      request.end(JSON.stringify({ code: invite.code }));
+    });
+    assert.equal(cookie.includes('; Secure'), expectedSecure, host);
+    assert.match(cookie, /HttpOnly; SameSite=Lax/);
+  }
+});
+
+test('deployers can explicitly require HTTPS cookies or enable their own plain HTTP hostname', async t => {
+  for (const [cookieSecure, expected] of [['true', true], ['false', false]]) {
+    const f = await fixture(t, { cookieSecure });
+    const invite = await f.issue();
+    const result = await f.redeem(invite.code);
+    assert.equal(result.headers.get('set-cookie').includes('; Secure'), expected);
+  }
+});
+
 test('simultaneous redemption cannot exceed an invitation usage limit', async t => {
   const f = await fixture(t);
   const invite = await f.issue({ maxUses: 1 });

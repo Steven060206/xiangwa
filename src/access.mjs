@@ -1,10 +1,22 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isIP } from 'node:net';
 
 const COOKIE = 'xiangwa_access';
 const digest = value => createHash('sha256').update(value).digest('hex');
 const normalize = value => typeof value === 'string' ? value.replace(/[\s-]/g, '').toUpperCase() : '';
+
+function localHostname(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1') return true;
+  if (isIP(host) === 4) {
+    const [first, second] = host.split('.').map(Number);
+    return first === 127 || first === 10 || (first === 192 && second === 168)
+      || (first === 172 && second >= 16 && second <= 31) || (first === 169 && second === 254);
+  }
+  return isIP(host) === 6 && /^(f[cd]|fe[89ab])/i.test(host);
+}
 
 function reject(status, message) { throw Object.assign(new Error(message), { status }); }
 
@@ -15,7 +27,8 @@ function equal(left, right) {
 }
 
 /** Only this server writes the access store. Local management uses its bearer key. */
-export function createAccessControl({ directory, now = Date.now }) {
+export function createAccessControl({ directory, now = Date.now, cookieSecure = 'auto' }) {
+  if (!['auto', 'true', 'false'].includes(cookieSecure)) throw new Error('COOKIE_SECURE 必须为 auto、true 或 false。');
   const file = join(resolve(directory), 'access.json');
   let state;
   function save(next) {
@@ -106,7 +119,7 @@ export function createAccessControl({ directory, now = Date.now }) {
       next.sessions.push({ digest: digest(token), inviteId: found.id, expiresAt: found.expiresAt });
       save(next);
       const host = new URL(`http://${request.headers.host || 'localhost'}`).hostname;
-      const secure = ['localhost', '127.0.0.1', '[::1]'].includes(host) ? '' : '; Secure';
+      const secure = cookieSecure === 'true' || (cookieSecure === 'auto' && !localHostname(host)) ? '; Secure' : '';
       response.setHeader('set-cookie', `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(1, Math.floor((found.expiresAt - now()) / 1000))}${secure}`);
       return { required: true, authorized: true, expiresAt: found.expiresAt };
     },

@@ -95,8 +95,8 @@ function sameToken(candidate, token) {
 
 /** Each action saves its detached state before publishing it to HTTP/SSE clients. */
 export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile, botDelayMs = 700,
-  accessDirectory, accessNow = Date.now, limits, runtimeId, offlineGraceMs = 5 * 60 * 1000 } = {}) {
-  const access = accessDirectory ? createAccessControl({ directory: accessDirectory, now: accessNow }) : null;
+  accessDirectory, accessNow = Date.now, cookieSecure = 'auto', limits, runtimeId, offlineGraceMs = 5 * 60 * 1000 } = {}) {
+  const access = accessDirectory ? createAccessControl({ directory: accessDirectory, now: accessNow, cookieSecure }) : null;
   const traffic = accessDirectory || limits ? createTrafficControl({ limits, now: accessNow }) : null;
   const store = createRoomStore(dataFile);
   const rooms = store.load();

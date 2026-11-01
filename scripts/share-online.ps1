@@ -1,10 +1,12 @@
 param(
   [ValidateRange(1, 65535)]
-  [int]$Port = 4173
+  [int]$Port = 4173,
+  [string]$GameHost = '127.0.0.1'
 )
 
 $ErrorActionPreference = 'Stop'
-$baseUrl = "http://127.0.0.1:$Port"
+$urlHost = if ($GameHost.Contains(':')) { "[$GameHost]" } else { $GameHost }
+$baseUrl = "http://${urlHost}:$Port"
 try {
   $health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 5
   if ($health.ok -ne $true) { throw 'Unexpected health response.' }
