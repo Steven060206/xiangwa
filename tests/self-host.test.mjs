@@ -128,6 +128,43 @@ test('env file, server and invitation CLI agree on custom settings, and a saved 
   assert.equal((await recovered.json()).playerCount, 5);
 });
 
+test('separate downloads keep administration and invites independent and work after another host stops', { timeout: 25000 }, async t => {
+  const first = await fixture(t), second = await fixture(t);
+  const firstLive = await first.boot({ HOST: '127.0.0.1', PORT: '0' });
+  const secondLive = await second.boot({ HOST: '127.0.0.1', PORT: '0' });
+  const firstAccess = JSON.parse(await readFile(join(first.root, 'data/access.json'), 'utf8'));
+  const secondAccess = JSON.parse(await readFile(join(second.root, 'data/access.json'), 'utf8'));
+  assert.notEqual(firstAccess.adminKey, secondAccess.adminKey);
+  const issue = async (copy, live) => {
+    const result = await copy.run([join(copy.root, 'scripts/manage-invites.mjs'),
+      '--port', new URL(live.base).port, '--json']).finished;
+    assert.equal(result.code, 0, result.output);
+    return JSON.parse(result.output).code;
+  };
+  const firstCode = await issue(first, firstLive), secondCode = await issue(second, secondLive);
+  const post = (base, path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  for (const [live, foreignCode, foreignKey] of [[firstLive, secondCode, secondAccess.adminKey],
+    [secondLive, firstCode, firstAccess.adminKey]]) {
+    assert.equal((await post(live.base, '/api/access/redeem', { code: foreignCode })).status, 401);
+    assert.equal((await post(live.base, '/api/access/admin', { action: 'create' },
+      { authorization: `Bearer ${foreignKey}` })).status, 403);
+  }
+  await first.stop(firstLive.child);
+  await assert.rejects(fetch(`${firstLive.base}/api/health`, { signal: AbortSignal.timeout(2000) }));
+  const admitted = await post(secondLive.base, '/api/access/redeem', { code: secondCode });
+  assert.equal(admitted.status, 200);
+  const cookie = admitted.headers.get('set-cookie').split(';')[0];
+  const created = await post(secondLive.base, '/api/rooms', { name: '独立主机', playerCount: 5 }, { cookie });
+  assert.equal(created.status, 201);
+  const person = await created.json();
+  assert.equal(person.state.playerCount, 5);
+  const saved = JSON.parse(await readFile(join(second.root, 'data/rooms.json'), 'utf8'));
+  assert.deepEqual(saved.rooms.map(room => room.code), [person.roomCode]);
+  await assert.rejects(readFile(join(first.root, 'data/rooms.json')), { code: 'ENOENT' });
+  assert.ok(await issue(second, secondLive));
+});
+
 test('shell variables override env files and ACCESS_DIR follows DATA_DIR when omitted', { timeout: 15000 }, async t => {
   const f = await fixture(t);
   await writeFile(join(f.root, '.env'), 'PORT=4180\nHOST=127.0.0.1\nDATA_DIR="文件存档"\nCOOKIE_SECURE=false\n');
