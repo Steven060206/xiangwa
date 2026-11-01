@@ -301,6 +301,73 @@ test('runtime starts hidden owned processes, pins the tunnel host and stops idem
   assert.equal(await readFile(join(f.source, 'data', 'rooms.json'), 'utf8'), '{"originalSave":true}');
 });
 
+// Exercise the real launcher with owned local processes; replace only public HTTP and browser opening.
+async function startWithBrowser(f, { unavailable = false } = {}) {
+  return powershell(['-Command', `
+$script:publicChecks = 0
+function Invoke-RestMethod {
+  param($Uri, $TimeoutSec, $Headers)
+  if ($Uri -notlike 'https://*') { return Microsoft.PowerShell.Utility\\Invoke-RestMethod @PSBoundParameters }
+  if ($Uri -ne 'https://game.example.test/api/health' -or $Headers['Cache-Control'] -ne 'no-cache') { throw 'Unexpected public health request.' }
+  $script:publicChecks++
+  Add-Content -LiteralPath $env:XIANGWA_TEST_BROWSER_RECORD -Value 'probe'
+  if ($env:XIANGWA_TEST_PUBLIC_UNAVAILABLE) { throw 'Cloudflare error 1033' }
+  switch ($script:publicChecks) {
+    1 { throw 'Cloudflare error 1033' }
+    2 { return '<html>Cloudflare error 1033</html>' }
+    3 { return @{ok=$true} }
+    4 { return @{ok=$true;runtimeId='other-runtime'} }
+    default { return @{ok=$true;runtimeId=$settings.runtimeId} }
+  }
+}
+function Start-Process {
+  param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle, [switch]$PassThru, $RedirectStandardOutput, $RedirectStandardError)
+  if ($FilePath -like 'https://*') {
+    Add-Content -LiteralPath $env:XIANGWA_TEST_BROWSER_RECORD -Value $FilePath
+    return
+  }
+  Microsoft.PowerShell.Management\\Start-Process @PSBoundParameters
+}
+& $env:XIANGWA_TEST_RUNTIME_SCRIPT -Root $env:XIANGWA_TEST_RUNTIME_ROOT -Action Start -OpenBrowser -Json
+`], { XIANGWA_TEST_RUNTIME_SCRIPT: runtimeScript, XIANGWA_TEST_RUNTIME_ROOT: f.root,
+    XIANGWA_TEST_BROWSER_RECORD: join(f.directory, 'browser-record.txt'),
+    XIANGWA_TEST_PUBLIC_UNAVAILABLE: unavailable ? '1' : '', XIANGWA_TEST_TUNNEL_MARKER: f.marker }, 85000);
+}
+
+test('browser waits for public game identity after 1033 on both first and repeated starts', windowsOnly, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.deploy()).code, 0);
+  let firstManifest;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await writeFile(join(f.directory, 'browser-record.txt'), '');
+    const started = await startWithBrowser(f);
+    assert.equal(started.code, 0, started.output);
+    assert.equal(JSON.parse(started.output).running, true);
+    assert.deepEqual((await readFile(join(f.directory, 'browser-record.txt'), 'utf8')).trim().split(/\r?\n/),
+      ['probe', 'probe', 'probe', 'probe', 'probe', 'https://game.example.test']);
+    const manifest = JSON.parse(await readFile(join(f.root, 'config', 'processes.json')));
+    if (firstManifest) assert.deepEqual(manifest, firstManifest);
+    firstManifest = manifest;
+  }
+});
+
+test('public startup timeout keeps the browser closed and preserves the running game for retry', { ...windowsOnly, timeout: 120000 }, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.deploy()).code, 0);
+  const started = await startWithBrowser(f, { unavailable: true });
+  assert.equal(started.code, 1, started.output);
+  assert.match(started.output, /公网连接尚未就绪/);
+  const record = await readFile(join(f.directory, 'browser-record.txt'), 'utf8');
+  assert.match(record, /probe/);
+  assert.doesNotMatch(record, /https:/);
+  const status = await f.run('Status');
+  assert.equal(status.code, 0, status.output);
+  assert.equal(JSON.parse(status.output).running, true);
+  assert.equal(await readFile(join(f.root, 'data', 'rooms.json'), 'utf8'), '{"originalSave":true}');
+  const retried = await startWithBrowser(f);
+  assert.equal(retried.code, 0, retried.output);
+});
+
 test('runtime refuses a port held by another service and leaves that service running', windowsOnly, async t => {
   const f = await fixture(t);
   assert.equal((await f.deploy()).code, 0);

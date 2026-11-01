@@ -58,6 +58,20 @@ function Get-Health {
 function Assert-Health($Health) {
   if (-not $Health -or $Health.ok -ne $true -or $Health.runtimeId -ne $settings.runtimeId) { throw 'The local game identity does not match this runtime.' }
 }
+function Open-GameBrowser([string]$Url) {
+  $waiting = [Diagnostics.Stopwatch]::StartNew()
+  while ($waiting.Elapsed.TotalSeconds -lt 60) {
+    try {
+      $health = Invoke-RestMethod -Uri "$Url/api/health" -TimeoutSec 3 -Headers @{ 'Cache-Control' = 'no-cache' }
+    } catch { $health = $null }
+    if ($health.ok -eq $true -and $health.runtimeId -eq $settings.runtimeId) {
+      Start-Process $Url
+      return
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  throw '公网连接尚未就绪，暂未打开网页。请检查网络后再次双击“开始联机”。游戏服务和存档已保留。'
+}
 function Assert-FreePort {
   $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, [int]$settings.port)
   try { $listener.Start() } catch { throw "Port $($settings.port) is already in use. No other service was stopped." }
@@ -126,7 +140,7 @@ try {
     } elseif ($Action -ne 'Invite') {
       $controlLock = [IO.File]::Open((Join-Path $Root 'config/controller.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
       try { $result = Invoke-IsolatedControl $Action $settings $isolation $Root } finally { $controlLock.Dispose() }
-      if ($OpenBrowser -and $Action -eq 'Start') { Start-Process $result.url }
+      if ($OpenBrowser -and $Action -eq 'Start') { Open-GameBrowser $result.url }
       if ($Dialog -and $Action -eq 'Stop') { Show-Text '箱娃已结束联机' '联机服务已停止，游戏存档和邀请码记录均已保留。' }
       if ($Json) { Write-Output ($result | ConvertTo-Json -Depth 8 -Compress) }
       elseif ($Action -eq 'Stop') { Write-Output 'Runtime stopped. Saved data was preserved.' }
@@ -214,7 +228,7 @@ try {
       }
       exit 0
     }
-    if ($OpenBrowser) { Start-Process $result.url }
+    if ($OpenBrowser) { Open-GameBrowser $result.url }
   } elseif ($Action -eq 'Stop') {
     Stop-Recorded $manifest.tunnel 'tunnel'
     $manifest.tunnel = $null
