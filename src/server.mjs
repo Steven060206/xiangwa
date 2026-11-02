@@ -3,7 +3,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createSetup, drawTile, placeTile, getSetupView } from './game.mjs';
 import {
-  createItemDraft, chooseItem, getItemDraftView, createOpening, getOpeningView,
+  createItemDraft, completeItemDraft, getItemDraftView, createOpening, getOpeningView,
   chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding, chooseInitialPower,
 } from './preparation.mjs';
 import { createPlay, applyPlayAction, getPlayView } from './play.mjs';
@@ -29,6 +29,7 @@ const staticFiles = new Map([
   ['/feedback-view.js', ['../public/feedback-view.js', 'text/javascript; charset=utf-8']],
   ['/chat.js', ['../public/chat.js', 'text/javascript; charset=utf-8']],
   ['/chat.css', ['../public/chat.css', 'text/css; charset=utf-8']],
+  ['/walkie.js', ['../public/walkie.js', 'text/javascript; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
@@ -93,13 +94,39 @@ function sameToken(candidate, token) {
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
+function completeLegacyDrafts(room, { deck, initialItemOrder }) {
+  const states = [room, ...(room.undoHistory || []).map(entry => entry.before)];
+  const deals = states.map(state => state.draft).filter(draft => draft?.phase === 'items_ready');
+  let changed = false;
+  for (const state of states) {
+    if (!state.draft || state.game || state.opening || state.play) continue;
+    const draft = state.draft;
+    const sameVisitors = candidate => JSON.stringify(candidate.visitorIds) === JSON.stringify(draft.visitorIds);
+    const matching = deals.find(candidate => sameVisitors(candidate)
+      && candidate.choices.length === draft.visitorIds.length
+      && candidate.choices.every(choice => draft.items.some(item => item.id === choice.itemId))
+      && draft.choices.every(choice => candidate.choices.some(saved => saved.playerId === choice.playerId && saved.itemId === choice.itemId)));
+    if (matching) draft.choices = structuredClone(matching.choices);
+    completeItemDraft(draft, { itemOrder: initialItemOrder });
+    deals.push(draft);
+    // Reuse the known map draw order when upgrading earlier undo checkpoints.
+    const existing = states.find(candidate => candidate.game && sameVisitors(candidate.game))?.game;
+    const savedDeck = existing ? [...existing.placements.slice(1).map(placement => placement.tileId),
+      ...(existing.drawnTileId ? [existing.drawnTileId] : []), ...existing.deck] : deck;
+    state.game = createSetup(draft.visitorIds, { deck: savedDeck });
+    changed = true;
+  }
+  if (changed) room.version++;
+  return changed;
+}
+
 /** Each action saves its detached state before publishing it to HTTP/SSE clients. */
-export function createGameServer({ deck, silentNumbers, createPlayState = createPlay, dataFile, botDelayMs = 700,
+export function createGameServer({ deck, silentNumbers, initialItemOrder, createPlayState = createPlay, dataFile, botDelayMs = 700,
   accessDirectory, accessNow = Date.now, cookieSecure = 'auto', limits, runtimeId, offlineGraceMs = 5 * 60 * 1000 } = {}) {
   const access = accessDirectory ? createAccessControl({ directory: accessDirectory, now: accessNow, cookieSecure }) : null;
   const traffic = accessDirectory || limits ? createTrafficControl({ limits, now: accessNow }) : null;
   const store = createRoomStore(dataFile);
-  const rooms = store.load();
+  let rooms = store.load();
   const streams = new Set();
   const polling = new Map();
   const botTimers = new Map();
@@ -109,9 +136,17 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   const presenceSeen = new Set();
   let closing = false;
   try {
+    const restored = new Map();
+    let migrated = false;
     for (const room of rooms.values()) {
-      for (const player of room.players) snapshot(room, player.id);
+      const next = copyRoom(room);
+      migrated = completeLegacyDrafts(next, { deck, initialItemOrder }) || migrated;
+      for (const player of next.players) snapshot(next, player.id);
+      restored.set(next.code, next);
     }
+    // Persist the entire migration before any HTTP/SSE view can expose random deals.
+    if (migrated) store.save(restored);
+    rooms = restored;
   } catch (error) {
     throw new Error(`房间存档无法恢复，已停止启动以保留原文件 ${dataFile}：${error.message}`, { cause: error });
   }
@@ -407,8 +442,10 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         const hakoSeat = room.players.findIndex(candidate => candidate.id === claimant.id);
         const ordered = [...room.players.slice(hakoSeat + 1), ...room.players.slice(0, hakoSeat)];
         room.draft = createItemDraft(ordered.map(candidate => candidate.id));
+        completeItemDraft(room.draft, { itemOrder: initialItemOrder });
+        room.game = createSetup(room.draft.visitorIds, { deck });
         room.selectingHako = false;
-        message = `${claimant.name} 抢到了箱娃，访问者开始依次选择初始道具。`;
+        message = `${claimant.name} 抢到了箱娃，系统已随机发放不同的访问者技能，开始轮流配置地图。`;
         break;
       }
       case 'start': {
@@ -423,16 +460,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         break;
       }
       case 'choose_item': {
-        if (!room.draft) fail(409, '请先完成箱娃抢选，再选择初始道具。');
-        try {
-          chooseItem(room.draft, player.id, input.itemId);
-          if (room.draft.phase === 'items_ready') {
-            room.game = createSetup(room.draft.visitorIds, { deck });
-          }
-        } catch (error) { fail(409, error.message); }
-        message = room.game ? '初始道具已选好，访问者开始轮流配置地图。'
-          : `${player.name} 选择了初始道具。`;
-        break;
+        fail(409, '初始技能由系统随机发放，不能自行选择或重新领取。');
       }
       case 'draw':
       case 'place':
@@ -513,6 +541,12 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'drop_token':
       case 'ghost_hide':
       case 'bequeath':
+      case 'walkie_propose':
+      case 'walkie_respond':
+      case 'walkie_cancel':
+      case 'walkie_show_propose':
+      case 'walkie_show_confirm':
+      case 'walkie_show_cancel':
       case 'use_item':
       case 'answer_item':
       case 'choose_forced_peek':
@@ -550,6 +584,12 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           drop_token: `${player.name} 在空角落留下了一枚标志。`,
           ghost_hide: '一名箱人完成了潜伏。',
           bequeath: `${player.name} 完成了遗物处理。`,
+          walkie_propose: `${player.name} 提出了对讲机配对请求。`,
+          walkie_respond: `${player.name} 回应了对讲机配对请求。`,
+          walkie_cancel: `${player.name} 取消了对讲机配对请求。`,
+          walkie_show_propose: `${player.name} 提出了对讲机互看请求。`,
+          walkie_show_confirm: `${player.name} 确认了对讲机互看内容。`,
+          walkie_show_cancel: `${player.name} 取消了对讲机互看请求。`,
           use_item: `${player.name} 声明了使用道具，等待箱娃确认。`,
           answer_item: '箱娃完成了道具询问的回答。',
           choose_forced_peek: `${player.name} 选择了强制窥探的角落。`,

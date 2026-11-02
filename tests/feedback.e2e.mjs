@@ -30,7 +30,7 @@ function feedbackFixture(setup, opening, options) {
 }
 
 test('mobile feedback flow names tapped corners, explains notebooks and shares discoveries with temporary room-only cry markers', { timeout: 90000 }, async t => {
-  const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: feedbackFixture });
+  const server = createGameServer({ deck, initialItemOrder: ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'], silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: feedbackFixture });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -80,10 +80,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(hako, 'start');
   let state = await act(hako, 'claim_hako');
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = await act(person, 'choose_item', { itemId: state.draft.availableItems[0].id });
-  }
+  assert.equal(state.phase, 'map_setup');
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');

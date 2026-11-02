@@ -2,7 +2,7 @@ import { getTile, getLogicalRoomId, getLogicalRooms } from '/shared/maps.mjs';
 import { createFeedbackUI } from './feedback-view.js';
 import { createChatUI } from './chat.js';
 import { applyUndoLock, renderUndo } from './undo.js';
-import { createTileSvg, cornerNumber, cornerName, mapPlayers } from './tile.js';
+import { createTileSvg, cornerNumber, cornerName, cornerRoomId, mapTokenName, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
 
 const $ = id => document.getElementById(id);
@@ -39,6 +39,8 @@ let previewTimer = null;
 let previewSending = false;
 let lastPreviewSent = '';
 let selectedMapCorner = '';
+let selectedMapRoom = '';
+let mapContext = null;
 const compactScreen = matchMedia('(max-width:720px)');
 let guideExpanded = !compactScreen.matches;
 
@@ -271,6 +273,8 @@ function receiveState(next) {
     feedback.clear();
     activeFloor = 1;
     selectedMapCorner = '';
+    selectedMapRoom = '';
+    mapContext?.hidePopover();
   }
   if (next.phase === 'map_setup' && next.setup.turnPlayerId !== next.you && next.setup.preview?.placement
       && next.setup.preview.revision !== state?.setup?.preview?.revision) activeFloor = next.setup.preview.placement.floor;
@@ -289,9 +293,10 @@ function receiveState(next) {
     rotation = 0;
     selected = null;
     lastPreviewSent = '';
-    const first = next.setup?.legalPlacements?.find(p => p.rotation === rotation);
+    const first = next.setup?.legalPlacements?.[0];
     if (first && next.setup.turnPlayerId === next.you) {
       selected = { ...first };
+      rotation = first.rotation;
       activeFloor = first.floor;
     }
   }
@@ -387,7 +392,7 @@ function renderSeats(container, compact = false) {
     info.append(meta);
     item.append(info);
     if (player) {
-      const preparationStatus = state.draft ? state.draft.choices.some(choice => choice.playerId === player.id) ? '已领道具' : active ? '选择道具' : '等待' : state.opening ? player.role === 'hako' ? '配置中' : '正门等候' : null;
+      const preparationStatus = state.draft ? '随机发牌' : state.opening ? player.role === 'hako' ? '配置中' : '正门等候' : null;
       const status = !player.connected ? '暂离' : compact ? roundSeatStatus(state, player) || preparationStatus || (active ? state.setup?.drawnTileId ? '摆放中' : '当前轮次' : player.role === 'hako' ? '观图' : '等待') : player.ready ? '已准备' : '未准备';
       item.append(node('span', `seat-status${!player.connected ? ' disconnected' : player.ready ? ' ready' : ''}`, status));
       if (!compact && state.phase === 'lobby' && state.hostId === state.you && player.id !== state.you && (player.isBot || !player.connected)) {
@@ -470,6 +475,24 @@ function samePosition(a, b) {
   return a && b && a.floor === b.floor && a.x === b.x && a.y === b.y && a.rotation === b.rotation;
 }
 
+function chooseLegalPlacement({ floor = activeFloor, rotate = false } = {}) {
+  const all = state.setup?.legalPlacements || [];
+  const choices = all.filter(position => position.floor === floor);
+  const pool = choices.length ? choices : all;
+  for (let step = rotate ? 1 : 0; step < (rotate ? 5 : 4); step++) {
+    const angle = (rotation + step) % 4;
+    const legal = pool.filter(position => position.rotation === angle);
+    const match = legal.find(position => position.x === selected?.x && position.y === selected?.y) || legal[0];
+    if (match) {
+      selected = { ...match };
+      rotation = match.rotation;
+      activeFloor = match.floor;
+      return;
+    }
+  }
+  selected = null;
+}
+
 function renderCornerGuide(placements, extraCorners) {
   let guide = $('corner-guide');
   if (!guide) {
@@ -534,10 +557,11 @@ function renderBoard() {
   const extraCorners = state.round?.extraCorners || [];
   const players = mapPlayers(state);
   const announcement = state.round?.powers?.announcement;
+  const contents = { cornerState: state.round?.cornerState, review: state.round?.review?.corners };
   const remotePreview = setup.turnPlayerId !== state.you && setup.preview?.placement?.floor === activeFloor
     ? setup.preview : null;
   renderMapPositions(players);
-  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players, announcement, remotePreview]);
+  const key = JSON.stringify([activeFloor, placements, targets, selected, setup.drawnTileId, rotation, extraCorners, players, announcement, remotePreview, contents]);
   if (key === boardKey) return;
   boardKey = key;
   const board = $('tile-board');
@@ -565,7 +589,7 @@ function renderBoard() {
       cell.dataset.rotation = placement.rotation;
       cell.style.gridColumn = placement.x - minX + 1;
       cell.style.gridRow = placement.y - minY + 1;
-      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners, players, announcement));
+      cell.append(createTileSvg(placement.tileId, placement.rotation, extraCorners, players, announcement, contents));
       fragment.append(cell);
     }
     for (const position of targets) {
@@ -607,11 +631,15 @@ function renderBoard() {
 function selectMapCorner(event) {
   if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
   const corner = event.target.closest('.corner-location');
-  if (!corner) return;
+  const marker = event.target.closest('.map-player-marker');
+  const room = event.target.closest('[data-room-id]');
+  if (!corner && !room) return;
+  if (!event.target.closest('.placed-tile')) return;
   event.preventDefault();
   event.stopPropagation();
-  selectedMapCorner = corner.dataset.cornerId;
-  for (const mark of $('tile-board').querySelectorAll('.corner-location')) mark.classList.toggle('selected-corner', mark === corner);
+  selectedMapCorner = corner?.dataset.cornerId || marker?.dataset.cornerId || '';
+  selectedMapRoom = selectedMapCorner ? cornerRoomId(selectedMapCorner) : getLogicalRoomId(room.dataset.roomId);
+  for (const mark of $('tile-board').querySelectorAll('.corner-location')) mark.classList.toggle('selected-corner', mark.dataset.cornerId === selectedMapCorner);
   let name = $('selected-corner-name');
   if (!name) {
     name = node('span', 'selected-corner-name');
@@ -620,10 +648,144 @@ function selectMapCorner(event) {
     name.setAttribute('role', 'status');
     $('board-help').parentElement.append(name);
   }
-  name.textContent = cornerName(selectedMapCorner);
+  name.textContent = selectedMapCorner ? cornerName(selectedMapCorner) : getLogicalRooms().find(value => value.id === selectedMapRoom)?.name || '';
+  renderMapContext(true);
 }
 $('tile-board').addEventListener('click', selectMapCorner);
 $('tile-board').addEventListener('keydown', selectMapCorner);
+
+function renderMapContext(open = false) {
+  if (!selectedMapRoom || !open && !mapContext?.matches(':popover-open')) return;
+  if (!mapContext) {
+    mapContext = node('section', 'map-context');
+    mapContext.id = 'map-context';
+    mapContext.dataset.testid = 'map-context';
+    mapContext.setAttribute('popover', 'auto');
+    mapContext.setAttribute('aria-labelledby', 'map-context-title');
+    document.body.append(mapContext);
+  }
+  const fragment = document.createDocumentFragment();
+  const header = node('div', 'map-context-heading');
+  const title = node('h3', '', selectedMapCorner ? cornerName(selectedMapCorner) : getLogicalRooms().find(value => value.id === selectedMapRoom)?.name || '地图位置');
+  title.id = 'map-context-title';
+  const close = node('button', 'text-button', '收起');
+  close.type = 'button';
+  close.addEventListener('click', () => mapContext.hidePopover());
+  header.append(title, close);
+  fragment.append(header);
+  const round = state.round;
+  const review = round?.review?.corners.find(corner => corner.id === selectedMapCorner);
+  const publicCorner = round?.cornerState?.find(corner => corner.id === selectedMapCorner);
+  const resolution = round?.resolution;
+  if (review) {
+    fragment.append(node('p', 'map-context-content', mapTokenName(review.token)));
+    for (const actor of review.actors || []) fragment.append(node('p', 'small-note', `${state.players.find(player => player.id === actor.playerId)?.name || '玩家'} · ${actor.type === 'hako' ? '箱娃' : '箱人'}${actor.carriedTokens?.length ? `；暂存：${actor.carriedTokens.map(token => mapTokenName(token)).join('、')}` : ''}`));
+    if (review.underToken) fragment.append(node('p', 'small-note', `被替换棋子：${mapTokenName(review.underToken)}`));
+    fragment.append(node('p', 'section-meta', '终局盘面 · 全员可见'));
+  } else if (resolution?.playerId === state.you && resolution.cornerId === selectedMapCorner && resolution.token) {
+    fragment.append(node('p', 'map-context-content', mapTokenName(resolution.token)), node('p', 'section-meta', '本次窥探结果 · 仅你可见'));
+  } else if (publicCorner?.faceUp && publicCorner.token?.type === 'empty_box') {
+    fragment.append(node('p', 'map-context-content', '空箱 · X面朝上'), node('p', 'small-note', '全员可见；仍可窥探。箱娃或箱人潜入后可以重新盖放。'));
+  }
+  for (const death of (round?.deathLocations || []).filter(value => value.cornerId === selectedMapCorner)) {
+    fragment.append(node('p', 'small-note', `${state.players.find(player => player.id === death.userId)?.name || '玩家'}死亡于此，已转为箱人。这是死亡时位置，后续潜伏仍保密。`));
+  }
+  const controls = node('div', 'map-context-actions');
+  const locked = pending || !online || Boolean(state.undo?.pending || round?.result);
+  const find = testid => document.querySelector(`[data-testid="${testid}"]`);
+  const options = [];
+  const add = (label, testid, selections = {}, extras = []) => {
+    const target = find(testid);
+    if (target) options.push({ label, target, selections, extras });
+  };
+  const selectedCorner = selectedMapCorner;
+  if (selectedCorner) {
+    if (round?.peekTargets?.includes(selectedCorner)) add('确认窥探此角落', 'peek-target', {}, ['peek-use-night-vision']);
+    if (round?.weaponTargets?.includes(selectedCorner) && round.weapons?.length) add('确认讨伐此角落', 'use-weapon', { 'weapon-corner-select': selectedCorner }, ['weapon-select']);
+    if (resolution?.kind === 'forced_peek' && resolution.cornerIds?.includes(selectedCorner)) add('确认强制窥探', 'choose-forced-peek', { 'forced-peek-target': selectedCorner }, ['forced-peek-use-night-vision']);
+    const isHako = round?.hako.playerId === state.you;
+    const actor = isHako ? round?.hako : round?.ghost;
+    if (actor?.hidingTargets?.includes(selectedCorner)) add('确认潜伏于此', isHako ? 'confirm-hiding' : 'confirm-ghost-hiding', { [isHako ? 'hiding-select' : 'ghost-hiding-select']: selectedCorner },
+      [...document.querySelectorAll('[data-testid="hide-face-down"]')].map(input => input.id));
+    if (state.opening?.hidingTargets?.includes(selectedCorner)) add('确认初始潜伏', 'confirm-initial-hiding', { 'initial-hiding-select': selectedCorner });
+    if (state.opening?.remainsTargets?.includes(selectedCorner)) add('确认放置亡骸', 'confirm-remains', { 'remains-select': selectedCorner });
+  }
+  if (!selectedCorner) {
+    if (round?.moveTargets?.includes(selectedMapRoom)) add('确认移动至此房间', 'move-target');
+    for (const [selectId, testid] of [['hiding-room-select', 'inspect-hiding-room'], ['ghost-hiding-room-select', 'ghost-inspect-hiding-room'], ['initial-room-select', 'inspect-initial-room']]) {
+      const select = $(selectId);
+      if (select && [...select.options].some(option => option.value === selectedMapRoom)) add('选择此房间潜伏', testid, { [selectId]: selectedMapRoom });
+    }
+  }
+  for (const option of options) {
+    const group = node('div', 'map-context-choice');
+    for (const id of option.extras) {
+      const original = $(id);
+      if (!original) continue;
+      const label = node('label', original.type === 'checkbox' ? 'inline-check' : '');
+      const input = original.cloneNode(true);
+      input.id = `map-${id}`;
+      input.removeAttribute('data-testid');
+      input.value = original.value;
+      input.checked = original.checked;
+      input.disabled = locked || original.disabled;
+      input.addEventListener('change', () => { original.value = input.value; original.checked = input.checked; original.dispatchEvent(new Event('change')); });
+      label.append(input, document.createTextNode(original.dataset.testid === 'hide-face-down' ? `重新盖放${cornerNumber(original.dataset.cornerId)}的X` : original.type === 'checkbox' ? '使用夜视仪' : '选择讨伐道具'));
+      group.append(label);
+    }
+    const confirm = node('button', 'button primary small', option.label);
+    confirm.type = 'button';
+    confirm.dataset.testid = 'map-confirm-action';
+    confirm.disabled = locked || option.target.disabled;
+    confirm.addEventListener('click', () => {
+      if (pending || !online || state.undo?.pending || state.round?.result) return;
+      for (const [id, value] of Object.entries(option.selections)) {
+        const select = $(id);
+        if (!select || ![...select.options].some(option => option.value === value)) return;
+        select.value = value;
+        select.dispatchEvent(new Event('change'));
+      }
+      const target = option.target.dataset.testid === 'peek-target' ? [...document.querySelectorAll('[data-testid="peek-target"]')].find(button => button.dataset.cornerId === selectedCorner)
+        : option.target.dataset.testid === 'move-target' ? [...document.querySelectorAll('[data-testid="move-target"]')].find(button => button.dataset.roomId === selectedMapRoom) : option.target;
+      mapContext.hidePopover();
+      if (target && !target.disabled) target.click();
+    });
+    group.append(confirm);
+    controls.append(group);
+  }
+  if (!options.length && !review) controls.append(node('p', 'small-note', locked ? '当前无法执行游戏操作，可继续查看地图。' : selectedCorner ? '此处暂无可执行操作。可在右侧查看当前回应与结算。' : '点击房内角落可查看位置及可用操作。'));
+  fragment.append(controls);
+  mapContext.replaceChildren(fragment);
+  if (open && !mapContext.matches(':popover-open')) mapContext.showPopover();
+  positionMapContext();
+}
+
+function positionMapContext() {
+  if (!mapContext?.matches(':popover-open')) return;
+  const viewport = $('board-viewport').getBoundingClientRect();
+  const anchor = selectedMapCorner ? document.querySelector(`#tile-board .corner-location[data-corner-id="${CSS.escape(selectedMapCorner)}"]`) : document.querySelector(`#tile-board .room-shape[data-room-id="${CSS.escape(selectedMapRoom)}"]`);
+  if (!anchor && mapContext.matches(':popover-open')) { mapContext.hidePopover(); return; }
+  const point = anchor?.getBoundingClientRect() || viewport;
+  const bounds = mapContext.getBoundingClientRect();
+  mapContext.style.left = `${Math.max(8, Math.min(innerWidth - bounds.width - 8, point.right + 8))}px`;
+  mapContext.style.top = `${Math.max(8, Math.min(innerHeight - bounds.height - 8, point.top))}px`;
+}
+window.addEventListener('resize', positionMapContext);
+window.addEventListener('scroll', positionMapContext, { passive: true });
+$('board-viewport').addEventListener('scroll', positionMapContext, { passive: true });
+
+document.addEventListener('hako:locate-corner', event => {
+  if (!state?.setup || !event.detail?.cornerId) return;
+  const roomId = cornerRoomId(event.detail.cornerId);
+  const tileId = getLogicalRooms().find(room => room.id === roomId)?.tileId;
+  const placement = state.setup.placements.find(value => value.tileId === tileId);
+  if (!placement) return;
+  activeFloor = placement.floor;
+  renderSetup();
+  const target = document.querySelector(`#tile-board .corner-location[data-corner-id="${CSS.escape(event.detail.cornerId)}"]`);
+  target?.scrollIntoView({ block: 'center', inline: 'center' });
+  target?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+});
 
 function renderMapPositions(players) {
   const strip = $('map-positions');
@@ -637,9 +799,10 @@ function renderMapPositions(players) {
     entry.type = 'button';
     entry.dataset.playerId = player.id;
     entry.dataset.roomId = player.roomId;
-    entry.setAttribute('aria-label', `查看${player.name}${player.self ? '（你）' : ''}所在位置：${room?.name || '正门'}${player.cornerId ? `，角落${cornerNumber(player.cornerId)}，仅自己可见` : ''}`);
+    const visibility = player.death ? '死亡时公开' : player.revealed ? '终局公开' : player.peeking ? '仅你可见' : '箱娃方可见';
+    entry.setAttribute('aria-label', `查看${player.name}${player.self ? '（你）' : ''}所在位置：${room?.name || '正门'}${player.cornerId ? `，角落${cornerNumber(player.cornerId)}，${visibility}` : ''}`);
     entry.append(node('span', 'player-number', String(player.seat + 1)),
-      node('span', '', `${player.name}${player.self ? '（你）' : ''} · ${room?.name || '正门'}${player.cornerId ? ` ${cornerNumber(player.cornerId)}（仅自己可见）` : ''}`));
+      node('span', '', `${player.name}${player.self ? '（你）' : ''} · ${room?.name || '正门'}${player.cornerId ? ` ${cornerNumber(player.cornerId)}（${visibility}）` : ''}`));
     entry.addEventListener('click', () => {
       if (floor === undefined) return;
       activeFloor = floor;
@@ -728,9 +891,11 @@ function renderSetup() {
     button.setAttribute('aria-selected', String(floor === activeFloor));
     button.tabIndex = floor === activeFloor ? 0 : -1;
     $(`floor-count-${floor}`).textContent = setup.placements.filter(p => p.floor === floor).length || '';
+    button.disabled = canPlace() && Boolean(setup.drawnTileId) && !setup.legalPlacements.some(position => position.floor === floor);
   }
   renderBoard();
   applyUndoLock(state);
+  renderMapContext();
   queueMapPreview();
 }
 
@@ -765,7 +930,7 @@ function currentTask() {
     return task(actor === state.you ? round.phase === 'visitor_reveal' ? '轮到你翻牌' : '轮到你行动' : `等待${name(actor)}${round.phase === 'visitor_reveal' ? '翻牌' : '行动'}`, description, actor, round.phase === 'visitor_reveal' ? '.silent-section' : '.standard-actions, .practice-controls');
   }
   if (state.opening) return task(state.opening.hakoId === state.you ? '请配置开局秘密' : '等待箱娃配置开局', preparationDescription(state), state.opening.hakoId, '#opening-panel');
-  if (state.draft) return task(state.draft.turnPlayerId === state.you ? '请领取初始道具' : `等待${name(state.draft.turnPlayerId)}领取道具`, preparationDescription(state), state.draft.turnPlayerId, '#draft-panel');
+  if (state.draft) return task('正在随机分发技能', preparationDescription(state), null, '#draft-panel');
   if (state.setup?.phase === 'map_ready') return task(state.hostId === state.you ? '地图齐备，可以入宅' : '等待房主开始配置', '九块地图已就位，下一步配置角落标志与开局秘密。', state.hostId, '#map-complete');
   const actor = state.setup?.turnPlayerId;
   const drawn = state.setup?.drawnTileId;
@@ -789,7 +954,7 @@ function renderGameStatus() {
   $('personal-role').textContent = `${you?.name || '你'} · ${isHako ? '箱娃' : visitor?.status === 'box_person' ? '箱人' : visitor?.status === 'banished' ? '已被消灭' : '访问者'}`;
   const location = mapPlayers(state).find(player => player.id === state.you);
   const room = location && getLogicalRooms().find(room => room.id === getLogicalRoomId(location.roomId));
-  $('personal-location').textContent = location ? `${room?.name || '正门'}${location.cornerId ? ` · ${cornerNumber(location.cornerId)}（${round.result ? '复盘公开' : '箱娃方可见'}）` : ''}` : '';
+  $('personal-location').textContent = location ? `${room?.name || '正门'}${location.cornerId ? ` · ${cornerNumber(location.cornerId)}（${round.result ? '复盘公开' : location.death ? '死亡时公开' : location.peeking ? '本次窥探，仅你可见' : '箱娃方可见'}）` : ''}` : '';
   $('round-context').textContent = `总回合 ${round.totalRounds ?? 0}`;
   $('focus-inventory').textContent = isHako ? `我的能力 · ${round.powers?.hand?.length ?? 0}` : `我的物品 · ${(round.inventory?.items?.length || 0) + (round.inventory?.tokens?.length || 0)}`;
 }
@@ -816,7 +981,7 @@ function render() {
   $('room-view').classList.toggle('in-game', !lobby);
   $('lobby-view').hidden = !lobby;
   $('setup-view').hidden = lobby;
-  const phaseName = state.phase === 'lobby' ? '等待入席' : state.phase === 'hako_selection' ? '抢选箱娃' : state.round ? state.round.result ? '本局结束' : state.round.mode === 'exploration' ? '旧宅探索' : '基础回合' : state.opening ? '开局准备' : state.draft ? '领取初始道具' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
+  const phaseName = state.phase === 'lobby' ? '等待入席' : state.phase === 'hako_selection' ? '抢选箱娃' : state.round ? state.round.result ? '本局结束' : state.round.mode === 'exploration' ? '旧宅探索' : '基础回合' : state.opening ? '开局准备' : state.draft ? '随机分发技能' : state.phase === 'map_ready' ? '地图已拼好' : '地图拼接';
   document.title = `箱娃 · ${state.code} · ${phaseName}`;
   $('room-phase-label').textContent = `箱娃 · ${phaseName}`;
   if (lobby) renderLobby();
@@ -850,10 +1015,7 @@ $('leave-room').addEventListener('click', () => action('leave', { endGame: true 
 $('draw-tile').addEventListener('click', () => action('draw'));
 $('rotate-tile').addEventListener('click', () => {
   if (!canPlace()) return;
-  rotation = (rotation + 1) % 4;
-  const legal = legalForRotation();
-  selected = legal.find(p => p.floor === activeFloor && p.x === selected?.x && p.y === selected?.y) || legal.find(p => p.floor === activeFloor) || legal[0] || null;
-  if (selected) activeFloor = selected.floor;
+  chooseLegalPlacement({ rotate: true });
   renderSetup();
 });
 $('confirm-placement').addEventListener('click', () => { if (selected) action('place', { ...selected }); });
@@ -861,7 +1023,7 @@ $('floor-tabs').addEventListener('click', event => {
   const button = event.target.closest('button');
   if (!button) return;
   activeFloor = Number(button.dataset.floor);
-  if (canPlace() && state.setup.drawnTileId) selected = legalForRotation().find(p => p.floor === activeFloor) || null;
+  if (canPlace() && state.setup.drawnTileId) chooseLegalPlacement();
   renderSetup();
 });
 $('floor-tabs').addEventListener('keydown', event => {

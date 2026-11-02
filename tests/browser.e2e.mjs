@@ -33,7 +33,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
       await rm(directory, { recursive: true, force: true });
     }
   });
-  const serverOptions = { dataFile: join(directory, 'rooms.json'), deck, silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
+  const serverOptions = { dataFile: join(directory, 'rooms.json'), deck, initialItemOrder: ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'], silentNumbers: [5, 4, 1, 2, 0, 3], createPlayState(setup, opening, options) {
     const play = createPlay(setup, opening, options);
     // Keep this power-specific midgame scenario deterministic after the real
     // private three-card draft, without adding or removing any numbered card.
@@ -320,20 +320,12 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(await pages[1].getByTestId('claim-hako').isEnabled(), true);
 
   state = await performAction(pages[0], 'claim_hako', () => pages[0].getByTestId('claim-hako').click());
-  assert.equal(state.phase, 'item_draft');
+  assert.equal(state.phase, 'map_setup');
   assert.equal(state.players.find(player => player.role === 'hako').id, identities[0].playerId);
   for (const page of pages) assert.equal(await page.getByTestId('claim-hako').isVisible(), false);
-  for (let choice = 0; choice < 3; choice++) {
-    const currentIndex = identities.findIndex(person => person.playerId === state.draft.turnPlayerId);
-    const page = pages[currentIndex];
-    const item = page.getByTestId('item-choice').first();
-    await item.waitFor();
-    const itemId = await item.getAttribute('data-item-id');
-    state = await performAction(page, 'choose_item', () => item.click());
-    assert.equal(state.initialItems.length, choice + 1);
-    assert.equal(state.initialItems.at(-1).playerId, identities[currentIndex].playerId);
-    assert.equal(state.initialItems.at(-1).itemId, itemId);
-  }
+  assert.equal(state.initialItems.length, 3);
+  assert.deepEqual(state.initialItems.map(choice => choice.playerId), identities.slice(1).map(person => person.playerId));
+  for (const page of pages) assert.equal(await page.getByTestId('item-choice').count(), 0);
   assert.equal(state.phase, 'map_setup');
 
   for (let turn = 0; turn < deck.length; turn++) {
@@ -561,11 +553,12 @@ test('four browser sessions complete private opening, powers, exploration, item 
 
   const interruptedVisitorId = state.round.silent.turnPlayerId;
   const interruptedIndex = identities.findIndex(person => person.playerId === interruptedVisitorId);
-  const beforeOverflow = structuredClone(state.round.visitors);
+  const positions = visitors => visitors.map(({ itemCount, tokenCount, ...position }) => position);
+  const beforeOverflow = positions(state.round.visitors);
   state = await performAction(pages[interruptedIndex], 'silent_reveal', () => pages[interruptedIndex].getByTestId('silent-card-3').click());
   assert.equal(state.round.phase, 'hako_reaction');
   assert.equal(state.round.silent.total, 12);
-  assert.deepEqual(state.round.visitors, beforeOverflow, 'Overflow prevents the interrupted visitor from acting');
+  assert.deepEqual(positions(state.round.visitors), beforeOverflow, 'Overflow prevents the interrupted visitor from acting');
   await assertVisitorPrivacy();
   for (const page of pages) assert.equal(await page.getByTestId('move-target').count(), 0);
   for (const page of pages.slice(1)) assert.equal(await page.getByTestId('pass-noise-reaction').count(), 0);
@@ -635,8 +628,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.ok(state.round.hako.inspectedRoom.corners.every(corner => !Object.hasOwn(corner, 'token')
     || corner.id === 'children_toys' && corner.token.type === 'empty_box' && corner.token.faceUp === true),
   'The already public face-up X is visible; covered pieces remain unknown');
-  await hakoPage.getByTestId('hiding-select').selectOption(nextHiding);
-  state = await performAction(hakoPage, 'hako_hide', () => hakoPage.getByTestId('confirm-hiding').click());
+  await hakoPage.locator(`#map-positions [data-player-id="${identities[0].playerId}"]`).click();
+  await hakoPage.locator(`.corner-location[data-corner-id="${nextHiding}"]`).click();
+  assert.equal(await hakoPage.locator('#map-context input[type="checkbox"]').isChecked(), true, 'Nearby hiding confirmation preserves the existing cover-X choice');
+  state = await performAction(hakoPage, 'hako_hide', () => hakoPage.getByTestId('map-confirm-action').filter({ hasText: '确认潜伏于此' }).click());
   assert.equal(state.round.hako.cornerId, nextHiding);
   assert.equal(state.round.silent.cycle, 2);
   assert.equal(state.round.hako.lastInspectedRoom.id, hidingRoom);
@@ -658,7 +653,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.phase, 'visitor_reveal');
   assert.equal(state.round.silent.turnPlayerId, interruptedVisitorId, 'The visitor interrupted by overflow resumes after hako');
   assert.ok(state.round.silent.cards.every(card => card.status === 'down'));
-  assert.deepEqual(state.round.visitors, beforeOverflow);
+  assert.deepEqual(positions(state.round.visitors), beforeOverflow);
   await assertVisitorPrivacy();
   const coveredX = (await getState(identities[1])).round.cornerState.find(corner => corner.id === 'children_toys');
   assert.equal(coveredX.occupied, true);
@@ -691,7 +686,11 @@ test('four browser sessions complete private opening, powers, exploration, item 
   }
   const beforeRestart = await Promise.all(identities.map(getState));
   const restartPort = server.address().port;
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  const stopped = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  // This restart intentionally disconnects every browser. Chromium can leave an
+  // empty speculative socket that Node's graceful close otherwise waits on.
+  server.closeAllConnections();
+  await stopped;
   await Promise.all(pages.map(page => page.locator('#connection-banner').waitFor({ state: 'visible' })));
   server = createGameServer(serverOptions);
   server.listen(restartPort, '127.0.0.1');
@@ -830,14 +829,17 @@ test('four browser sessions complete private opening, powers, exploration, item 
   const publicAnswer = { kind: 'item_answer', itemId: 'spirit_pen', userId: penPerson.playerId,
     answer: true, roomId: 'children_room' };
   for (let index = 0; index < pages.length; index++) {
-    assert.deepEqual(snapshots[index].round.items.events.at(-1), publicAnswer);
+    const { id, cycle, status, ...answer } = snapshots[index].round.items.events.at(-1);
+    assert.deepEqual(answer, publicAnswer);
+    assert.equal(status, 'triggered');
+    assert.ok(id && cycle >= 1);
     assert.equal(Object.hasOwn(snapshots[index].round.items.events.at(-1), 'cornerId'), false,
       'The public reply identifies a room and never a hiding corner');
     assert.equal(JSON.stringify(snapshots[index].round.items.events).includes(nextHiding), false);
     assert.equal(await pages[index].getByTestId('item-answer').count(), 0);
     const events = pages[index].getByTestId('item-events');
     await events.locator('summary').click();
-    assert.match(await events.innerText(), /小满使用笔仙.*儿童房.*箱娃回答：是/);
+    assert.match(await events.innerText(), /小满使用笔仙.*箱娃回答：是/);
   }
   assert.ok(snapshots[penIndex].round.inventory.items.some(item => item.id === 'spirit_pen'),
     'Using the spirit pen does not consume its card');
@@ -909,14 +911,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
   state = await performAction(pages[0], 'start', () => pages[0].getByTestId('start-setup').click());
   assert.equal(state.phase, 'hako_selection');
   state = await performAction(pages[1], 'claim_hako', () => pages[1].getByTestId('claim-hako').click());
-  assert.equal(state.phase, 'item_draft');
+  assert.equal(state.phase, 'map_setup');
   assert.equal(state.players.find(player => player.role === 'hako').id, identities[1].playerId,
     'The next game can assign a different player as Hako');
-  for (let choice = 0; choice < 3; choice++) {
-    const page = pages[identities.findIndex(person => person.playerId === state.draft.turnPlayerId)];
-    state = await performAction(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
-    assert.equal(state.initialItems.length, choice + 1);
-  }
+  assert.equal(state.initialItems.length, 3);
   assert.equal(state.phase, 'map_setup');
   assert.equal(state.setup.placements.length, 1, 'The rematch starts with a fresh map');
 
@@ -1328,17 +1326,15 @@ test('four polling browsers retain identity, recover connections and complete fi
   for (const context of contexts.slice(0, 2)) await context.unroute('**/actions', claimRoute);
   state = await getState(identities[0]);
   await waitForPoll(state.version);
-  assert.equal(state.phase, 'item_draft');
+  assert.equal(state.phase, 'map_setup');
   assert.equal(state.players.filter(player => player.role === 'hako').length, 1);
   assert.equal(state.players.filter(player => player.role === 'visitor').length, 3);
   const hakoIndex = identities.findIndex(person => person.playerId === state.players.find(player => player.role === 'hako').id);
   for (let choice = 0; choice < 3; choice++) {
-    const currentIndex = identities.findIndex(person => person.playerId === state.draft.turnPlayerId);
+    const currentIndex = identities.findIndex(person => person.playerId === state.initialItems[choice].playerId);
     assert.equal(currentIndex, (hakoIndex + choice + 1) % 4);
-    const page = pages[currentIndex];
-    state = await performAction(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
   }
-  assert.equal(state.phase, 'map_setup', 'The first successful claim starts the draft without another ready step');
+  assert.equal(state.phase, 'map_setup', 'The first successful claim deals skills and starts the map without another ready step');
 
   // Move through the map fixture via the real API to reach editable opening controls.
   for (let turn = 0; turn < deck.length; turn++) {

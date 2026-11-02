@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSetup, drawTile, placeTile } from '../src/game.mjs';
 import {
-  INITIAL_ITEMS, createItemDraft, chooseItem, getItemDraftView, createOpening,
+  INITIAL_ITEMS, createItemDraft, chooseItem, completeItemDraft, getItemDraftView, createOpening,
   chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding,
   chooseInitialPower, getOpeningView, getInitialRoomMemory,
 } from '../src/preparation.mjs';
@@ -107,7 +107,7 @@ test('item draft requires three distinct visitors and a complete pool with disti
   assert.notEqual(draft.items[0].name, 'changed');
 });
 
-test('visitors choose distinct initial items in seat order and the draft stops after three choices', () => {
+test('legacy partial item drafts retain valid seat-ordered choices until automatic completion', () => {
   const draft = createItemDraft(visitors);
   const [first, second, third] = INITIAL_ITEMS;
   assert.equal(draft.phase, 'item_draft');
@@ -130,14 +130,10 @@ test('visitors choose distinct initial items in seat order and the draft stops a
   rejectsWithoutMutation(draft, () => chooseItem(draft, visitors[0], first.id));
 });
 
-test('five-player preparation waits for all four distinct items and keeps opening secrets from the fourth visitor', () => {
+test('five-player preparation automatically deals four distinct skills and keeps opening secrets from the fourth visitor', () => {
   const fourVisitors = [...visitors, 'visitor-d'];
   const draft = createItemDraft(fourVisitors);
-  for (let index = 0; index < fourVisitors.length; index++) {
-    assert.equal(draft.phase, 'item_draft');
-    assert.equal(draft.turnPlayerId, fourVisitors[index]);
-    chooseItem(draft, fourVisitors[index], INITIAL_ITEMS[index].id);
-  }
+  completeItemDraft(draft);
   assert.equal(draft.phase, 'items_ready');
   assert.equal(draft.turnPlayerId, null);
   assert.equal(getItemDraftView(draft).availableItems.length, INITIAL_ITEMS.length - 4);
@@ -171,6 +167,40 @@ test('five-player preparation waits for all four distinct items and keeps openin
   }
 });
 
+test('automatic deals use the full twelve-skill pool, stay distinct and never redraw completed deals', () => {
+  for (const ids of [visitors, [...visitors, 'visitor-d']]) {
+    const draft = createItemDraft(ids);
+    const order = INITIAL_ITEMS.map(item => item.id).reverse();
+    completeItemDraft(draft, { itemOrder: order });
+    assert.equal(draft.phase, 'items_ready');
+    assert.equal(draft.turnPlayerId, null);
+    assert.deepEqual(draft.choices, ids.map((playerId, index) => ({ playerId, itemId: order[index] })));
+    assert.equal(new Set(draft.choices.map(choice => choice.itemId)).size, ids.length);
+    const saved = structuredClone(draft);
+    completeItemDraft(draft);
+    assert.deepEqual(draft, saved);
+  }
+  const partial = createItemDraft(visitors);
+  chooseItem(partial, visitors[0], 'night_vision');
+  completeItemDraft(partial, { itemOrder: ['night_vision', 'shrine_bell', 'spirit_pen'] });
+  assert.deepEqual(partial.choices.map(choice => choice.itemId), ['night_vision', 'shrine_bell', 'spirit_pen']);
+});
+
+test('automatic deal rejects malformed saved choices and test orders without changing state', () => {
+  for (const choices of [[{ playerId: 'outsider', itemId: 'night_vision' }],
+    [{ playerId: visitors[0], itemId: 'unknown' }],
+    [{ playerId: visitors[0], itemId: 'night_vision' }, { playerId: visitors[1], itemId: 'night_vision' }],
+    [{ playerId: visitors[0], itemId: 'night_vision' }, { playerId: visitors[0], itemId: 'shrine_bell' }]]) {
+    const draft = createItemDraft(visitors);
+    draft.choices = choices;
+    rejectsWithoutMutation(draft, () => completeItemDraft(draft));
+  }
+  for (const itemOrder of ['night_vision', ['unknown'], ['night_vision', 'night_vision']]) {
+    const draft = createItemDraft(visitors);
+    rejectsWithoutMutation(draft, () => completeItemDraft(draft, { itemOrder }));
+  }
+});
+
 test('item draft views detach participant ids, choices, card names and descriptions', () => {
   const draft = createItemDraft(visitors);
   chooseItem(draft, visitors[0], INITIAL_ITEMS[0].id);
@@ -185,6 +215,24 @@ test('item draft views detach participant ids, choices, card names and descripti
   view.availableItems[0].name = 'changed';
   view.availableItems[0].description = 'changed';
   view.availableItems.pop();
+  assert.deepEqual(draft, before);
+});
+
+test('legacy draft help uses current known skills while custom text and saved state remain untouched', () => {
+  const custom = { id: 'custom-skill', name: '自定义技能', description: '自定义版本原文' };
+  const draft = createItemDraft(visitors, { items: [...INITIAL_ITEMS, custom] });
+  for (const item of draft.items.filter(item => item.id !== custom.id)) item.description = '旧版说明';
+  chooseItem(draft, visitors[0], 'relic_ring');
+  chooseItem(draft, visitors[1], custom.id);
+  const before = structuredClone(draft);
+  const view = getItemDraftView(draft);
+  assert.equal(view.choices[0].itemDescription, INITIAL_ITEMS.find(item => item.id === 'relic_ring').description);
+  assert.equal(view.choices[1].itemDescription, custom.description);
+  assert.equal(view.availableItems.find(item => item.id === 'walkie_talkie').description, INITIAL_ITEMS[0].description);
+  const opening = createOpening(completedSetup(), { hakoId, itemChoices: [
+    ...draft.choices, { playerId: visitors[2], itemId: 'walkie_talkie', itemDescription: '旧版说明' },
+  ] });
+  assert.ok(getOpeningView(opening, hakoId).itemChoices.every(choice => !Object.hasOwn(choice, 'itemDescription')));
   assert.deepEqual(draft, before);
 });
 
@@ -376,7 +424,7 @@ test('initial power is chosen from three dealt cards and remains private with th
   assert.equal(new Set(opening.powerDeck).size, 10);
   assert.deepEqual(opening.powerDeck.filter(id => typeof id === 'number').sort((a, b) => a - b),
     Array.from({ length: 10 }, (_, index) => index + 1).filter(id => id !== chosen.id));
-  assert.ok(opening.powerDeck.includes('despair'));
+  assert.equal(opening.powerDeck.at(-1), 'despair');
   assert.equal(opening.powerDeck.includes(chosen.id), false);
   assert.ok(options.slice(1).every(power => opening.powerDeck.includes(power.id)));
   assert.equal(opening.powerDeck.includes(12), false);

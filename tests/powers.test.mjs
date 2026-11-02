@@ -117,6 +117,7 @@ test('public matching notebooks enter the hand without granting other exemptions
 test('despair returns itself to the bottom, grants up to two distinct cards with notebook exemptions and preserves single-use restrictions', () => {
   let play = fixture();
   play.powers.deck = ['despair', 10, 3, 2];
+  play.powers.cryCount = 9;
   play = act(stage(play), hakoId, { type: 'hako_cry' });
   assert.deepEqual(play.powers.deck, [2, 'despair']);
   assert.deepEqual(play.powers.hand.filter(card => [10, 3].includes(card.id)), [
@@ -132,6 +133,7 @@ test('despair returns itself to the bottom, grants up to two distinct cards with
   reject(play, hakoId, { type: 'activate_power', slot: 0 });
   let short = fixture();
   short.powers.deck = ['despair', 2];
+  short.powers.cryCount = 9;
   short = act(stage(short), hakoId, { type: 'hako_cry' });
   assert.deepEqual(short.powers.deck, ['despair']);
   assert.equal(short.powers.hand.filter(card => card.id === 2).length, 1);
@@ -167,9 +169,10 @@ test('legacy games gain innate NO.11 without read-side mutation, duplication, or
   assert.equal(getPlayView(play, hakoId).powers.hand.some(card => card.id === 11), false);
 });
 
-test('the tenth actual cry guarantees despair after skipped stages and survives save restoration', () => {
+test('bottom-deck despair appears on the tenth actual cry after skipped stages and survives save restoration', () => {
   let play = fixture();
   play.powers.deck = [2, 3, 4, 5, 6, 7, 8, 9, 10, 'despair'];
+  play.notebooks.push(piece('known-note-two', 'notebook', { number: 2 }));
   for (let count = 0; count < 3; count++) play = stage(finishStage(begin(stage(play))));
   assert.equal(play.powers.cryCount, 0);
   for (let count = 1; count <= 9; count++) {
@@ -178,19 +181,18 @@ test('the tenth actual cry guarantees despair after skipped stages and survives 
     assert.notEqual(play.powers.lastDraw.kind, 'despair');
     play = stage(finishStage(begin(play)));
   }
-  // Keep despair away from the top to distinguish the explicit tenth-cry guarantee.
-  play.powers.deck = [3, 4, 'despair', 2];
+  assert.equal(play.powers.deck[0], 'despair', 'Acquiring an ordinary card does not advance the initial despair draw');
   play = JSON.parse(JSON.stringify(play));
   play = act(play, hakoId, { type: 'hako_cry' });
   assert.equal(play.powers.cryCount, 10);
   assert.deepEqual(play.powers.lastDraw, { kind: 'despair', cards: [3, 4] });
-  assert.deepEqual(play.powers.deck, [2, 'despair']);
+  assert.deepEqual(play.powers.deck, [5, 6, 7, 8, 9, 10, 'despair']);
   assert.equal(play.powers.hand.find(card => card.id === 3).ignoreThreshold, true);
   reject(play, hakoId, { type: 'hako_cry' });
   assert.equal(play.powers.cryCount, 10);
 });
 
-test('early despair keeps its normal handling and does not substitute a round number for cry count', () => {
+test('legacy early despair returns to the bottom without granting cards or substituting rounds for cries', () => {
   let play = fixture();
   play.round.silent.cycle = 10;
   play.powers.deck = [2, 'despair', 3];
@@ -198,8 +200,41 @@ test('early despair keeps its normal handling and does not substitute a round nu
   assert.deepEqual(play.powers.lastDraw, { kind: 'returned', cards: [2] });
   assert.equal(play.powers.cryCount, 1);
   play = act(stage(finishStage(begin(play))), hakoId, { type: 'hako_cry' });
-  assert.deepEqual(play.powers.lastDraw, { kind: 'despair', cards: [3, 2] });
+  assert.deepEqual(play.powers.lastDraw, { kind: 'despair_locked', cards: [] });
+  assert.deepEqual(play.powers.deck, [3, 2, 'despair']);
+  assert.deepEqual(play.powers.hand.map(card => card.id), [1, 11]);
   assert.equal(play.powers.cryCount, 2);
+});
+
+test('a real nightmare-letter action delays despair beyond ten cries and later draws repeat its effect', () => {
+  let play = fixture();
+  play.powers.deck = [2, 3, 4, 5, 6, 7, 8, 9, 10, 'despair'];
+  play.inventories[first].items = [{ ...INITIAL_ITEMS.find(item => item.id === 'nightmare_letter') }];
+  for (let count = 0; count < 9; count++) {
+    play = act(stage(play), hakoId, { type: 'hako_cry' });
+    play = finishStage(begin(play));
+  }
+  assert.equal(play.powers.deck[0], 'despair');
+  play = reveal(play);
+  play = act(play, first, { type: 'use_item', itemId: 'nightmare_letter' });
+  play = act(play, hakoId, { type: 'resolve_visitor_action' });
+  assert.equal(play.powers.deck.at(-1), 'despair');
+  for (let count = 10; count <= 18; count++) {
+    play = act(stage(play), hakoId, { type: 'hako_cry' });
+    assert.equal(play.powers.cryCount, count);
+    assert.notEqual(play.powers.lastDraw.kind, 'despair');
+    play = finishStage(begin(play));
+  }
+  play = act(stage(play), hakoId, { type: 'hako_cry' });
+  assert.deepEqual(play.powers.lastDraw, { kind: 'despair', cards: [2, 3] });
+  play = finishStage(begin(play));
+  for (let index = 0; index < 7; index++) {
+    play = act(stage(play), hakoId, { type: 'hako_cry' });
+    play = finishStage(begin(play));
+  }
+  play = act(stage(play), hakoId, { type: 'hako_cry' });
+  assert.deepEqual(play.powers.lastDraw, { kind: 'despair', cards: [4, 5] });
+  assert.equal(play.powers.cryCount, 27);
 });
 
 test('setting and recalling share one management choice and later slots conceal their identities', () => {
@@ -450,7 +485,8 @@ test('behind-you settles once using next-stage positions and notebooks before an
   assert.equal(play.powers.step, 'preparation');
   assert.equal(play.powers.pendingBehindYou, null);
   assert.equal(play.interruption, null);
-  play = act(play, third, { type: 'bequeath', targetId: first });
+  assert.equal(play.resolution, null, 'A visitor with skills but no tokens has no inheritance decision');
+  assert.deepEqual(play.inventories[third], { items: [], tokens: [] });
   play = begin(play);
   assert.equal(play.round.visitors[0].status, 'alive');
 });
@@ -482,6 +518,7 @@ test('declining the extinguisher lets group deaths finish before a relic-ring in
   play.round.visitors[1].roomId = 'children_room';
   play.inventories[first].items.push(structuredClone(INITIAL_ITEMS.find(item => item.id === 'relic_ring')));
   play.inventories[first].tokens.push(piece('inherited-key', 'key'));
+  play.inventories[second].tokens.push(piece('inherited-password', 'password', { number: 4 }));
   play.inventories[third].tokens.push(piece('unused-extinguisher', 'extinguisher'));
   play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
   play = act(play, third, { type: 'extinguisher_response', use: false });
@@ -498,6 +535,7 @@ test('declining the extinguisher lets group deaths finish before a relic-ring in
   assert.ok(play.inventories[third].tokens.some(token => token.id === 'inherited-key'));
   assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: second });
   play = act(play, second, { type: 'bequeath', targetId: third });
+  assert.ok(play.inventories[third].tokens.some(token => token.id === 'inherited-password'));
   assert.equal(play.resolution, null);
 });
 

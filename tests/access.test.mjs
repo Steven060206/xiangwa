@@ -227,10 +227,7 @@ test('a default invitation expires at thirty minutes while a started five-player
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(host, 'start');
   let state = await act(host, 'claim_hako');
-  while (state.phase === 'item_draft') {
-    state = await act(people.find(person => person.playerId === state.draft.turnPlayerId), 'choose_item',
-      { itemId: state.draft.availableItems[0].id });
-  }
+  assert.equal(state.initialItems.length, 4);
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');

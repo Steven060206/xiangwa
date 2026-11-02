@@ -58,7 +58,7 @@ function fixture({ slots = [], hand = [], possessions = [] } = {}) {
 
 async function game(t, fixtureOptions, items = ['smartphone', 'deduction', 'walkie_talkie']) {
   const directory = await mkdtemp(join(tmpdir(), 'hako-cards-browser-'));
-  const options = { deck, silentNumbers: [0, 1, 2, 3, 4, 5], dataFile: join(directory, 'rooms.json'), createPlayState: fixture(fixtureOptions) };
+  const options = { deck, initialItemOrder: items, silentNumbers: [0, 1, 2, 3, 4, 5], dataFile: join(directory, 'rooms.json'), createPlayState: fixture(fixtureOptions) };
   let server = createGameServer(options);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -109,10 +109,7 @@ async function game(t, fixtureOptions, items = ['smartphone', 'deduction', 'walk
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(people[0], 'start');
   let state = await act(people[0], 'claim_hako');
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = await act(person, 'choose_item', { itemId: items[index] });
-  }
+  assert.deepEqual(state.initialItems.map(choice => choice.itemId), items);
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -196,12 +193,14 @@ test('NO7 browser choices protect random-token privacy, preserve free/standard t
   await fp.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
   await g.click(fp, 'show_token', () => fp.getByTestId('show-token').click());
   const steal = hp.getByTestId('power-steal-0');
-  assert.deepEqual(await steal.locator('option').evaluateAll(options => options.map(option => option.value)), ['item:smartphone', 'token']);
+  assert.deepEqual(await steal.locator('option').evaluateAll(options => options.map(option => option.value)), ['item:0', 'token']);
   assert.equal((await steal.innerText()).includes('密码'), false);
-  await steal.selectOption('item:smartphone');
+  assert.doesNotMatch(await steal.innerText(), /智能手机/);
+  await steal.selectOption('item:0');
   const theft = await g.click(hp, 'activate_power', () => hp.locator('[data-testid="activate-power"][data-power-id="7"]').click());
   assert.equal(theft.payload.stealKind, 'item');
-  assert.equal(theft.payload.itemId, 'smartphone');
+  assert.equal(theft.payload.itemIndex, 0);
+  assert.equal(Object.hasOwn(theft.payload, 'itemId'), false);
   assert.match(await hp.getByTestId('power-stolen').innerText(), /智能手机/);
   assert.equal((await g.snapshot(first)).round.phase, 'visitor_reveal');
   for (const person of g.people.slice(1)) assert.equal(Object.hasOwn((await g.snapshot(person)).round.powers, 'stolen'), false);

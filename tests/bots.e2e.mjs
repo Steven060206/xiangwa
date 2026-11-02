@@ -11,7 +11,11 @@ const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children',
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
 async function createSession(t, { poll = false } = {}) {
-  const server = createGameServer({ deck, botDelayMs: 25, silentNumbers: [0, 1, 2, 3, 4, 5],
+  // The human-Hako scenario covers confirming ordinary exploration, while the
+  // polling scenario below explicitly covers item questions. Keep the former
+  // free of random questions that require an additional human answer.
+  const server = createGameServer({ deck, initialItemOrder: poll ? ['walkie_talkie', 'deduction', 'dowsing_rod']
+    : ['deduction', 'stethoscope', 'relic_ring'], botDelayMs: 25, silentNumbers: [0, 1, 2, 3, 4, 5],
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
       if (!poll) return play;
@@ -100,7 +104,14 @@ async function current(page) {
 }
 
 async function waitState(page, predicate, argument) {
-  await page.waitForFunction(predicate, argument);
+  try { await page.waitForFunction(predicate, argument); }
+  catch (error) {
+    const value = await current(page);
+    const diagnostic = `Bot wait state: ${JSON.stringify({ phase: value?.phase, initialItems: value?.initialItems?.map(item => item.itemId),
+      round: value?.round && { phase: value.round.phase, pendingAction: value.round.pendingAction,
+        resolution: value.round.resolution, silent: value.round.silent, result: value.round.result } })}`;
+    throw new Error(diagnostic, { cause: error });
+  }
   return current(page);
 }
 
@@ -256,13 +267,8 @@ test('a polling human visitor plays with a bot Hako and recovers the same seat a
   let state = await fillBotsAndStart(session, 'bot_claim_hako');
   assert.equal(state.players.find(player => player.role === 'hako').isBot, true);
   assert.equal(state.players.find(player => player.id === identity.playerId).role, 'visitor');
-  state = await waitState(page, () => window.__hakoTestState?.phase === 'item_draft'
-    && window.__hakoTestState.draft.turnPlayerId === window.__hakoTestState.you);
-  await expectStable(session, 'Bots stop the item draft when the human must choose');
-  // Other bots may leave the hall before the person acts. This question item
-  // remains usable without a companion, unlike the spirit pen.
-  assert.ok(state.draft.availableItems.some(item => item.id === 'dowsing_rod'));
-  await act(page, 'choose_item', () => page.locator('[data-testid="item-choice"][data-item-id="dowsing_rod"]').click());
+  assert.equal(state.initialItems.find(choice => choice.playerId === identity.playerId).itemId, 'dowsing_rod');
+  assert.equal(await page.getByTestId('item-choice').count(), 0, 'The human receives a random card without a draft stop');
   let humanPlacements = 0;
   while (humanPlacements < deck.length) {
     state = await waitState(page, () => {
@@ -274,7 +280,6 @@ test('a polling human visitor plays with a bot Hako and recovers the same seat a
     await expectStable(session, 'Bots wait for the human to draw and place their map board');
     state = await act(page, 'draw', () => page.getByTestId('draw-tile').click());
     const placement = state.setup.legalPlacements[0];
-    for (let rotation = 0; rotation < placement.rotation; rotation++) await page.getByTestId('rotate-tile').click();
     const floor = placement.floor === -1 ? 'basement' : placement.floor;
     await page.getByTestId(`floor-${floor}`).click();
     await page.locator(`[data-testid="legal-position"][data-x="${placement.x}"][data-y="${placement.y}"][data-floor="${placement.floor}"][data-rotation="${placement.rotation}"]`).click();

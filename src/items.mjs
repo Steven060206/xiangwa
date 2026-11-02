@@ -1,6 +1,7 @@
 import { getTile, getLogicalRoomId, getLogicalRooms } from './maps.mjs';
 import { getNoiseEffectsView } from './noise-effects.mjs';
 import { INITIAL_ITEMS } from './preparation.mjs';
+import { emitGameEvent } from './events.mjs';
 
 const ITEM_NAMES = {
   spirit_pen: '笔仙', ventriloquist_doll: '腹语人偶', nightmare_letter: '噩梦的来信',
@@ -75,6 +76,7 @@ export function declareItem(play, id, action, ctx) {
   if (action.itemId === 'smartphone') { pending.targetZone = action.targetZone; pending.index = action.index; }
   if (action.itemId === 'amulet') { pending.tokenId = action.tokenId; pending.index = action.index; }
   play.round.pendingAction = pending;
+  emitGameEvent(play, { kind: 'item_declared', itemId: action.itemId, userId: id, status: 'declared' });
 }
 
 function finish(play, id, ctx) {
@@ -82,7 +84,7 @@ function finish(play, id, ctx) {
   ctx.finishAction(id);
 }
 function publicEvent(play, pending, extra = {}) {
-  play.itemEvents.push({ kind: 'item_used', itemId: pending.itemId, userId: pending.playerId, ...extra });
+  emitGameEvent(play, { kind: 'item_used', itemId: pending.itemId, userId: pending.playerId, status: 'triggered', ...extra });
 }
 function revealRoomNotebooks(play, roomId, ctx) {
   const revealed = [];
@@ -109,6 +111,7 @@ export function resolveItem(play, pending, ctx) {
   // The phone explicitly suppresses its effect on death. The other lethal active
   // cards do not state timing; this implementation resolves that death first too.
   if (SAME_ROOM_LETHAL.has(pending.itemId) && getLogicalRoomId(ctx.roomOf(play.round.hidingCornerId)) === roomId) {
+    emitGameEvent(play, { kind: 'item_ineffective', itemId: pending.itemId, userId: id, status: 'ineffective' });
     ctx.die(id, play.round.hidingCornerId);
     return;
   }
@@ -159,17 +162,27 @@ export function resolveItem(play, pending, ctx) {
       break;
     }
     case 'spirit_pen':
+      publicEvent(play, pending);
       play.resolution = { kind: 'item_answer', playerId: play.round.hakoId, userId: id,
         itemId: pending.itemId, roomId: getLogicalRoomId(pending.roomId), truth: getLogicalRoomId(ctx.roomOf(play.round.hidingCornerId)) === getLogicalRoomId(pending.roomId) };
       break;
     case 'dowsing_rod':
+      publicEvent(play, pending);
       play.resolution = { kind: 'item_answer', playerId: play.round.hakoId, userId: id,
         itemId: pending.itemId, truth: floorOf(play, ctx.roomOf(play.round.hidingCornerId)) };
       break;
     case 'ventriloquist_doll': {
       const corners = ctx.corners(pending.roomId);
+      // Retain the real inspection privately for Hako, before notebooks move.
+      // Stored pieces below hidden actors are not present in this inspection.
+      play.itemInspections ??= {};
+      play.itemInspections[play.round.hakoId] = { itemId: pending.itemId, roomId: pending.roomId,
+        cycle: play.round.silent.cycle, corners: corners.map(corner => ({ id: corner.id,
+          actors: clone(ctx.actorsAt(corner.id)),
+          token: ctx.actorsAt(corner.id).length ? null : ctx.tokenView(play.tokens[corner.id]) })) };
       const truth = corners.some(corner => !ctx.actorsAt(corner.id).length && play.tokens[corner.id]?.type === 'doll');
       const notebooks = revealRoomNotebooks(play, pending.roomId, ctx);
+      publicEvent(play, pending, { roomId: pending.roomId });
       play.resolution = { kind: 'item_answer', playerId: play.round.hakoId, userId: id,
         itemId: pending.itemId, roomId: pending.roomId, truth, notebooks };
       break;
@@ -203,7 +216,7 @@ export function answerItem(play, id, action, ctx) {
   const event = { kind: 'item_answer', itemId: resolution.itemId, userId: resolution.userId, answer: action.answer,
     ...(resolution.roomId ? { roomId: resolution.roomId } : {}),
     ...(resolution.itemId === 'ventriloquist_doll' ? { notebooks: clone(resolution.notebooks) } : {}) };
-  play.itemEvents.push(event);
+  emitGameEvent(play, { ...event, status: 'triggered' });
   finish(play, resolution.userId, ctx);
 }
 
@@ -230,7 +243,8 @@ export function getItemView(play, id, ctx) {
     ...play.powers.slots.flatMap((card, index) => card ? [{ id: `slot:${index}`, name: `可用能力栏${index + 1}` }] : []),
   ];
   return { usableItems, roomOptions: rooms(play).map(room => ({ id: room.id, name: room.name })),
-    phoneTargets, result: clone(play.itemResults[id] ?? null), events: clone(play.itemEvents) };
+    phoneTargets, result: clone(play.itemResults[id] ?? null), events: clone(play.itemEvents),
+    ...(id === play.round.hakoId ? { inspection: clone(play.itemInspections?.[id] ?? null) } : {}) };
 }
 
 export function itemResolutionView(play, id, ctx) {

@@ -92,6 +92,100 @@ function addGhost(play, playerId, cornerId, carriedTokens = []) {
   play.ghosts.push({ playerId, cornerId, banished: false, carriedTokens });
 }
 
+test('peek declaration and resolution disclose the selected corner only to its actor', () => {
+  let play = reveal(newPlay());
+  play.tokens.hall_clock = token('private-peek-target-content', 'key');
+  play = act(play, first, { type: 'peek', cornerId: 'hall_clock' });
+  assert.equal(getPlayView(play, first).pendingAction.cornerId, 'hall_clock');
+  for (const id of [hakoId, second, third]) {
+    assert.deepEqual(getPlayView(play, id).pendingAction, { type: 'peek', playerId: first });
+  }
+  play = act(play, hakoId, { type: 'resolve_visitor_action' });
+  assert.equal(getPlayView(play, first).resolution.cornerId, 'hall_clock');
+  for (const id of [hakoId, second, third]) {
+    assert.deepEqual(getPlayView(play, id).resolution, { kind: 'waiting', playerId: first });
+    assert.equal(JSON.stringify(getPlayView(play, id)).includes('private-peek-target-content'), false);
+  }
+});
+
+test('Hako sees current separate card and token counts without receiving visitor inventory lists', () => {
+  const play = newPlay();
+  play.inventories[first].items.push(item('night_vision'));
+  play.inventories[first].tokens.push(token('count-secret-password', 'password', { number: 2 }));
+  const hako = getPlayView(play, hakoId);
+  assert.equal(hako.visitors[0].itemCount, 2);
+  assert.equal(hako.visitors[0].tokenCount, 1);
+  assert.deepEqual(hako.inventory, { items: [], tokens: [] });
+  assert.equal(Object.hasOwn(hako.visitors[0], 'items'), false);
+  assert.equal(JSON.stringify(hako).includes('count-secret-password'), false);
+  assert.equal(Object.hasOwn(getPlayView(play, second).visitors[0], 'itemCount'), false);
+});
+
+test('death removes acquired skills permanently and skips inheritance when only cards were held', () => {
+  let play = newPlay('night_vision');
+  play.tokens.hall_clock = token('acquire-skill-notebook', 'notebook', { number: 6 });
+  play = peek(reveal(play), 'hall_clock', first, { useNightVision: true });
+  play = act(play, first, { type: 'resolve_peek', itemId: 'smartphone', replacement: 'empty_box' });
+  assert.equal(play.availableItems.some(card => card.id === 'smartphone'), false);
+  Object.assign(play.round.silent, { phase: 'visitor_action', turnPlayerId: first });
+  play.round.hidingCornerId = 'hall_clock';
+  play = peek(play, 'hall_clock');
+  assert.deepEqual(play.inventories[first], { items: [], tokens: [] });
+  assert.equal(play.resolution, null);
+  assert.ok(['night_vision', 'smartphone'].every(id => play.removedItems.some(card => card.id === id)));
+  assert.equal(play.availableItems.some(card => card.id === 'smartphone'), false);
+  assert.equal(play.inventories[second].items.some(card => card.id === 'smartphone'), false);
+});
+
+test('the final ring owner retains visitor allegiance rather than joining Hako winners', () => {
+  let play = newPlay('relic_ring');
+  addGhost(play, second, 'children_bed');
+  addGhost(play, third, 'children_bed');
+  play.round.hidingCornerId = 'hall_clock';
+  play = peek(reveal(play), 'hall_clock');
+  assert.equal(play.result.winner, 'hako');
+  assert.ok(play.ringAllies.includes(first));
+  assert.equal(play.result.winners.includes(first), false);
+  assert.equal(play.resolution, null);
+});
+
+test('precise public death positions become fixed history when later hidden actions begin', () => {
+  let play = newPlay();
+  play.round.hidingCornerId = 'hall_clock';
+  play = peek(reveal(play), 'hall_clock');
+  for (const id of [hakoId, first, second, third]) {
+    const view = getPlayView(play, id);
+    assert.equal(view.deathLocations[0].cornerId, 'hall_clock');
+    assert.equal(view.deathLocations[0].userId, first);
+    assert.equal(view.deathEvents.length, 1);
+  }
+  play = enterHakoStage(play, second);
+  play.ghosts.find(ghost => ghost.playerId === first).cornerId = 'children_toys';
+  const view = getPlayView(play, second);
+  assert.deepEqual(view.deathLocations, []);
+  assert.equal(view.deathEvents[0].cornerId, 'hall_clock');
+  assert.equal(Object.hasOwn(view.visitors[0], 'cornerId'), false);
+  assert.equal(Object.hasOwn(view, 'alliedActors'), false);
+});
+
+test('weapons are consumed once at resolution, survive interrupted declarations and remain spent after restart', () => {
+  let play = reveal(newPlay());
+  const weapon = token('single-use-weapon', 'weapon', { tool: 'white_stick' });
+  play.inventories[first].tokens.push(weapon);
+  play = act(play, first, { type: 'use_weapon', cornerId: 'hall_clock', tokenId: weapon.id });
+  assert.ok(play.inventories[first].tokens.some(token => token.id === weapon.id));
+  const interrupted = structuredClone(play);
+  interrupted.powers.slots[0] = { id: 6, ignoreThreshold: true, faceUp: false };
+  const afterInterrupt = act(interrupted, hakoId, { type: 'activate_power', slot: 0 });
+  assert.ok(afterInterrupt.inventories[first].tokens.some(token => token.id === weapon.id));
+  assert.equal(afterInterrupt.removedTokens.some(token => token.id === weapon.id), false);
+  play = act(play, hakoId, { type: 'resolve_visitor_action' });
+  play = JSON.parse(JSON.stringify(play));
+  Object.assign(play.round.silent, { phase: 'visitor_action', turnPlayerId: first });
+  assert.ok(play.removedTokens.some(token => token.id === weapon.id));
+  rejects(play, first, { type: 'use_weapon', cornerId: 'hall_clock', tokenId: weapon.id });
+});
+
 test('peek requires a revealed turn and a local occupied corner, then waits for hako before disclosing contents', () => {
   let play = newPlay();
   const secret = token('private-peek-password', 'password', { number: 2 });
@@ -364,7 +458,8 @@ test('fatal peeking requires passing possessions to a survivor, stacks at the ki
     assert.equal(play.round.silent.turnPlayerId, killer === 'hako' ? second : third);
     assert.equal(play.resolution.kind, 'inheritance');
     assert.equal(play.resolution.playerId, first);
-    assert.deepEqual(play.inventories[first], { tokens: [held], items: expectedItems });
+    assert.deepEqual(play.inventories[first], { tokens: [held], items: [] });
+    assert.ok(expectedItems.every(item => play.removedItems.some(piece => piece.id === item.id)));
     for (const id of [first, second, third, hakoId]) {
       const entry = getPlayView(play, id).discarded.find(discard => discard.playerId === first);
       assert.equal(entry, undefined, 'a required inheritance is never published as discarded possessions');
@@ -378,7 +473,7 @@ test('fatal peeking requires passing possessions to a survivor, stacks at the ki
     play = act(play, first, { type: 'bequeath', targetId: heir });
     assert.deepEqual(play.inventories[first], { tokens: [], items: [] });
     assert.ok(play.inventories[heir].tokens.some(piece => piece.id === held.id));
-    assert.ok(expectedItems.every(item => play.inventories[heir].items.some(piece => piece.id === item.id)));
+    assert.ok(expectedItems.every(item => !play.inventories[heir].items.some(piece => piece.id === item.id)));
     assert.equal(play.resolution, null);
     assert.deepEqual(play.ringAllies, [], 'mandatory inheritance does not grant the ring-only alliance');
   }
@@ -577,7 +672,7 @@ test('legacy saves waiting to confirm hiding replace old whole-room knowledge wi
   }
 });
 
-test('relic ring passes all possessions to a living visitor anywhere and its special alliance expires', () => {
+test('relic ring passes tokens to a living visitor anywhere, removes skills and its special alliance expires', () => {
     let play = newPlay('relic_ring');
     play.inventories[first].tokens.push(token('ring-key', 'key'), token('ring-password', 'password', { number: 2 }));
     play.opening.safeBoard.key = null;
@@ -586,7 +681,7 @@ test('relic ring passes all possessions to a living visitor anywhere and its spe
     play = peek(reveal(play), 'children_bed');
     assert.deepEqual(play.ringAllies, [first]);
     assert.equal(play.resolution.kind, 'inheritance');
-    assert.deepEqual(play.inventories[first], original);
+    assert.deepEqual(play.inventories[first], { tokens: original.tokens, items: [] });
     assert.equal(play.discarded.some(entry => entry.playerId === first), false);
     rejects(play, second, { type: 'bequeath', targetId: third });
     rejects(play, first, { type: 'bequeath', targetId: first });
@@ -595,7 +690,7 @@ test('relic ring passes all possessions to a living visitor anywhere and its spe
     assert.deepEqual(play.inventories[first], { tokens: [], items: [] });
     assert.equal(play.resolution, null);
       assert.ok(original.tokens.every(piece => play.inventories[second].tokens.some(held => held.id === piece.id)));
-      assert.ok(original.items.every(piece => play.inventories[second].items.some(held => held.id === piece.id)));
+      assert.ok(original.items.every(piece => !play.inventories[second].items.some(held => held.id === piece.id)));
       let win = structuredClone(play);
       win.tokens.hall_clock = token('ring-exit', 'hidden_exit');
       win = peek(reveal(win, second), 'hall_clock', second);
@@ -637,11 +732,10 @@ test('night vision in the hako room reveals the notebook then kills before obtai
     if (useNightVision) {
       assert.equal(play.ghosts[0].cornerId, 'children_bed');
       assert.equal(play.tokens.children_cabinet.type, 'empty_box');
-      assert.deepEqual(play.inventories[first].items.map(item => item.id), ['night_vision']);
-      assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
-      play = act(play, first, { type: 'bequeath', targetId: second });
+      assert.deepEqual(play.inventories[first].items, []);
+      assert.equal(play.resolution, null, 'no carried tokens means no inheritance step');
       assert.equal(play.inventories[first].items.length, 0);
-      assert.ok(play.inventories[second].items.some(item => item.id === 'night_vision'));
+      assert.ok(!play.inventories[second].items.some(item => item.id === 'night_vision'));
     } else {
       rejects(play, first, { type: 'resolve_peek', itemId: 'relic_ring', replacement: 'empty_box' });
       play = act(play, first, { type: 'resolve_peek', replacement: 'empty_box' });
@@ -763,7 +857,7 @@ test('all visitors dying ends the game with every box person on the hako side an
   play.round.hidingCornerId = 'hall_clock';
   for (const [index, id] of visitors.entries()) {
     play = peek(reveal(play, id), 'hall_clock', id);
-    if (index < visitors.length - 1) play = act(play, id, { type: 'bequeath', targetId: visitors[index + 1] });
+    assert.equal(play.resolution, null, 'cards alone never create an inheritance');
   }
   assert.equal(play.result.winner, 'hako');
   assert.match(play.result.reason, /所有访问者/);

@@ -117,20 +117,16 @@ test('bots ready once and leave role selection, starting, human seats and finish
   assert.equal(chooseBotAction(null), null);
 });
 
-test('item drafting uses actual remaining cards and only acts on the bot own turn', () => {
+test('bots never self-select initial cards, including legacy draft views', () => {
   const draft = createItemDraft(visitors);
   for (const id of visitors) {
     const view = { phase: 'item_draft', you: id, players: players(true), draft: getItemDraftView(draft) };
     assert.equal(decide({ ...view, you: hakoId }), null);
-    const action = decide(view);
-    assert.equal(action.type, 'choose_item');
-    assert.ok(view.draft.availableItems.some(card => card.id === action.itemId));
-    chooseItem(draft, id, action.itemId);
+    assert.equal(decide(view), null);
   }
-  assert.equal(new Set(draft.choices.map(choice => choice.itemId)).size, 3);
+  assert.deepEqual(draft.choices, []);
   const custom = createItemDraft(visitors, { items: ['alpha', 'beta', 'gamma'].map(id => ({ id, name: id, description: '' })) });
-  const action = decide({ phase: 'item_draft', you: first, players: players(), draft: getItemDraftView(custom) });
-  chooseItem(custom, first, action.itemId);
+  assert.equal(decide({ phase: 'item_draft', you: first, players: players(), draft: getItemDraftView(custom) }), null);
 });
 
 test('filtered map views let bots draw and place all eight boards with real placement validation', () => {
@@ -509,6 +505,7 @@ test('unsupported and used intrinsic hand cards are skipped and a bot box person
   assert.deepEqual(botAct(unsupported, hakoId).action, { type: 'begin_hako_action' });
   let play = fixture();
   play.round.visitors[0].roomId = 'children_room';
+  play.inventories[first].tokens.push(piece('ghost-inherits-token', 'password', { number: 2 }));
   play = peek(play, 'children_bed');
   assert.equal(play.round.visitors[0].status, 'box_person');
   const inherited = botAct(play, first);

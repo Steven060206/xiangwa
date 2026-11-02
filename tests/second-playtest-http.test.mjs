@@ -21,7 +21,8 @@ async function game(t, createPlayState = createPlay) {
     for (const stream of streams) await stream.close();
     streams.clear();
     if (server?.listening) await new Promise(resolve => server.close(resolve));
-    server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState, dataFile });
+    server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState, dataFile,
+      initialItemOrder: ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'] });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -112,10 +113,7 @@ async function game(t, createPlayState = createPlay) {
     for (const person of people) await act(person, 'ready', { ready: true });
     await act(people[0], 'start');
     let state = await act(people[0], 'claim_hako');
-    for (let index = 0; index < 3; index++) {
-      const person = people.find(candidate => candidate.playerId === state.draft.turnPlayerId);
-      state = await act(person, 'choose_item', { itemId: state.draft.availableItems[0].id });
-    }
+    assert.equal(state.initialItems.length, 3);
     return state;
   }
   async function play() {

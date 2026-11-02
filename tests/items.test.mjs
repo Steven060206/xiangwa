@@ -77,7 +77,7 @@ test('active items wait for hako, consume one standard action, and remain reusab
   play = act(play, first, { type: 'use_item', itemId: 'dowsing_rod' });
   assert.equal(play.round.pendingAction.type, 'item');
   assert.equal(play.resolution, null);
-  assert.equal(play.itemEvents.length, 0);
+  assert.equal(play.itemEvents.at(-1).kind, 'item_declared');
   rejects(play, second, { type: 'resolve_visitor_action' });
   rejects(play, first, { type: 'use_item', itemId: 'dowsing_rod' });
   play = act(play, hako, { type: 'resolve_visitor_action' });
@@ -89,7 +89,7 @@ test('active items wait for hako, consume one standard action, and remain reusab
   assert.equal(play.round.silent.turnPlayerId, second);
   assert.equal(play.round.silent.phase, 'visitor_reveal');
   assert.equal(play.inventories[first].items[0].id, 'dowsing_rod');
-  assert.equal(play.itemEvents[0].answer, 1);
+  assert.equal(play.itemEvents.at(-1).answer, 1);
   for (const id of visitors) {
     const event = getPlayView(play, id).items.events[0];
     assert.equal(Object.hasOwn(event, 'truth'), false);
@@ -97,7 +97,7 @@ test('active items wait for hako, consume one standard action, and remain reusab
   }
   play = use(nextFirstTurn(play), 'dowsing_rod');
   play = act(play, hako, { type: 'answer_item', answer: 1 });
-  assert.equal(play.itemEvents.length, 2);
+  assert.equal(play.itemEvents.filter(event => event.kind === 'item_answer').length, 2);
   assert.equal(play.inventories[first].items[0].id, 'dowsing_rod');
 });
 
@@ -185,11 +185,12 @@ test('same-room lethal active items kill before returning answers or applying ef
     play = use(play, itemId, { roomId: 'children_room', targetZone: 'hand', index: 0 });
     assert.equal(play.round.visitors.find(player => player.id === first).status, 'box_person');
     assert.equal(play.ghosts.find(ghost => ghost.playerId === first).cornerId, 'hall_clock');
-    assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
+    assert.equal(play.resolution, null, 'skills alone do not require inheritance');
     assert.equal(play.itemResults[first], null);
     assert.deepEqual(play.powers.deck, deckBefore);
     assert.deepEqual(play.notebooks, notesBefore);
-    assert.equal(play.itemEvents.length, 0);
+    assert.ok(play.itemEvents.some(event => event.itemId === itemId && event.status === 'declared'));
+    assert.ok(play.itemEvents.some(event => event.itemId === itemId && event.status === 'ineffective'));
   }
 });
 
@@ -217,16 +218,29 @@ test('ventriloquist publishes real notebooks with replacements, excludes hidden 
   assert.equal(play.opening.emptyBoxTokens.length, boxes - 1);
   assert.equal(play.tokens.children_bed.id, 'hidden-base-notebook');
   assert.equal(getPlayView(play, hako).resolution.truth, true);
+  const inspection = getPlayView(play, hako).items.inspection;
+  assert.equal(inspection.roomId, 'children_room');
+  assert.equal(inspection.corners.find(corner => corner.id === 'children_toys').token.id, 'private-room-doll');
+  assert.equal(inspection.corners.find(corner => corner.id === 'children_cabinet').token.id, 'room-notebook');
+  assert.deepEqual(inspection.corners.find(corner => corner.id === 'children_bed').actors,
+    [{ playerId: hako, type: 'hako', cornerId: 'children_bed' }]);
+  assert.equal(JSON.stringify(inspection).includes('hidden-base-notebook'), false);
   for (const id of visitors) {
     const view = getPlayView(play, id);
     assert.deepEqual(view.notebooks.map(note => note.number), [7]);
     assert.equal(JSON.stringify(view).includes('private-room-doll'), false);
     assert.equal(JSON.stringify(view).includes('hidden-base-notebook'), false);
+    assert.equal(Object.hasOwn(view.items, 'inspection'), false);
   }
   play = act(play, hako, { type: 'answer_item', answer: false });
   assert.equal(play.itemEvents.at(-1).answer, false);
   assert.deepEqual(play.itemEvents.at(-1).notebooks.map(note => note.number), [7]);
   assert.deepEqual(play.notebooks.map(note => note.number), [7]);
+  play = JSON.parse(JSON.stringify(play));
+  assert.deepEqual(getPlayView(play, hako).items.inspection, inspection, 'the private real inspection survives answering and restart');
+  play.tokens.children_toys = null;
+  play.round.hidingCornerId = 'children_toys';
+  assert.deepEqual(getPlayView(play, hako).items.inspection, inspection, 'inspection is a historical snapshot');
 });
 
 test('suitcase is single-use and its corner participates in peeking, attacks and hiding', () => {
@@ -281,4 +295,19 @@ test('amulet consumes its own token, removes the selected power and clears persi
   assert.equal(play.inventories[first].tokens.length, 0);
   assert.equal(play.inventories[first].items[0].id, 'smartphone');
   assert.equal(play.round.silent.turnPlayerId, second);
+});
+
+test('NO11 removed by an actual amulet use stays removed through views, restart and future stages', () => {
+  let play = reveal(newPlay('smartphone'));
+  play.inventories[first].tokens.push({ id: 'remove-eleven-amulet', type: 'amulet' });
+  play.powers.hand = play.powers.hand.filter(card => card.id !== 11);
+  play.powers.slots[0] = { id: 11, ignoreThreshold: false, faceUp: false };
+  play = use(play, 'amulet', { tokenId: 'remove-eleven-amulet', index: 0 });
+  play = JSON.parse(JSON.stringify(play));
+  assert.ok(play.powers.removed.some(card => card?.id === 11));
+  assert.equal(getPlayView(play, hako).powers.hand.some(card => card.id === 11), false);
+  Object.assign(play.round.silent, { phase: 'hako_reaction', turnPlayerId: null, resumePlayerId: second, total: 11, trigger: 'overflow' });
+  play = act(play, hako, { type: 'pass_noise_reaction' });
+  assert.equal(play.powers.hand.some(card => card.id === 11), false);
+  assert.equal(getPlayView(play, hako).powers.hand.some(card => card.id === 11), false);
 });

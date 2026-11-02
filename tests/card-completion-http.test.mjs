@@ -9,13 +9,13 @@ import { createPlay } from '../src/play.mjs';
 
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 
-async function persistentServer(t, createPlayState) {
+async function persistentServer(t, createPlayState, initialItemOrder = ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll']) {
   const directory = await mkdtemp(join(tmpdir(), 'hako-cards-http-'));
   const dataFile = join(directory, 'rooms.json');
   let server, base;
   async function restart() {
     if (server?.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState, dataFile });
+    server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState, initialItemOrder, dataFile });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -54,7 +54,7 @@ async function ok(client, person, type, values = {}) {
   return response.body;
 }
 
-async function preparePlay(client, { powerId = 7, items = ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'] } = {}) {
+async function preparePlay(client, { powerId = 7 } = {}) {
   const created = await client.request('/api/rooms', { name: '箱娃' });
   assert.equal(created.status, 201);
   const people = [created.body];
@@ -66,10 +66,7 @@ async function preparePlay(client, { powerId = 7, items = ['walkie_talkie', 'spi
   for (const person of people) await ok(client, person, 'ready', { ready: true });
   assert.equal((await ok(client, people[0], 'start')).phase, 'hako_selection');
   let state = await ok(client, people[0], 'claim_hako');
-  for (const itemId of items) {
-    const person = people.find(candidate => candidate.playerId === state.draft.turnPlayerId);
-    state = await ok(client, person, 'choose_item', { itemId });
-  }
+  assert.equal(state.initialItems.length, 3);
   while (state.phase === 'map_setup') {
     const person = people.find(candidate => candidate.playerId === state.setup.turnPlayerId);
     state = await ok(client, person, 'draw');
@@ -187,7 +184,7 @@ test('NO.7 filters theft options and stolen tokens across HTTP, SSE and polling,
   const beforeTheft = (await snapshot(client, hako)).body;
   const theft = beforeTheft.round.powers.activationOptions.find(option => option.card.id === 7);
   assert.equal(theft.canActivate, true);
-  assert.deepEqual(theft.stealOptions, { items: [{ id: 'walkie_talkie', name: '对讲机' }], canStealToken: true });
+  assert.deepEqual(theft.stealOptions, { items: [{ index: 0, name: '技能牌背 1' }], itemCount: 1, tokenCount: 1, canStealToken: true });
   assert.equal(JSON.stringify(theft.stealOptions).includes('password_4'), false);
   assert.equal(JSON.stringify(theft.stealOptions).includes('number'), false);
   const rejected = await action(client, hako, 'activate_power', { slot: 0, stealKind: 'token', tokenId: 'password_4' });
@@ -227,7 +224,7 @@ test('NO.7 filters theft options and stolen tokens across HTTP, SSE and polling,
   await finishMove(client, hako, first);
   await ok(client, second, 'silent_reveal', { index: 1 });
   await declareMove(client, second);
-  const next = await ok(client, hako, 'activate_power', { slot: 0, stealKind: 'item', itemId: 'spirit_pen' });
+  const next = await ok(client, hako, 'activate_power', { slot: 0, stealKind: 'item', itemIndex: 0 });
   assert.equal(next.round.powers.stolen.kind, 'item');
   assert.equal(next.round.powers.stolen.piece.id, 'spirit_pen');
   const secondView = (await snapshot(client, second)).body;
@@ -315,8 +312,8 @@ test('NO.8 curse, its attached card and the remaining required reveal survive se
 });
 
 test('a declared bell plan, completed extra reveal and pending bell use each resume after a restart', { timeout: 20000 }, async t => {
-  const client = await persistentServer(t);
-  const people = await preparePlay(client, { items: ['shrine_bell', 'spirit_pen', 'ventriloquist_doll'] });
+  const client = await persistentServer(t, undefined, ['shrine_bell', 'spirit_pen', 'ventriloquist_doll']);
+  const people = await preparePlay(client);
   const [hako, first, second] = people;
   const partial = await ok(client, first, 'silent_reveal', { index: 0, useBell: true });
   assert.equal(partial.round.silent.phase, 'visitor_reveal');

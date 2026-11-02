@@ -3,18 +3,18 @@ import { powerCard } from './powers.mjs';
 
 // These twelve supplied cards are confirmed; a selected edition may inject its own draft pool.
 export const INITIAL_ITEMS = Object.freeze([
-  { id: 'walkie_talkie', name: '对讲机', description: '持有对讲机的访问者可通过自由行动远距离互看标志，不能远距离交换；与箱娃同房的使用者会死亡。' },
+  { id: 'walkie_talkie', name: '对讲机', description: '原持有者可向同房存活访问者提出固定配对，双方同意后发一台伴机；可远程私聊，每次互看标志须双方同意并各自选择内容，不可远程交换。远程互看前，与箱娃同房者死亡；普通文字私聊不触发。死亡断联，任一台被抢则本局永久失效。' },
   { id: 'spirit_pen', name: '笔仙', description: '同房有其他访问者时，消耗标准行动询问箱娃是否在指定房间；与箱娃同房的使用者会死亡。' },
-  { id: 'ventriloquist_doll', name: '腹语人偶', description: '消耗标准行动指定一个房间：箱娃回答人偶是否在其中，并公开该房间的全部手记；与箱娃同房的使用者会死亡。' },
+  { id: 'ventriloquist_doll', name: '腹语人偶', description: '消耗标准行动指定一个房间：箱娃检查真实房间并私存查看记录，回答人偶是否在其中，并公开全部手记；访问者不查看其余棋子。与箱娃同房的使用者会死亡。' },
   { id: 'stethoscope', name: '听诊器', description: '窥探保险箱时可只声明一个数字，正确时翻开该数字；与箱娃同房的使用者会死亡。' },
   { id: 'nightmare_letter', name: '噩梦的来信', description: '消耗标准行动将牌库中的绝望时刻移至牌库底；与箱娃同房的使用者会死亡。' },
   { id: 'shrine_bell', name: '深菱神社之铃', description: '翻牌前可选择额外翻一张；成功后消耗标准行动，限制下一箱娃阶段设置危险度B或C能力。' },
-  { id: 'relic_ring', name: '遗物戒指', description: '死亡后到下一个箱娃阶段前维持访问者胜利条件，并可将全部盖放标志和访问者道具交给一名任意存活访问者。' },
+  { id: 'relic_ring', name: '遗物戒指', description: '死亡后到下一个箱娃阶段前维持访问者胜利条件。死亡时全部随身标志交给一名存活访问者；包括戒指在内的全部技能卡消失，不可继承。' },
   { id: 'smartphone', name: '智能手机', description: '消耗标准行动查看一张可用能力或箱娃手牌；与箱娃同房时不生效且使用者死亡。' },
   { id: 'suitcase', name: '行李箱', description: '消耗标准行动，仅用一次：在当前房间增加一个“行李箱中”角落，并盖放一枚空箱标志。' },
   { id: 'dowsing_rod', name: '占卜棒', description: '消耗标准行动询问箱娃所在楼层；与箱娃同房的使用者会死亡。' },
-  { id: 'deduction', name: '归纳推理法', description: '窥探后需放空箱时可使X面朝上；箱娃或箱人潜入房间时仍可将其重新盖放。' },
-  { id: 'night_vision', name: '夜视仪', description: '窥探发现手记时可获得本局开局未选的访问者道具；与箱娃同房时会在获得道具前死亡。' },
+  { id: 'deduction', name: '归纳推理法', description: '窥探后需放空箱时可使X面朝上，全员在地图上看见公开的X；箱娃或箱人潜入房间时仍可将其重新盖放。' },
+  { id: 'night_vision', name: '夜视仪', description: '窥探发现手记时可获得本局开局未发的访问者技能；与箱娃同房时会在获得技能前死亡。死亡消失的技能不返回未发池。' },
 ].map(item => Object.freeze(item)));
 
 const TOOLS = Object.freeze([
@@ -96,16 +96,41 @@ export function chooseItem(draft, playerId, itemId) {
   return getItemDraftView(draft);
 }
 
+/** Complete a fresh or saved partial deal once, preserving every existing choice. */
+export function completeItemDraft(draft, { itemOrder } = {}) {
+  if (!draft || !['item_draft', 'items_ready'].includes(draft.phase)) throw new Error('访问者技能发牌状态无效。');
+  createItemDraft(draft.visitorIds, { items: draft.items });
+  if (!Array.isArray(draft.choices) || draft.choices.length > draft.visitorIds.length
+      || new Set(draft.choices.map(choice => choice?.playerId)).size !== draft.choices.length
+      || new Set(draft.choices.map(choice => choice?.itemId)).size !== draft.choices.length
+      || draft.choices.some(choice => !choice || !draft.visitorIds.includes(choice.playerId)
+        || !draft.items.some(item => item.id === choice.itemId))) throw new Error('已发访问者技能记录无效。');
+  if (itemOrder !== undefined && (!Array.isArray(itemOrder) || new Set(itemOrder).size !== itemOrder.length
+      || itemOrder.some(id => !draft.items.some(item => item.id === id)))) throw new Error('指定的技能发牌顺序无效。');
+  const choices = copyChoices(draft.choices);
+  const available = draft.items.filter(item => !choices.some(choice => choice.itemId === item.id)).map(item => item.id);
+  const order = [...(itemOrder || []).filter(id => available.includes(id)),
+    ...shuffled(available.filter(id => !itemOrder?.includes(id)))];
+  for (const playerId of draft.visitorIds) {
+    if (!choices.some(choice => choice.playerId === playerId)) choices.push({ playerId, itemId: order.shift() });
+  }
+  draft.choices = choices;
+  draft.phase = 'items_ready';
+  draft.turnPlayerId = null;
+  return getItemDraftView(draft);
+}
+
 export function getItemDraftView(draft) {
+  const items = draft.items.map(item => copyItem(INITIAL_ITEMS.find(known => known.id === item.id) || item));
   return {
     phase: draft.phase,
     visitorIds: [...draft.visitorIds],
     turnPlayerId: draft.turnPlayerId,
     choices: draft.choices.map(choice => ({
-      ...choice, itemName: draft.items.find(item => item.id === choice.itemId).name,
-      itemDescription: draft.items.find(item => item.id === choice.itemId).description,
+      ...choice, itemName: items.find(item => item.id === choice.itemId).name,
+      itemDescription: items.find(item => item.id === choice.itemId).description,
     })),
-    availableItems: draft.items.filter(item => !draft.choices.some(choice => choice.itemId === item.id)).map(copyItem),
+    availableItems: items.filter(item => !draft.choices.some(choice => choice.itemId === item.id)),
   };
 }
 
@@ -257,9 +282,8 @@ export function chooseInitialPower(opening, playerId, powerId) {
     throw new Error('初始能力须从系统抽出的三张候选中选择。');
   }
   // Both unchosen candidates return to the numbered deck; silent mode removes NO.12.
-  // Despair must be present for its confirmed draw-and-return-to-bottom rule to apply.
-  const powerDeck = shuffled([...INITIAL_POWER_IDS
-    .filter(id => id !== powerId), 'despair']);
+  // Rulebook setup places Despair below the nine shuffled numbered cards.
+  const powerDeck = [...shuffled(INITIAL_POWER_IDS.filter(id => id !== powerId)), 'despair'];
   opening.initialPowerId = powerId;
   opening.initialPowerIgnoresNotebookRequirement = true;
   opening.powerDeck = powerDeck;

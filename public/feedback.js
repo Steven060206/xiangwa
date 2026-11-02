@@ -2,6 +2,10 @@ const TOOL_NAMES = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: 
 const TOKEN_NAMES = { key: '钥匙', password: '密码', notebook: '手记', doll: '玛丽小姐的人偶',
   weakness_clue: '讨伐情报', weapon: '讨伐道具', amulet: '古怪护符', extinguisher: '灭火器',
   safe: '转轮式保险箱', hidden_exit: '隐藏出口', remains: '亡骸', empty_box: '空箱' };
+const ITEM_NAMES = { walkie_talkie: '对讲机', spirit_pen: '笔仙', ventriloquist_doll: '腹语人偶', stethoscope: '听诊器',
+  nightmare_letter: '噩梦的来信', shrine_bell: '深菱神社之铃', relic_ring: '遗物戒指', smartphone: '智能手机',
+  suitcase: '行李箱', dowsing_rod: '占卜棒', deduction: '归纳推理法', night_vision: '夜视仪',
+  amulet: '古怪护符', extinguisher: '灭火器', weapon: '讨伐道具' };
 const POWER_NAMES = ['', '就在你身旁', '马上就到哟', '打不开的门', '动来动去', '我在你身后',
   '好想打开它', '快把它给我', '我的玛丽小姐', '虚假的回应', '鬼来电', '虚假的哭喊'];
 const ROOM_NAMES = { hall_room: '一楼大厅', study_room: '书房／深色房间', bathroom_room: '浴室',
@@ -51,9 +55,26 @@ function appendedLogs(before = [], after = []) {
   return after;
 }
 
+export function describeItemEvent(event, state, locationName = id => id) {
+  const actor = playerName(state, event.userId);
+  if (event.kind === 'death') return { title: `${actor}已死亡，转为箱人`, body: `死亡位置：${locationName(event.cornerId)}。这是死亡时的公开位置，之后的潜伏继续保密。` };
+  const item = event.name || ITEM_NAMES[event.itemId] || '道具';
+  const status = event.status || 'triggered';
+  const verb = { declared: '声明使用', triggered: '使用', interrupted: '使用被打断：', ineffective: '使用未生效：' }[status] || '使用';
+  let body = status === 'declared' ? '这是使用声明，尚未完成结算。' : status === 'interrupted' ? '原行动已被打断，请按当前操作提示继续。'
+    : status === 'ineffective' ? '本次效果未生效，请以当前盘面和结算为准。' : '本次效果已触发。';
+  if (event.cornerId) body += ` 公开位置：${locationName(event.cornerId)}。`;
+  if (event.kind === 'item_answer') body = `箱娃${event.itemId === 'ventriloquist_doll' ? event.answer ? '大喊：我是玛丽小姐' : '没有叫喊' : `回答：${typeof event.answer === 'boolean' ? event.answer ? '是' : '否' : ({ '-1': '地下室', 1: '一楼', 2: '二楼' }[event.answer] || event.answer)}`}。`;
+  if (event.notebooks?.length) body += ` 公开手记${event.notebooks.map(token => token.number).join('、')}。`;
+  if (event.itemId === 'walkie_talkie' && event.operation) {
+    body += ` ${actor}与${playerName(state, event.targetId)}${event.operation === 'pair' ? '建立固定配对' : '进行标志互看'}；私聊与展示内容不公开。`;
+  }
+  return { title: `${actor}${verb}${item}`, body };
+}
+
 /** Compare only the current participant's already-filtered server snapshots.
  * History is local to this page; refreshing establishes a quiet new baseline. */
-export function createFeedbackTracker({ limit = 20 } = {}) {
+export function createFeedbackTracker({ limit = 20, locationName = id => id } = {}) {
   let previous = null;
   let history = [];
   let sequence = 0;
@@ -74,9 +95,9 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const before = previous;
       previous = structuredClone(next);
       const events = [];
-      const push = (title, body, tone = 'info', privateLabel = PUBLIC, highlight = false, symbol = 'event') => {
+      const push = (title, body, tone = 'info', privateLabel = PUBLIC, highlight = false, symbol = 'event', cornerId = null) => {
         events.push({ id: `${next.code}:${next.you}:${next.version}:${++sequence}`, version: next.version,
-          title, body, tone, privateLabel, highlight, symbol, dismissed: false });
+          title, body, tone, privateLabel, highlight, symbol, dismissed: false, ...(cornerId ? { cornerId } : {}) });
       };
       const finish = () => {
         history = [...events].reverse().concat(history).slice(0, limit);
@@ -103,6 +124,19 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const ownStatus = round.visitors?.find(player => player.id === next.you)?.status;
       const oldStatus = oldRound.visitors?.find(player => player.id === next.you)?.status;
       const died = oldStatus === 'alive' && ownStatus !== 'alive';
+      for (const event of added(oldRound.items?.events, round.items?.events)) {
+        if (event.kind === 'death') continue;
+        const description = describeItemEvent(event, next, locationName);
+        push(description.title, description.body, ['interrupted', 'ineffective'].includes(event.status) ? 'attention' : 'info', PUBLIC, true,
+          event.itemId === 'weapon' ? 'weapon' : 'item', event.cornerId);
+      }
+      const deaths = added(oldRound.deathEvents, round.deathEvents);
+      for (const death of deaths) {
+        const me = death.userId === next.you;
+        push(me ? '你已死亡，转为箱人' : `${playerName(next, death.userId)}已死亡，转为箱人`,
+          `死亡位置：${locationName(death.cornerId)}。技能牌已消失，随身标志按继承提示交付。这是死亡时的公开位置，之后潜伏仍保密。`,
+          'danger', PUBLIC, true, 'death', death.cornerId);
+      }
 
       for (const notebook of added(oldRound.notebooks, round.notebooks)) {
         push(`手记${notebook.number ?? ''}已公开`, notebook.power
@@ -134,6 +168,20 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       if ((oldRound.exchangeOffers || []).some(offer => !round.exchangeOffers?.some(current => current.id === offer.id))) {
         push('交换请求已处理', '请查看当前随身物品，已完成的交换会立即更新库存。', 'info', PRIVATE);
       }
+      const walkie = round.walkie;
+      const oldWalkie = oldRound.walkie;
+      if (walkie?.pairRequest?.targetId === next.you && walkie.pairRequest.id !== oldWalkie?.pairRequest?.id) {
+        push(`${playerName(next, walkie.pairRequest.fromId)}邀请你配对对讲机`, '接受后领取伴机，本局不能更换同伴。请在当前操作中接受或拒绝。', 'attention', PRIVATE, true, 'item');
+      }
+      if (walkie?.showRequest && walkie.showRequest.id !== oldWalkie?.showRequest?.id) {
+        const partner = walkie.showRequest.fromId === next.you ? walkie.showRequest.targetId : walkie.showRequest.fromId;
+        push(`请确认与${playerName(next, partner)}互看标志`, '选择愿意展示的标志并确认；双方确认前不会互相看到内容。', 'attention', PRIVATE, true, 'item');
+      }
+      if (walkie?.lastShow && walkie.lastShow.id !== oldWalkie?.lastShow?.id) {
+        const shown = walkie.lastShow.tokens.map(tokenName);
+        push(`${playerName(next, walkie.lastShow.fromId)}通过对讲机向你展示`, shown.length
+          ? `本次展示：${shown.join('、')}。这是当时的私密记录，不跟随后续库存变化。` : '同伴本次没有选择展示标志。', 'info', PRIVATE, true, 'item');
+      }
       const canRespond = round.interruption?.canRespond;
       if (canRespond && !oldRound.interruption?.canRespond) push('请回应灭火器窗口', '你可以使用灭火器打断，或选择放弃；其他玩家正在等待你的回应。', 'attention', PRIVATE, true);
       if (round.silent?.turnPlayerId === next.you && round.phase === 'visitor_reveal'
@@ -148,7 +196,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const resolution = round.resolution;
       if (resolution?.token && changed(oldRound.resolution, resolution)
           && !(oldRound.resolution?.token?.id === resolution.token.id && oldRound.resolution?.cornerId === resolution.cornerId)) {
-        push(`你发现了${tokenName(resolution.token)}`, `${tokenDescription(resolution.token)} 这是你的私密窥探结果；返回游戏后按提示决定如何处理。`, 'success', PRIVATE, true, tokenSymbol(resolution.token));
+        push(`你发现了${tokenName(resolution.token)}`, `${locationName(resolution.cornerId)}：${tokenDescription(resolution.token)} 这是你的私密窥探结果；返回游戏后按提示决定如何处理。`, 'success', PRIVATE, true, tokenSymbol(resolution.token), resolution.cornerId);
       }
       if (resolution?.kind === 'forced_peek' && oldRound.resolution?.kind !== 'forced_peek') {
         push('你的行动被改为强制窥探', '请选择当前房间内的一个角落，随后按窥探结果结算。', 'attention', PRIVATE, true);
@@ -173,6 +221,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       if (lastDraw && changed(oldRound.powers?.lastDraw, lastDraw)) {
         const names = (lastDraw.cards || []).map(id => powerName(round.powers.hand?.find(card => card.id === id) || id)).join('、');
         if (lastDraw.kind === 'returned') push('哭喊未获得新能力', `抽到${names}，对应手记尚未公开，已放回牌库底。`, 'attention', PRIVATE, true, 'power');
+        else if (lastDraw.kind === 'despair_locked') push('绝望时刻尚未到来', '未到第10次哭喊，本次抽到的绝望时刻已放回牌库底，没有获得新能力。', 'attention', PRIVATE, true, 'power');
         else if (lastDraw.kind === 'empty_deck') push('能力牌库已空', '这次哭喊没有抽到能力牌。', 'info', PRIVATE, true, 'power');
         else push(lastDraw.kind === 'despair' ? '绝望时刻：获得新能力' : `获得了${names}`, lastDraw.kind === 'despair'
           ? `${names}已加入手牌，可绕过手记数量门槛。` : '能力已加入你的手牌，可在能力栏中查看和设置。', 'success', PRIVATE, true, 'power');
@@ -195,6 +244,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
         if (!old || old.status === visitor.status || visitor.status === 'alive') continue;
         const me = visitor.id === next.you;
         const banished = visitor.status === 'banished';
+        if (!banished && deaths.some(event => event.userId === visitor.id)) continue;
         push(me ? banished ? '你已被讨伐' : '你已死亡，转为箱人' : `${playerName(next, visitor.id)}${banished ? '已被讨伐' : '已死亡，转为箱人'}`,
           me ? banished ? '你已无法继续潜伏，仍可查看公开进度。' : '你仍可在箱娃阶段作为箱人移动和潜伏，请查看新的操作提示。' : '玩家状态已更新，具体潜伏位置继续保密。', 'danger', PUBLIC, true, 'death');
       }
