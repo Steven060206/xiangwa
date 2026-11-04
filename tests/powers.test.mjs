@@ -543,6 +543,54 @@ test('declining the extinguisher lets group deaths finish before a relic-ring in
   assert.equal(play.resolution, null);
 });
 
+for (const survivor of [true, false]) test(`delayed group death returns Mary before its first view ${survivor ? 'with inheritance' : 'without a surviving heir'}`, () => {
+  let play = fixture();
+  for (const [cornerId, token] of Object.entries(play.tokens)) if (token?.type === 'doll') play.tokens[cornerId] = null;
+  play.inventories[first].tokens.push(piece('delayed-mary-doll', 'doll'));
+  const acquired = ['relic_ring', 'night_vision', 'smartphone'];
+  play.inventories[first].items.push(...acquired.map(id => structuredClone(INITIAL_ITEMS.find(item => item.id === id))));
+  play.availableItems = play.availableItems.filter(item => !acquired.includes(item.id));
+  givePower(play, 8, { slot: 0, ignoreThreshold: true });
+  play = act(reveal(play), first, { type: 'move', roomId: 'study_room' });
+  play = act(play, hakoId, { type: 'activate_power', slot: 0 });
+  play = act(play, hakoId, { type: 'resolve_visitor_action' });
+  givePower(play, 5, { slot: 0, ignoreThreshold: true });
+  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  play = finishStage(play);
+  play.round.visitors[0].roomId = 'children_room';
+  play.round.visitors[1].roomId = 'children_room';
+  if (!survivor) play.round.visitors[2].roomId = 'children_room';
+  play = stage(play);
+  assert.equal(play.round.visitors[0].status, 'box_person');
+  assert.equal(play.round.visitors[1].status, 'box_person');
+  assert.equal(play.round.visitors[2].status, survivor ? 'alive' : 'box_person');
+  assert.deepEqual(play.inventories[first].items, []);
+  assert.ok(acquired.every(id => play.removedItems.some(item => item.id === id)));
+  assert.equal(play.availableItems.some(item => acquired.includes(item.id)), false);
+  assert.ok(play.ringAllies.includes(first));
+  assert.equal(play.noiseEffects.mary, null);
+  assert.equal(play.powers.hand.filter(card => card.id === 8).length, 1);
+  assert.equal(getPlayView(play, hakoId).powers.hand.filter(card => card.id === 8).length, 1);
+  assert.equal(getPlayView(play, first).noiseEffects.maryPlayerId, null);
+  play = JSON.parse(JSON.stringify(play));
+  assert.equal(getPlayView(play, hakoId).powers.hand.filter(card => card.id === 8).length, 1);
+  if (survivor) {
+    assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
+    reject(play, first, { type: 'bequeath', targetId: second });
+    play = act(play, first, { type: 'bequeath', targetId: third });
+    assert.ok(play.inventories[third].tokens.some(token => token.id === 'delayed-mary-doll'));
+    assert.equal(play.inventories[third].items.some(item => acquired.includes(item.id)), false);
+    assert.equal(play.resolution, null);
+    assert.equal(play.powers.hand.filter(card => card.id === 8).length, 1);
+    play = act(play, hakoId, { type: 'set_power', powerId: 8, slot: 0 });
+    assert.equal(play.powers.slots[0].id, 8);
+  } else {
+    assert.equal(play.resolution, null);
+    assert.equal(play.result.winner, 'hako');
+    assert.equal(play.result.winners.includes(first), false);
+  }
+});
+
 test('forced peek cancels the original move and lets only that visitor choose a nonempty local corner', () => {
   let play = fixture();
   givePower(play, 6, { slot: 0, ignoreThreshold: true });

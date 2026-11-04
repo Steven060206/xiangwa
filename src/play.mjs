@@ -148,6 +148,9 @@ function die(play, id, killerCornerId) {
   if (inventory(play, id).tokens.length && play.round.visitors.some(candidate => candidate.status === 'alive')) {
     play.resolution = { kind: 'inheritance', playerId: id };
   } else revealDiscard(play, id);
+  // Delayed stage-boundary deaths occur after the action-level noise sync.
+  // Return an attached Mary card in this same death transaction, before any view.
+  syncNoiseEffects(play);
   checkVictory(play);
 }
 
