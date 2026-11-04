@@ -28,7 +28,8 @@ export function mapTokenName(token, compact = false) {
     extinguisher: '灭火器', remains: '亡骸', hako: '箱娃', box_person: '箱人', empty_box: '空箱', key: '钥匙' };
   const tools = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '锈锁链' };
   if (token.tool) return `${tools[token.tool] || token.tool}${token.type === 'weakness_clue' ? '无效' : ''}`;
-  return `${!compact && token.name || names[token.type] || '标志'}${token.number ?? ''}`;
+  if (!compact && token.name) return token.name;
+  return `${names[token.type] || '标志'}${token.number ?? ''}`;
 }
 
 export function mapPlayers(state) {

@@ -167,10 +167,11 @@ test('hako completes secret opening choices from its own filtered options withou
   assert.ok(state.initialPowerCandidates.includes(state.initialPowerId));
 });
 
-test('hako bots can choose NO4 from an opening draft without relying on an omitted favorite', () => {
+test('hako bots skip drawn NO4 and select another legal candidate without their preferred card', () => {
   const view = { phase: 'opening_setup', you: hakoId, players: players(),
-    opening: { phase: 'power', hakoId, initialPowerOptions: [{ id: 4, name: '动来动去' }] } };
-  assert.deepEqual(decide(view), { type: 'choose_initial_power', powerId: 4 });
+    opening: { phase: 'power', hakoId, initialPowerOptions: [{ id: 4, canChoose: false }, { id: 2, canChoose: true }, { id: 3, canChoose: true }] } };
+  assert.deepEqual(decide(view), { type: 'choose_initial_power', powerId: 2 });
+  assert.equal(decide({ ...view, opening: { ...view.opening, initialPowerOptions: [{ id: 4 }] } }), null);
 });
 
 test('visitors reveal only their own down card, wait during declarations, and hako confirms the declaration', () => {

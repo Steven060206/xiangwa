@@ -230,7 +230,7 @@ async function preparePlay(request, people, hako = people[0]) {
   await action(request, hako, 'place_remains', { cornerId: 'living_sofa' });
   await action(request, hako, 'inspect_initial_room', { roomId: 'children_room' });
   const hidden = (await action(request, hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' })).body;
-  const result = await action(request, hako, 'choose_initial_power', { powerId: hidden.opening.initialPowerOptions[0].id });
+  const result = await action(request, hako, 'choose_initial_power', { powerId: hidden.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   assert.equal(result.status, 200);
   return result.body;
 }
@@ -342,7 +342,7 @@ test('five players restore each setup phase and the fourth visitor acts with pri
   ]) assert.equal((await action(request, type === 'prepare_opening' ? people[0] : hako, type, input)).status, 200);
   await checkRestart(saved, people);
   state = (await snapshot(request, hako)).body;
-  assert.equal((await action(request, hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id })).status, 200);
+  assert.equal((await action(request, hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id })).status, 200);
   await checkRestart(saved, people);
   const fourth = people[3];
   const live = await stream(t, saved.base, fourth);
@@ -729,7 +729,7 @@ test('a human hako gets three automatically dealt bot visitors through maps, the
     ['choose_initial_hiding', { cornerId: 'children_cabinet' }],
   ]) assert.equal((await action(request, host, type, values)).status, 200);
   const initialOptions = (await snapshot(request, host)).body.opening.initialPowerOptions;
-  assert.equal((await action(request, host, 'choose_initial_power', { powerId: initialOptions[0].id })).status, 200);
+  assert.equal((await action(request, host, 'choose_initial_power', { powerId: initialOptions.find(card => card.canChoose !== false).id })).status, 200);
   const pending = await live.state(state => state.round?.phase === 'visitor_reaction');
   assert.equal(pending.round.pendingAction.playerId, bots[0].id);
   await delay(40);
@@ -1030,7 +1030,7 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   const candidates = state.opening.initialPowerOptions.map(card => card.id);
   const unoffered = Array.from({ length: 11 }, (_, index) => index + 1).find(id => !candidates.includes(id));
   assert.equal((await action(request, hako, 'choose_initial_power', { powerId: unoffered })).status, 409);
-  const chosenPowerId = candidates[0];
+  const chosenPowerId = candidates.find(id => id !== 4);
   state = (await action(request, hako, 'choose_initial_power', { powerId: chosenPowerId })).body;
   await assertPrivateViews();
   assert.equal(state.phase, 'practice');
@@ -1590,7 +1590,7 @@ test('rematching preserves bot seats and automatic readiness while waiting for t
     ['choose_initial_hiding', { cornerId: 'children_cabinet' }],
   ]) assert.equal((await action(request, host, type, input)).status, 200);
   const options = (await snapshot(request, host)).body.opening.initialPowerOptions;
-  assert.equal((await action(request, host, 'choose_initial_power', { powerId: options[0].id })).body.phase, 'game_over');
+  assert.equal((await action(request, host, 'choose_initial_power', { powerId: options.find(card => card.canChoose !== false).id })).body.phase, 'game_over');
   const lobby = (await action(request, host, 'restart_game')).body;
   assert.equal(lobby.phase, 'lobby');
   assert.deepEqual(lobby.players, filled.players);
@@ -1780,7 +1780,7 @@ test('automatic deal, a drawn map, secret opening and original shuffled decks su
   await checkRestart(saved, people);
   assert.deepEqual((await snapshot(request, people[0])).body.opening.initialPowerOptions, candidates,
     'Restart keeps the same privately dealt three-card choice');
-  assert.equal((await action(request, people[0], 'choose_initial_power', { powerId: candidates[0].id })).status, 200);
+  assert.equal((await action(request, people[0], 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id })).status, 200);
   await checkRestart(saved, people);
 });
 
@@ -1847,6 +1847,56 @@ test('confirmed hiding history survives HTTP refresh and restart without reveali
     assert.equal(JSON.stringify(view).includes('lastInspectedRoom'), false);
     assert.equal(JSON.stringify(view).includes('hidingMemories'), false);
   }
+});
+
+test('HTTP, SSE, polling and restart hide the temporary vacancy during a private notebook replacement', async t => {
+  const saved = await persistentServer(t, { createPlayState(setup, opening, options) {
+    const play = createPlay(setup, opening, options);
+    const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'notebook');
+    [play.tokens.hall_clock, play.tokens[source]] = [play.tokens[source], play.tokens.hall_clock];
+    return play;
+  } });
+  const { request } = saved;
+  const people = await createFour(request);
+  const [hako, first, second, third] = people;
+  await preparePlay(request, people);
+  assert.equal((await action(request, first, 'silent_reveal', { index: 0 })).status, 200);
+  const observers = [hako, second, third];
+  const before = new Map(await Promise.all(observers.map(async person =>
+    [person.playerId, (await snapshot(request, person)).body.round.cornerState])));
+  let streams = await Promise.all(observers.map(person => stream(t, saved.base, person)));
+  const assertHidden = async version => {
+    for (let index = 0; index < observers.length; index++) {
+      const person = observers[index];
+      const http = await snapshot(request, person);
+      const poll = await snapshot(request, person, { poll: true });
+      const sse = await streams[index].state(state => state.version >= version);
+      for (const state of [http.body, poll.body, sse]) {
+        assert.deepEqual(state.round.cornerState, before.get(person.playerId),
+          'No observer transport may expose a temporary notebook vacancy');
+        if (state.round.pendingAction) assert.deepEqual(state.round.pendingAction, { type: 'peek', playerId: first.playerId });
+        if (state.round.resolution) assert.deepEqual(state.round.resolution, { kind: 'waiting', playerId: first.playerId });
+      }
+    }
+  };
+  const declared = await action(request, first, 'peek', { cornerId: 'hall_clock' });
+  assert.equal(declared.status, 200);
+  await assertHidden(declared.body.version);
+  const pending = await action(request, hako, 'resolve_visitor_action');
+  assert.equal(pending.status, 200);
+  await assertHidden(pending.body.version);
+  const own = (await snapshot(request, first)).body;
+  assert.equal(own.round.resolution.cornerId, 'hall_clock');
+  assert.equal(own.round.cornerState.find(corner => corner.id === 'hall_clock').occupied, false);
+  assert.equal(pending.body.round.notebooks.length, 1);
+  await Promise.all(streams.map(live => live.close()));
+  await checkRestart(saved, people);
+  streams = await Promise.all(observers.map(person => stream(t, saved.base, person)));
+  await assertHidden(pending.body.version);
+  const completed = await action(request, first, 'resolve_peek', { replacement: 'empty_box' });
+  assert.equal(completed.status, 200);
+  await assertHidden(completed.body.version);
+  assert.equal(completed.body.round.resolution, null);
 });
 
 test('pending peeks, private results, inventory, exchanges and the final result recover without leaks', async t => {

@@ -88,7 +88,7 @@ test('important private events appear above the game, dismiss without acting, an
   await act(hako, 'place_remains', { cornerId: 'living_sofa' });
   await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
 
   async function open(person, mobile) {
     const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1366, height: 900 },

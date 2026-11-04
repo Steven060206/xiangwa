@@ -502,7 +502,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.deepEqual(restoredHako.opening.initialPowerOptions, initialCandidates, 'Refresh preserves the private three-card draw');
   await assertVisitorPrivacy('power');
 
-  const chosenInitial = initialCandidates[0];
+  const chosenInitial = initialCandidates.find(card => card.canChoose !== false);
   await hakoPage.getByTestId('initial-power-select').selectOption(String(chosenInitial.id));
   state = await performAction(hakoPage, 'choose_initial_power', () => hakoPage.getByTestId('confirm-initial-power').click());
   assert.equal(state.phase, 'practice');

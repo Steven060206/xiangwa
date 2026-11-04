@@ -120,7 +120,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   await hp.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
   assert.deepEqual(await hp.getByTestId('initial-power-select').locator('option').evaluateAll(options => options.map(option => Number(option.value))),
     candidates.map(card => card.id));
-  state = await act(hako, 'choose_initial_power', { powerId: candidates[0].id });
+  state = await act(hako, 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
   assert.equal(await fp.locator('.initial-power-public').count(), 0, 'A visitor DOM does not disclose the selected initial power');
   assert.equal((await snapshot(first)).initialPower == null, true);
   assert.match(await fp.getByTestId('total-rounds').innerText(), /0/);

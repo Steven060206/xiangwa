@@ -281,6 +281,7 @@ export function chooseInitialPower(opening, playerId, powerId) {
   if (!Number.isInteger(powerId) || !initialPowerCandidates(opening).includes(powerId)) {
     throw new Error('初始能力须从系统抽出的三张候选中选择。');
   }
+  if (powerId === 4) throw new Error('NO.4可以抽入候选，但不能选作初始能力，请选择另外一张。');
   // Both unchosen candidates return to the numbered deck; silent mode removes NO.12.
   // Rulebook setup places Despair below the nine shuffled numbered cards.
   const powerDeck = [...shuffled(INITIAL_POWER_IDS.filter(id => id !== powerId)), 'despair'];
@@ -330,7 +331,9 @@ export function getOpeningView(opening, playerId) {
     view.hidingTargets = room.corners.map(corner => corner.id);
   } else if (opening.phase === 'power') {
     view.lastInspectedRoom = getInitialRoomMemory(opening);
-    view.initialPowerOptions = initialPowerCandidates(opening).map(id => powerCard(id));
+    view.initialPowerOptions = initialPowerCandidates(opening).map(id => ({ ...powerCard(id), canChoose: id !== 4,
+      ...(id === 4 ? { reason: 'NO.4不能选作初始能力，保留在普通牌库中。' } : {}),
+    }));
   }
   return view;
 }

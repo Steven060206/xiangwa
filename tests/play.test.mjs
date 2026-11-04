@@ -108,6 +108,86 @@ test('peek declaration and resolution disclose the selected corner only to its a
   }
 });
 
+test('notebook replacement never exposes a temporary vacant corner to Hako, visitors or ghosts', () => {
+  for (const replacement of ['empty_box', 'owned-piece']) {
+    let play = newPlay();
+    addGhost(play, third, 'children_toys');
+    play.tokens.hall_clock = token('private-notebook-position', 'notebook', { number: 7 });
+    play.inventories[first].tokens.push(token('owned-piece', 'password', { number: 2 }));
+    play = reveal(play);
+    const observers = [hakoId, second, third];
+    const before = new Map(observers.map(id => [id, getPlayView(play, id).cornerState]));
+    play = act(play, first, { type: 'peek', cornerId: 'hall_clock' });
+    for (const id of observers) {
+      assert.deepEqual(getPlayView(play, id).cornerState, before.get(id));
+      assert.deepEqual(getPlayView(play, id).pendingAction, { type: 'peek', playerId: first });
+    }
+    play = act(play, hakoId, { type: 'resolve_visitor_action' });
+    assert.equal(play.tokens.hall_clock, null, 'the real notebook has already left the map');
+    assert.equal(getPlayView(play, first).cornerState.find(corner => corner.id === 'hall_clock').occupied, false);
+    assert.equal(getPlayView(play, first).resolution.cornerId, 'hall_clock');
+    for (const id of observers) {
+      const view = getPlayView(play, id);
+      assert.deepEqual(view.cornerState, before.get(id), 'temporary vacancy must not disclose the private target');
+      assert.deepEqual(view.resolution, { kind: 'waiting', playerId: first });
+      assert.deepEqual(view.notebooks.map(note => note.number), [7], 'notebook effects remain public immediately');
+    }
+    // The same whitelist must protect old/persisted pending notebook resolutions.
+    play = JSON.parse(JSON.stringify(play));
+    for (const id of observers) assert.deepEqual(getPlayView(play, id).cornerState, before.get(id));
+    play = act(play, first, { type: 'resolve_peek', replacement });
+    for (const id of observers) assert.deepEqual(getPlayView(play, id).cornerState, before.get(id));
+  }
+});
+
+test('completed notebook replacement reveals intentional X markers and genuine permanent empty corners', () => {
+  for (const leaveEmpty of [false, true]) {
+    let play = newPlay('deduction');
+    play.tokens.hall_clock = token('public-replacement-note', 'notebook', { number: 7 });
+    if (leaveEmpty) play.opening.emptyBoxTokens = [];
+    play = peek(reveal(play), 'hall_clock');
+    for (const id of [hakoId, second, third]) {
+      assert.deepEqual(getPlayView(play, id).cornerState.find(corner => corner.id === 'hall_clock'),
+        { id: 'hall_clock', roomId: 'hall_room', occupied: true });
+    }
+    play = act(play, first, { type: 'resolve_peek', replacement: leaveEmpty ? 'none' : 'empty_box', faceUp: !leaveEmpty });
+    for (const id of [hakoId, first, second, third]) {
+      const corner = getPlayView(play, id).cornerState.find(corner => corner.id === 'hall_clock');
+      assert.equal(corner.occupied, !leaveEmpty, 'completed physical changes are public, not permanently masked');
+      if (!leaveEmpty) assert.equal(corner.faceUp, true);
+    }
+  }
+});
+
+test('terminal snapshots disclose the real vacancy even if a saved notebook resolution remains', () => {
+  let play = newPlay();
+  play.tokens.hall_clock = token('terminal-note', 'notebook', { number: 7 });
+  play = peek(reveal(play), 'hall_clock');
+  play.result = { winner: 'hako', reason: '三条访问者胜利路线均已无法达成', winners: [hakoId] };
+  play = JSON.parse(JSON.stringify(play));
+  for (const id of [hakoId, first, second, third]) {
+    const view = getPlayView(play, id);
+    assert.equal(view.cornerState.find(corner => corner.id === 'hall_clock').occupied, false);
+    assert.equal(view.review.corners.find(corner => corner.id === 'hall_clock').token, null);
+  }
+});
+
+test('ordinary token pickup and safe-key retrieval do not expose intermediate target occupancy changes', () => {
+  for (const safe of [false, true]) {
+    let play = newPlay();
+    addGhost(play, third, 'children_toys');
+    play.tokens.hall_clock = token('private-pickup-position', safe ? 'safe' : 'password', { number: 2 });
+    play = reveal(play);
+    const before = getPlayView(play, hakoId).cornerState;
+    play = peek(play, 'hall_clock');
+    for (const id of [hakoId, second, third]) assert.deepEqual(getPlayView(play, id).cornerState, before);
+    play = act(play, first, safe ? { type: 'safe_guess', numbers: [1, 3, 5] }
+      : { type: 'resolve_peek', take: true, replacement: 'empty_box' });
+    for (const id of [hakoId, second, third]) assert.deepEqual(getPlayView(play, id).cornerState, before);
+    assert.ok(play.inventories[first].tokens.some(piece => piece.type === (safe ? 'key' : 'password')));
+  }
+});
+
 test('Hako sees current separate card and token counts without receiving visitor inventory lists', () => {
   const play = newPlay();
   play.inventories[first].items.push(item('night_vision'));

@@ -79,7 +79,7 @@ async function preparePlay(client, { powerId = 7 } = {}) {
   await ok(client, hako, 'inspect_initial_room', { roomId: 'children_room' });
   state = await ok(client, hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
   const selected = state.opening.initialPowerOptions.find(card => card.id === powerId)
-    ?? state.opening.initialPowerOptions[0];
+    ?? state.opening.initialPowerOptions.find(card => card.canChoose !== false);
   await ok(client, hako, 'choose_initial_power', { powerId: selected.id });
   return people;
 }

@@ -739,8 +739,12 @@ function ordinaryHidingTargets(play, cornerId) {
   const roomIds = new Set(base.map(roomOf));
   return [...base, ...Object.values(play.extraCorners).filter(corner => roomIds.has(getLogicalRoomId(corner.roomId))).map(corner => corner.id)].sort();
 }
-function publicCorners(play) {
-  return Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id),
+function publicCorners(play, playerId) {
+  // A revealed notebook is temporarily removed while its owner chooses a
+  // replacement. That private intermediate vacancy must not identify the peek.
+  const pendingNotebook = !play.result && play.resolution?.kind === 'notebook' && play.resolution.playerId !== playerId
+    ? play.resolution.cornerId : null;
+  return Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id) || id === pendingNotebook,
     ...(play.tokens[id]?.type === 'empty_box' && play.tokens[id].faceUp && !actorsAt(play, id).length
       ? { faceUp: true, token: tokenView(play.tokens[id]) } : {}) }));
 }
@@ -902,7 +906,7 @@ export function getPlayView(play, playerId) {
   view.resolution = resolutionView(play, playerId);
   view.notebooks = play.notebooks.map(tokenView);
   view.cornerState = alive(play, playerId) && play.powers.step === 'action' && play.hakoStage?.publicCorners
-    ? clone(play.hakoStage.publicCorners) : publicCorners(play);
+    ? clone(play.hakoStage.publicCorners) : publicCorners(play, playerId);
   view.extraCorners = clone(Object.values(play.extraCorners));
   view.blockedDoors = play.round.blockedDoors.filter(door => playerId === play.round.hakoId || door.public === true)
     .map(({ from, to }) => ({ from: getLogicalRoomId(from), to: getLogicalRoomId(to) }));

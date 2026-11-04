@@ -33,8 +33,9 @@ function openingAction(opening, you, random) {
     case 'hiding_room': return { type: 'inspect_initial_room', roomId: pick(opening.hidingRooms, random)?.id };
     case 'hiding_corner': return { type: 'choose_initial_hiding', cornerId: pick(opening.hidingTargets, random) };
     case 'power': {
-      const power = opening.initialPowerOptions.find(card => card.id === 1)
-        ?? opening.initialPowerOptions.find(card => POWER_ORDER.includes(card.id));
+      const options = opening.initialPowerOptions.filter(card => card.canChoose !== false && card.id !== 4);
+      const power = options.find(card => card.id === 1)
+        ?? options.find(card => POWER_ORDER.includes(card.id));
       return power ? { type: 'choose_initial_power', powerId: power.id } : null;
     }
     default: return null;

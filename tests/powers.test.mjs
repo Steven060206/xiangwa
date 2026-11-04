@@ -104,13 +104,17 @@ test('cry draws the top card only, returns a locked card to the bottom and never
 });
 
 test('public matching notebooks enter the hand without granting other exemptions', () => {
-  for (const id of [2, 3]) {
+  for (const id of [2, 3, 4]) {
     let play = fixture();
-    play.powers.deck = [id, 4];
+    play.powers.deck = [id, 5];
     play.notebooks.push(piece(`note-${id}`, 'notebook', { number: id }));
     play = act(stage(play), hakoId, { type: 'hako_cry' });
     assert.deepEqual(play.powers.hand.find(card => card.id === id), { id, ignoreThreshold: false });
-    assert.deepEqual(play.powers.deck, [4]);
+    assert.deepEqual(play.powers.deck, [5]);
+    if (id === 4) {
+      play = act(play, hakoId, { type: 'set_power', powerId: 4, slot: 0 });
+      assert.equal(play.powers.slots[0].id, 4, 'Only the initial choice is forbidden; NO.4 can be acquired and set normally');
+    }
   }
 });
 

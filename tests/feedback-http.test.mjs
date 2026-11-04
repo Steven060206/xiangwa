@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGameServer } from '../src/server.mjs';
@@ -69,8 +69,33 @@ async function game(t, createPlayState = createPlay) {
   await act(hako, 'place_remains', { cornerId: 'living_sofa' });
   await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
   await act(hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  return { people, act, action, snapshot, restart };
+  return { people, act, action, snapshot, restart, dataFile: join(directory, 'rooms.json') };
 }
+
+test('a pending NO4 candidate is preserved on restart but rejected atomically while other initial powers remain selectable', async t => {
+  const g = await game(t);
+  const data = JSON.parse(await readFile(g.dataFile, 'utf8'));
+  data.rooms[0].opening.initialPowerCandidates = [4, 2, 3];
+  await writeFile(g.dataFile, JSON.stringify(data), 'utf8');
+  await g.restart();
+  const [hako] = g.people;
+  const before = await g.snapshot(hako);
+  const bytes = await readFile(g.dataFile, 'utf8');
+  assert.deepEqual(before.opening.initialPowerOptions.map(card => card.id), [4, 2, 3]);
+  assert.equal(before.opening.initialPowerOptions[0].canChoose, false);
+  const rejected = await g.action(hako, 'choose_initial_power', { powerId: 4 });
+  assert.equal(rejected.status, 409);
+  assert.match(rejected.body.error, /不能选作初始能力/);
+  assert.deepEqual(await g.snapshot(hako), before);
+  assert.equal(await readFile(g.dataFile, 'utf8'), bytes);
+  await g.restart();
+  assert.deepEqual((await g.snapshot(hako)).opening.initialPowerOptions, before.opening.initialPowerOptions);
+  const chosen = await g.act(hako, 'choose_initial_power', { powerId: 2 });
+  assert.equal(chosen.phase, 'practice');
+  const stored = JSON.parse(await readFile(g.dataFile, 'utf8')).rooms[0];
+  assert.equal(stored.opening.powerDeck.filter(id => id === 4).length, 1);
+  assert.equal(stored.play.powers.deck.filter(id => id === 4).length, 1);
+});
 
 function moveToken(play, tokenId, destination) {
   const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === tokenId);
@@ -137,15 +162,15 @@ test('three initial candidates persist across reload and restart and remain priv
   const absent = Array.from({ length: 11 }, (_, index) => index + 1).find(id => !candidates.some(card => card.id === id));
   assert.equal((await g.action(hako, 'choose_initial_power', { powerId: absent })).status, 409);
   assert.equal((await g.snapshot(hako)).version, before.version);
-  await g.act(hako, 'choose_initial_power', { powerId: candidates[0].id });
-  assert.equal((await g.snapshot(hako)).initialPower.id, candidates[0].id);
+  await g.act(hako, 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
+  assert.equal((await g.snapshot(hako)).initialPower.id, candidates.find(card => card.canChoose !== false).id);
   for (const person of [first, second]) {
     const view = await g.snapshot(person, true);
     assert.equal(view.initialPower == null, true);
     assert.equal(Object.hasOwn(view.round.powers, 'hand'), false);
   }
   await g.restart();
-  assert.equal((await g.snapshot(hako)).initialPower.id, candidates[0].id);
+  assert.equal((await g.snapshot(hako)).initialPower.id, candidates.find(card => card.canChoose !== false).id);
   assert.equal((await g.snapshot(first)).initialPower == null, true);
   assert.equal(created, 1, 'Restart restores the chosen ability without creating another play state');
 });
@@ -154,7 +179,7 @@ test('global discoveries preserve action and inventory privacy while cry markers
   const g = await game(t, feedbackFixture);
   const [hako, first, second, third] = g.people;
   const candidates = (await g.snapshot()).opening.initialPowerOptions;
-  await g.act(hako, 'choose_initial_power', { powerId: candidates[0].id });
+  await g.act(hako, 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
   const before = await g.snapshot(first);
   assert.equal(before.round.totalRounds, 0);
   assert.equal(JSON.stringify(await g.snapshot(third)).includes('password_4'), false);
@@ -242,7 +267,7 @@ test('door ability metadata stays private unless hako explicitly publishes the a
     });
     const [hako, first] = g.people;
     const candidates = (await g.snapshot()).opening.initialPowerOptions;
-    await g.act(hako, 'choose_initial_power', { powerId: candidates[0].id });
+    await g.act(hako, 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
     await nextHakoStage(g);
     const stage = await g.act(hako, 'begin_hako_action');
     const option = stage.round.powers.activationOptions.find(option => option.card.id === 3);

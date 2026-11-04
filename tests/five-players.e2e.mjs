@@ -130,7 +130,7 @@ test('five independent browsers choose five-player mode and complete opening plu
   state = await act(host, 'inspect_initial_room', () => host.getByTestId('inspect-initial-room').click());
   await host.getByTestId('initial-hiding-select').selectOption(state.opening.hidingTargets[0]);
   state = await act(host, 'choose_initial_hiding', () => host.getByTestId('confirm-initial-hiding').click());
-  await host.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions[0].id));
+  await host.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions.find(card => card.canChoose !== false).id));
   state = await act(host, 'choose_initial_power', () => host.getByTestId('confirm-initial-power').click());
   assert.equal(state.round.visitors.length, 4);
   await fifth.reload();

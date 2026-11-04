@@ -228,7 +228,7 @@ function publicPowers(container, state, powers) {
     slots.append(row);
   }
   section.append(slots, node('p', 'small-note', `箱娃手牌 ${powers.handCount ?? 0} 张 · 牌库 ${powers.deckCount ?? 0} 张`));
-  const cryCount = node('p', 'small-note', `累计哭喊 ${powers.cryCount ?? 0} 次 · 第10次哭喊保底「绝望时刻」。`);
+  const cryCount = node('p', 'small-note', `累计哭喊 ${powers.cryCount ?? 0} 次 · 前9次不能获得「绝望时刻」；第10次起按牌序抽取，噩梦的来信可以延后。`);
   cryCount.dataset.testid = 'power-cry-count';
   section.append(cryCount);
   if (powers.pendingBehindYou) {

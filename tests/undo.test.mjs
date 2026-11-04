@@ -103,7 +103,7 @@ async function play(request, people) {
     assert.equal(result.status, 200);
   }
   const candidates = result.body.opening.initialPowerOptions;
-  result = await action(request, people[0], 'choose_initial_power', { powerId: candidates[0].id });
+  result = await action(request, people[0], 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
   assert.equal(result.status, 200);
   return result.body;
 }

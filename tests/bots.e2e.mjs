@@ -220,7 +220,7 @@ test('a mobile human Hako adds three bots and confirms their exploration actions
   state = await act(page, 'inspect_initial_room', () => page.getByTestId('inspect-initial-room').click());
   await page.getByTestId('initial-hiding-select').selectOption(state.opening.hidingTargets[0]);
   state = await act(page, 'choose_initial_hiding', () => page.getByTestId('confirm-initial-hiding').click());
-  await page.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions[0].id));
+  await page.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions.find(card => card.canChoose !== false).id));
   await act(page, 'choose_initial_power', () => page.getByTestId('confirm-initial-power').click());
 
   for (let turn = 0; turn < 2; turn++) {

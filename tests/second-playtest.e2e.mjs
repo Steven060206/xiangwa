@@ -117,7 +117,7 @@ async function game(t, { death = false } = {}) {
   const options = await pages[0].getByTestId('initial-power-select').locator('option').allTextContents();
   assert.equal(options.length, 3);
   assert.ok(options.every(name => /^NO\.\d+ /.test(name)), 'Every initial power choice includes its printed card number');
-  const powerId = state.opening.initialPowerOptions[0].id;
+  const powerId = state.opening.initialPowerOptions.find(card => card.canChoose !== false).id;
   await act(people[0], 'choose_initial_power', { powerId });
   assert.match(await pages[0].getByTestId('initial-power').textContent(), new RegExp(`NO\\.${powerId} `));
   return { people, pages, act, snapshot, click, sync };
@@ -128,7 +128,9 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   const [hp, fp, sp] = pages;
   assert.match(await fp.getByTestId('item-private-result').innerText(), /NO\.4 动来动去/);
   assert.equal(await hp.getByTestId('item-private-result').count(), 0);
-  assert.match(await fp.getByTestId('power-cry-count').innerText(), /累计哭喊 7 次.*第10次哭喊保底/);
+  const cryRule = await fp.getByTestId('power-cry-count').innerText();
+  assert.match(cryRule, /累计哭喊 7 次.*前9次不能获得.*第10次起按牌序抽取.*来信可以延后/);
+  assert.doesNotMatch(cryRule, /保底|必得|保证取得/);
   assert.match(await fp.getByTestId('total-rounds').innerText(), /0/);
   assert.match(await fp.getByTestId('power-delayed-death').innerText(), /NO\.5 我在你身后.*下一箱娃阶段开始时/);
   assert.match(await fp.getByTestId('inventory').innerText(), /白木椿/);
@@ -159,6 +161,9 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   await act(people[1], 'silent_reveal', { index: 0 });
   await act(people[1], 'peek', { cornerId: 'hall_clock' });
   await act(people[0], 'resolve_visitor_action');
+  await fp.locator('.corner-location[data-corner-id="hall_clock"]').click();
+  assert.equal(await fp.locator('#map-context .map-context-content').innerText(), '手记2', 'The private map result does not append its number twice');
+  await fp.keyboard.press('Escape');
   assert.equal(await fp.getByTestId('publish-peek-token').count(), 0, 'A forced-public notebook has no optional publish action');
   assert.equal(await fp.getByTestId('resolve-peek-take').count(), 0, 'A notebook has no redundant button asking to publish it again');
   assert.match(await hp.getByTestId('notebook-power').innerText(), /NO\.2 马上就到哟/);
@@ -190,6 +195,18 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   assert.match(await fp.getByTestId('map-context').innerText(), /终局盘面 · 全员可见/);
   assert.equal(await fp.getByTestId('map-confirm-action').count(), 0);
   await fp.screenshot({ path: 'test-results/third-playtest-review-mobile.png', fullPage: true });
+  await fp.keyboard.press('Escape');
+  const password = review.corners.find(corner => corner.token?.type === 'password');
+  assert.ok(password, 'The complete terminal map includes a password token');
+  const passwordFloor = await fp.evaluate(async cornerId => {
+    const { getLogicalRooms } = await import('/shared/maps.mjs');
+    const { cornerRoomId } = await import('/tile.js');
+    const tileId = getLogicalRooms().find(room => room.id === cornerRoomId(cornerId)).tileId;
+    return window.__secondPlaytest.setup.placements.find(tile => tile.tileId === tileId).floor;
+  }, password.id);
+  await fp.getByTestId(passwordFloor === -1 ? 'floor-basement' : `floor-${passwordFloor}`).click();
+  await fp.locator(`.corner-location[data-corner-id="${password.id}"]`).click();
+  assert.equal(await fp.locator('#map-context .map-context-content').innerText(), `密码${password.token.number}`, 'The terminal map result displays the actual single password digit');
 });
 
 test('death without a ring requires one living heir and hidden allies can locate one another', { timeout: 90000 }, async t => {

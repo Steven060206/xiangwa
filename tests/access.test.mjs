@@ -238,7 +238,7 @@ test('a default invitation expires at thirty minutes while a started five-player
   await act(host, 'place_remains', { cornerId: 'living_sofa' });
   await act(host, 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(host, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  state = await act(host, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  state = await act(host, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   assert.equal(state.phase, 'practice');
   f.advance(30 * 60 * 1000 - 1);
   assert.equal((await f.request('/api/access', undefined, cookie)).body.authorized, true);

@@ -129,7 +129,7 @@ async function game(t, createPlayState = createPlay) {
     await act(hako, 'place_remains', { cornerId: 'living_sofa' });
     await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
     state = await act(hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-    return act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+    return act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   }
   return { people, action, act, snapshot, stream, mapSetup, play, restart, dataFile };
 }

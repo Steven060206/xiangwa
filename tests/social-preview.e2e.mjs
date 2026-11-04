@@ -10,7 +10,7 @@ import { createPlay } from '../src/play.mjs';
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
-async function session(t, { exploring = false, tileDeck = deck,
+async function session(t, { exploring = false, pauseInitialPower = false, tileDeck = deck,
   initialItemOrder = ['smartphone', 'walkie_talkie', 'deduction'], arrangePlay = () => {} } = {}) {
   const server = createGameServer({ deck: tileDeck, initialItemOrder, silentNumbers: [0, 1, 2, 3, 4, 5],
     createPlayState(setup, opening, options) {
@@ -72,7 +72,7 @@ async function session(t, { exploring = false, tileDeck = deck,
     await act(people[0], 'place_remains', { cornerId: 'living_sofa' });
     await act(people[0], 'inspect_initial_room', { roomId: 'children_room' });
     state = await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-    state = await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+    if (!pauseInitialPower) state = await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   }
   const open = async (person, mobile = false) => {
     const context = await browser.newContext({ viewport: mobile ? { width: 375, height: 667 } : { width: 1366, height: 900 } });
@@ -96,6 +96,36 @@ async function session(t, { exploring = false, tileDeck = deck,
   };
   return { people, act, snapshot, click, open, state };
 }
+
+test('initial power UI displays all three drawn cards but disables NO4 and confirms another card after reload', { timeout: 60000 }, async t => {
+  t.mock.method(Math, 'random', () => 0);
+  const g = await session(t, { exploring: true, pauseInitialPower: true });
+  const hako = g.people[0];
+  assert.deepEqual(g.state.opening.initialPowerOptions.map(card => card.id), [2, 3, 4]);
+  const page = await g.open(hako, true);
+  const select = page.getByTestId('initial-power-select');
+  assert.equal(await select.locator('option').count(), 3);
+  assert.equal(await select.locator('option[value="4"]').evaluate(option => option.disabled), true);
+  assert.match(await select.locator('option[value="4"]').textContent(), /不可选作初始能力/);
+  assert.notEqual(await select.inputValue(), '4');
+  await page.reload();
+  await select.waitFor();
+  assert.equal(await select.locator('option[value="4"]').evaluate(option => option.disabled), true);
+  assert.deepEqual((await g.snapshot(hako)).opening.initialPowerOptions, g.state.opening.initialPowerOptions);
+  const before = (await g.snapshot(hako)).version;
+  const rejected = await page.evaluate(async identity => {
+    const response = await fetch(`/api/rooms/${identity.roomCode}/actions`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playerId: identity.playerId,
+        token: identity.token, type: 'choose_initial_power', powerId: 4 }) });
+    return response.status;
+  }, hako);
+  assert.equal(rejected, 409);
+  assert.equal((await g.snapshot(hako)).version, before);
+  await select.selectOption('2');
+  const chosen = await g.click(page, 'choose_initial_power', () => page.getByTestId('confirm-initial-power').click());
+  assert.equal(chosen.phase, 'practice');
+  assert.equal(chosen.initialPower.id, 2);
+});
 
 test('two real browser sessions share live tile position and rotation without committing until confirmation', { timeout: 60000 }, async t => {
   const { people, open, click, snapshot, state } = await session(t);

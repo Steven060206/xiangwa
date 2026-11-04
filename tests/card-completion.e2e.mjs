@@ -120,7 +120,7 @@ async function game(t, fixtureOptions, items = ['smartphone', 'deduction', 'walk
   await act(people[0], 'place_remains', { cornerId: 'living_sofa' });
   await act(people[0], 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   for (let index = 0; index < people.length; index++) {
     const context = await browser.newContext({ viewport: index === 1 ? { width: 390, height: 844 } : { width: 1280, height: 900 } });
     await context.addInitScript(person => {

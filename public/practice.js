@@ -226,7 +226,7 @@ export function preparationDescription(state) {
   if (state.draft) return '正在完成随机发牌，随后由访问者轮流拼图。';
   if (state.opening) {
     const name = preparationSteps.find(([phase]) => phase === state.opening.phase)?.[1] || '开局配置';
-    if (state.opening.phase === 'power') return state.opening.hakoId === state.you ? '从系统随机抽取的三张箱娃之力中秘密选择一张，可免公开手记门槛。' : '箱娃正在秘密选择初始能力。';
+    if (state.opening.phase === 'power') return state.opening.hakoId === state.you ? '从三张候选中秘密选择初始能力；NO.4可被抽到，但不能选择。' : '箱娃正在秘密选择初始能力。';
     return state.opening.hakoId === state.you ? `箱娃准备：${name}。选择内容仅你可见。` : `箱娃正在完成${name}。访问者在正门等待入场。`;
   }
   return '';
@@ -412,7 +412,8 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'power': {
         const select = choiceSelect(controls, {
-          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(card => ({ ...card, name: cardName(card) })),
+          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(card => ({ ...card,
+            name: `${cardName(card)}${card.canChoose === false ? '（不可选作初始能力）' : ''}`, disabled: card.canChoose === false })),
           selected: selectedPower, locked, onChange: value => { selectedPower = value; },
         });
         const description = node('p', 'item-description small-note');
@@ -422,7 +423,7 @@ export function renderOpening({ state, pending, online, action }) {
         describe();
         controls.append(description);
         controls.append(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked || !select.value, () => action('choose_initial_power', { powerId: Number(select.value) })));
-        controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
+        controls.append(node('p', 'small-note', 'NO.4可抽入三张候选但不能选作初始能力，不重抽，留在普通牌库供后续取得。选中的初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
         renderRoomMemory(controls, opening.lastInspectedRoom);
         break;
       }

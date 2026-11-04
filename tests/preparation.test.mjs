@@ -156,7 +156,7 @@ test('five-player preparation automatically deals four distinct skills and keeps
   placeRemains(opening, hakoId, 'hall_clock');
   inspectInitialRoom(opening, hakoId, 'children_room');
   chooseInitialHiding(opening, hakoId, 'children_bed');
-  chooseInitialPower(opening, hakoId, opening.initialPowerCandidates[0]);
+  chooseInitialPower(opening, hakoId, opening.initialPowerCandidates.find(id => id !== 4));
   assert.equal(opening.phase, 'opening_ready');
   assert.deepEqual(opening.visitorIds, fourVisitors);
   for (const playerId of fourVisitors) {
@@ -414,7 +414,7 @@ test('initial power is chosen from three dealt cards and remains private with th
   for (const powerId of [0, unoffered, 11, 12, 13, 1.5, '1', undefined]) {
     rejectsWithoutMutation(opening, () => chooseInitialPower(opening, hakoId, powerId));
   }
-  const chosen = options[0];
+  const chosen = options.find(card => card.canChoose);
   rejectsWithoutMutation(opening, () => chooseInitialPower(opening, visitors[0], chosen.id));
   chooseInitialPower(opening, hakoId, chosen.id);
   assert.equal(opening.phase, 'opening_ready');
@@ -426,7 +426,7 @@ test('initial power is chosen from three dealt cards and remains private with th
     Array.from({ length: 10 }, (_, index) => index + 1).filter(id => id !== chosen.id));
   assert.equal(opening.powerDeck.at(-1), 'despair');
   assert.equal(opening.powerDeck.includes(chosen.id), false);
-  assert.ok(options.slice(1).every(power => opening.powerDeck.includes(power.id)));
+  assert.ok(options.filter(power => power.id !== chosen.id).every(power => opening.powerDeck.includes(power.id)));
   assert.equal(opening.powerDeck.includes(12), false);
   assert.equal(opening.powerDeck.includes(11), false);
   for (const playerId of [hakoId, ...visitors]) {
@@ -455,7 +455,7 @@ test('each preparation stage exposes only public occupancy to visitors', () => {
   chooseInitialHiding(opening, hakoId, 'children_bed');
   assert.equal(opening.hidingUnderToken.type, 'remains');
   assertPublicOpening(opening);
-  chooseInitialPower(opening, hakoId, opening.initialPowerCandidates[0]);
+  chooseInitialPower(opening, hakoId, opening.initialPowerCandidates.find(id => id !== 4));
   assertPublicOpening(opening);
 });
 
@@ -478,16 +478,23 @@ test('opening draws include every allowed numbered power and persist without res
   assert.deepEqual([...seen].sort((a, b) => a - b), Array.from({ length: 10 }, (_, index) => index + 1));
 });
 
-test('NO.4 can be an initial choice and legacy pending draws replace innate NO.11 deterministically', () => {
-  for (const powerId of [4, 2]) {
+test('NO.4 remains in three drawn candidates but cannot be chosen initially or remove itself from the later deck', () => {
+  for (const candidates of [[4, 2, 3], [1, 4, 11]]) {
     const opening = beforePower();
-    opening.initialPowerCandidates = [1, 4, 11];
+    opening.initialPowerCandidates = candidates;
     const saved = JSON.parse(JSON.stringify(opening));
     const expected = getOpeningView(opening, hakoId).initialPowerOptions;
-    assert.deepEqual(expected.map(card => card.id), [1, 4, 2]);
+    assert.deepEqual(expected.map(card => card.id), candidates.includes(11) ? [1, 4, 2] : candidates);
+    assert.equal(expected.length, 3);
+    assert.equal(expected.find(card => card.id === 4).canChoose, false);
+    assert.match(expected.find(card => card.id === 4).reason, /不能选作初始能力/);
+    assert.equal(expected.filter(card => card.canChoose).length, 2);
     assert.deepEqual(getOpeningView(saved, hakoId).initialPowerOptions, expected);
-    chooseInitialPower(saved, hakoId, powerId);
-    assert.equal(saved.initialPowerId, powerId);
+    rejectsWithoutMutation(saved, () => chooseInitialPower(saved, hakoId, 4));
+    assert.deepEqual(getOpeningView(saved, hakoId).initialPowerOptions, expected, 'rejected NO.4 never redraws the candidates');
+    chooseInitialPower(saved, hakoId, 2);
+    assert.equal(saved.initialPowerId, 2);
+    assert.equal(saved.powerDeck.filter(id => id === 4).length, 1);
     assert.equal(saved.initialPowerIgnoresNotebookRequirement, true);
     assertPublicOpening(saved);
   }
@@ -503,7 +510,10 @@ test('legacy pending openings have stable three-card choices and retain already 
   assert.deepEqual(getOpeningView(JSON.parse(JSON.stringify(opening)), hakoId).initialPowerOptions, options);
   assert.deepEqual(opening, before);
   t.mock.restoreAll();
-  chooseInitialPower(opening, hakoId, 4);
+  rejectsWithoutMutation(opening, () => chooseInitialPower(opening, hakoId, 4));
+  chooseInitialPower(opening, hakoId, 2);
+  // Already-finished legacy games are not retroactively redealt.
+  opening.initialPowerId = 4;
   assert.equal(getOpeningView(opening, hakoId).initialPowerId, 4);
   assertPublicOpening(opening);
   opening.initialPowerId = 11;
@@ -544,7 +554,7 @@ test('all opening views copy nested secret options, inspected tokens and public 
   const power = getOpeningView(opening, hakoId);
   power.hidingUnderToken.id = 'changed';
   power.lastInspectedRoom.corners[0].token.id = 'changed';
-  power.initialPowerOptions[0].name = 'changed';
+  power.initialPowerOptions.find(card => card.canChoose !== false).name = 'changed';
   const publicView = getOpeningView(opening, visitors[0]);
   publicView.itemChoices[0].playerId = 'changed';
   publicView.corners[0].id = 'changed';
