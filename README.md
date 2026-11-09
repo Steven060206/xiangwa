@@ -12,7 +12,7 @@
 
 ## 在自己的电脑上运行
 
-1. 从 [GitHub 仓库](https://github.com/Steven060206/xiangwa) 下载 ZIP 并解压到固定文件夹，或用 Git 克隆。私有仓库需要先登录有访问权限的 GitHub 账户。
+1. 从 [GitHub 仓库](https://github.com/Steven060206/xiangwa) 下载 ZIP 并解压到固定文件夹，或用 Git 克隆。
 2. 安装 [Node.js 官方 LTS 版本](https://nodejs.org/zh-cn/download)，要求 Node.js 22 或更新版本。只运行游戏不需要执行 `npm install`。
 3. 按下面的 Windows 双击方式或命令行方式启动。详细说明见[自行部署](docs/自行部署.md)。
 
@@ -118,6 +118,10 @@ git diff --check
 - `npm run test:browser`：四个独立浏览器完成准备、能力阶段、窥探、库存刷新、展示赠送、主动道具问答和结局。包含手机视口、旋转、二楼摆放、刷新恢复、同端口重启后的四页自动重连、实际SSE秘密过滤；另有四人轮询验收，覆盖断网恢复、离席停止同步、并发抢选和表单输入保留。截图保存在 `test-results/`。优先使用 Windows 默认安装位置的 Chrome；没有 Chrome 时先运行 `npx playwright install chromium`。
 - 人机浏览器验收另覆盖一名真人与三个人机的两种阵营、真人操作等待、道具问答、秘密过滤、手机布局和关页重开恢复。
 - `npm run verify:references`：Windows PowerShell 检查文档链接及实物参考照片。
+
+## 开源许可
+
+程序代码和项目原创文档采用 [MIT 许可证](LICENSE)，允许修改、分发和商用，须保留许可证及版权声明。《箱娃》原桌游素材不在此许可范围内，详见[许可与原作素材](NOTICE.md)。
 
 ## 继续开发
 
