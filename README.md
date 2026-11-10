@@ -12,6 +12,16 @@
 
 ## 在自己的电脑上运行
 
+### Windows 一键版（推荐）
+
+从 [Releases](https://github.com/Steven060206/xiangwa/releases) 下载 `xiangwa-windows.zip`，完整解压后双击 **一键启动.cmd**。首次自动准备便携版 Node.js 和联机工具，无需管理员权限，也无需手动安装依赖。源码 ZIP 中也提供同一入口。
+
+窗口会显示本机／局域网地址、邀请码和临时公网网址；公网就绪后自动打开网页。房主和朋友从同一个公网网址验证、建房或加入，游戏期间保持窗口和电脑运行。输入 `I` 并回车可发新邀请码，输入 `Q` 并回车或按 `Ctrl+C` 停止。仅本机／局域网试玩可运行 `一键启动.cmd -LocalOnly`。
+
+默认邀请码有效30分钟、最多5个浏览器；到期不影响已入席对局。首次下载与远程联机需要联网，临时网址重开后可能改变。存档仍在本机 `data/`，完整操作见[一键版说明](一键版说明.txt)。
+
+### 分步启动
+
 1. 从 [GitHub 仓库](https://github.com/Steven060206/xiangwa) 下载 ZIP 并解压到固定文件夹，或用 Git 克隆。
 2. 安装 [Node.js 官方 LTS 版本](https://nodejs.org/zh-cn/download)，要求 Node.js 22 或更新版本。只运行游戏不需要执行 `npm install`。
 3. 按下面的 Windows 双击方式或命令行方式启动。详细说明见[自行部署](docs/自行部署.md)。
