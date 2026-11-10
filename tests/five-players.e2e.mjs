@@ -100,13 +100,9 @@ test('five independent browsers choose five-player mode and complete opening plu
   assert.equal(await fifth.getByTestId('hako-claim-status').innerText(), '五人已准备，点击按钮抢当箱娃，先抢先得。');
   let state = await act(pages[0], 'claim_hako', () => pages[0].getByTestId('claim-hako').click());
   const pageFor = id => pages[identities.findIndex(person => person.playerId === id)];
-  const recipients = [];
-  for (let index = 0; index < 4; index++) {
-    const id = state.draft.turnPlayerId;
-    recipients.push(id);
-    const page = pageFor(id);
-    state = await act(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
-  }
+  const recipients = state.initialItems.map(choice => choice.playerId);
+  assert.equal(state.phase, 'map_setup');
+  for (const page of pages) assert.equal(await page.getByTestId('item-choice').count(), 0);
   assert.deepEqual(recipients, identities.slice(1).map(person => person.playerId));
   assert.equal(state.initialItems.length, 4);
   const mapActors = [];
@@ -116,7 +112,6 @@ test('five independent browsers choose five-player mode and complete opening plu
     const page = pageFor(id);
     state = await act(page, 'draw', () => page.getByTestId('draw-tile').click());
     const placement = state.setup.legalPlacements[0];
-    for (let rotation = 0; rotation < placement.rotation; rotation++) await page.getByTestId('rotate-tile').click();
     await page.getByTestId(placement.floor === -1 ? 'floor-basement' : `floor-${placement.floor}`).click();
     await page.getByTestId('legal-position').first().click();
     state = await act(page, 'place', () => page.getByTestId('confirm-placement').click());
@@ -135,7 +130,7 @@ test('five independent browsers choose five-player mode and complete opening plu
   state = await act(host, 'inspect_initial_room', () => host.getByTestId('inspect-initial-room').click());
   await host.getByTestId('initial-hiding-select').selectOption(state.opening.hidingTargets[0]);
   state = await act(host, 'choose_initial_hiding', () => host.getByTestId('confirm-initial-hiding').click());
-  await host.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions[0].id));
+  await host.getByTestId('initial-power-select').selectOption(String(state.opening.initialPowerOptions.find(card => card.canChoose !== false).id));
   state = await act(host, 'choose_initial_power', () => host.getByTestId('confirm-initial-power').click());
   assert.equal(state.round.visitors.length, 4);
   await fifth.reload();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createFeedbackTracker } from '../public/feedback.js';
+import { createFeedbackTracker, describeItemEvent } from '../public/feedback.js';
 
 function state(version = 1, you = 'visitor-a') {
   return {
@@ -33,6 +33,75 @@ function trackerWith(initial = state(), options) {
   assert.deepEqual(tracker.receive(initial), []);
   return tracker;
 }
+
+test('public skill events distinguish declaration, completion and interruption without private results', () => {
+  let current = state();
+  const tracker = trackerWith(current);
+  for (const [index, status] of ['declared', 'triggered', 'interrupted', 'ineffective'].entries()) {
+    current = nextState(current, value => {
+      value.round.items.events ||= [];
+      value.round.items.events.push({ id: `item-${index}`, kind: `item_${status}`, itemId: 'smartphone', userId: value.you, status });
+    });
+    const [event] = tracker.receive(current);
+    assert.equal(event.privateLabel, '全员可见');
+    assert.equal(event.highlight, true);
+    assert.match(event.title, /智能手机/);
+    assert.doesNotMatch(event.body, /NO\.|动来动去/);
+    assert.match(event.title + event.body, { declared: /声明.*尚未/, triggered: /已触发/, interrupted: /被打断/, ineffective: /未生效/ }[status]);
+  }
+  assert.deepEqual(tracker.receive(structuredClone(current)), []);
+});
+
+test('death emits one public fixed-corner highlight and does not replay after hiding or refresh', () => {
+  const initial = state();
+  const tracker = trackerWith(initial, { locationName: id => id === 'children_cabinet' ? '19 · 儿童房 · 壁橱' : id });
+  const dead = nextState(initial, value => {
+    value.round.visitors[0].status = 'box_person';
+    value.round.deathEvents = [{ id: 'death-1', userId: value.you, cornerId: 'children_cabinet' }];
+    value.round.items.events = [{ id: 'death-1', kind: 'death', userId: value.you, cornerId: 'children_cabinet' }];
+  });
+  const [event, ...rest] = tracker.receive(dead);
+  assert.deepEqual(rest, []);
+  assert.equal(event.cornerId, 'children_cabinet');
+  assert.equal(event.privateLabel, '全员可见');
+  assert.match(event.body, /19 · 儿童房 · 壁橱.*技能牌已消失/);
+  assert.deepEqual(tracker.receive(nextState(dead, value => { value.round.deathLocations = []; })), []);
+  trackerWith(dead);
+});
+
+test('walkie requests and selected-token results highlight only their private filtered snapshots', () => {
+  let current = state();
+  const tracker = trackerWith(current);
+  current = nextState(current, value => { value.round.walkie = { pairRequest: { id: 'pair1', fromId: 'visitor-b', targetId: value.you } }; });
+  let [event] = tracker.receive(current);
+  assert.match(event.title, /访问者乙邀请你配对/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.highlight, true);
+  current = nextState(current, value => { value.round.walkie = { showRequest: { id: 'show1', fromId: value.you, targetId: 'visitor-b' } }; });
+  [event] = tracker.receive(current);
+  assert.match(event.title, /访问者乙互看标志/);
+  assert.equal(event.privateLabel, '仅你可见');
+  current = nextState(current, value => { value.round.walkie = { lastShow: { id: 'show1', fromId: 'visitor-b', tokens: [{ id: 'password_4', type: 'password', number: 4 }] } }; });
+  [event] = tracker.receive(current);
+  assert.match(event.body, /密码4/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.deepEqual(tracker.receive(nextState(current)), []);
+  const publicEvent = describeItemEvent({ itemId: 'walkie_talkie', userId: 'visitor-a', targetId: 'visitor-b', operation: 'show' }, current);
+  assert.match(publicEvent.body, /访问者甲与访问者乙进行标志互看/);
+  assert.doesNotMatch(JSON.stringify(publicEvent), /密码4/);
+  const outsider = state(1, 'hako');
+  assert.deepEqual(trackerWith(outsider).receive(nextState(outsider)), []);
+});
+
+test('an early despair draw is a private failed acquisition instead of a success', () => {
+  const initial = state(1, 'hako');
+  const tracker = trackerWith(initial);
+  const [event] = tracker.receive(nextState(initial, value => { value.round.powers.lastDraw = { kind: 'despair_locked', cards: [] }; }));
+  assert.match(event.title, /绝望时刻尚未到来/);
+  assert.match(event.body, /没有获得新能力/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.tone, 'attention');
+});
 
 test('first snapshot and refresh establish a quiet baseline with existing belongings', () => {
   const initial = state();

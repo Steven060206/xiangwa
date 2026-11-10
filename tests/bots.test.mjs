@@ -117,20 +117,16 @@ test('bots ready once and leave role selection, starting, human seats and finish
   assert.equal(chooseBotAction(null), null);
 });
 
-test('item drafting uses actual remaining cards and only acts on the bot own turn', () => {
+test('bots never self-select initial cards, including legacy draft views', () => {
   const draft = createItemDraft(visitors);
   for (const id of visitors) {
     const view = { phase: 'item_draft', you: id, players: players(true), draft: getItemDraftView(draft) };
     assert.equal(decide({ ...view, you: hakoId }), null);
-    const action = decide(view);
-    assert.equal(action.type, 'choose_item');
-    assert.ok(view.draft.availableItems.some(card => card.id === action.itemId));
-    chooseItem(draft, id, action.itemId);
+    assert.equal(decide(view), null);
   }
-  assert.equal(new Set(draft.choices.map(choice => choice.itemId)).size, 3);
+  assert.deepEqual(draft.choices, []);
   const custom = createItemDraft(visitors, { items: ['alpha', 'beta', 'gamma'].map(id => ({ id, name: id, description: '' })) });
-  const action = decide({ phase: 'item_draft', you: first, players: players(), draft: getItemDraftView(custom) });
-  chooseItem(custom, first, action.itemId);
+  assert.equal(decide({ phase: 'item_draft', you: first, players: players(), draft: getItemDraftView(custom) }), null);
 });
 
 test('filtered map views let bots draw and place all eight boards with real placement validation', () => {
@@ -171,10 +167,11 @@ test('hako completes secret opening choices from its own filtered options withou
   assert.ok(state.initialPowerCandidates.includes(state.initialPowerId));
 });
 
-test('hako bots can choose NO4 from an opening draft without relying on an omitted favorite', () => {
+test('hako bots skip drawn NO4 and select another legal candidate without their preferred card', () => {
   const view = { phase: 'opening_setup', you: hakoId, players: players(),
-    opening: { phase: 'power', hakoId, initialPowerOptions: [{ id: 4, name: '动来动去' }] } };
-  assert.deepEqual(decide(view), { type: 'choose_initial_power', powerId: 4 });
+    opening: { phase: 'power', hakoId, initialPowerOptions: [{ id: 4, canChoose: false }, { id: 2, canChoose: true }, { id: 3, canChoose: true }] } };
+  assert.deepEqual(decide(view), { type: 'choose_initial_power', powerId: 2 });
+  assert.equal(decide({ ...view, opening: { ...view.opening, initialPowerOptions: [{ id: 4 }] } }), null);
 });
 
 test('visitors reveal only their own down card, wait during declarations, and hako confirms the declaration', () => {
@@ -533,6 +530,7 @@ test('unsupported and used intrinsic hand cards are skipped and a bot box person
   assert.deepEqual(botAct(unsupported, hakoId).action, { type: 'begin_hako_action' });
   let play = fixture();
   play.round.visitors[0].roomId = 'children_room';
+  play.inventories[first].tokens.push(piece('ghost-inherits-token', 'password', { number: 2 }));
   play = peek(play, 'children_bed');
   assert.equal(play.round.visitors[0].status, 'box_person');
   const inherited = botAct(play, first);

@@ -30,7 +30,7 @@ function usabilityFixture(setup, opening, options) {
 }
 
 test('important private events appear above the game, dismiss without acting, and remain readable in history', { timeout: 90000 }, async t => {
-  const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: usabilityFixture });
+  const server = createGameServer({ deck, initialItemOrder: ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'], silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: usabilityFixture });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -77,10 +77,7 @@ test('important private events appear above the game, dismiss without acting, an
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(hako, 'start');
   let state = await act(hako, 'claim_hako');
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = await act(person, 'choose_item', { itemId: state.draft.availableItems[0].id });
-  }
+  assert.equal(state.phase, 'map_setup');
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -91,7 +88,7 @@ test('important private events appear above the game, dismiss without acting, an
   await act(hako, 'place_remains', { cornerId: 'living_sofa' });
   await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
 
   async function open(person, mobile) {
     const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1366, height: 900 },
@@ -151,7 +148,7 @@ test('important private events appear above the game, dismiss without acting, an
     const card = await page.getByTestId('event-highlight').boundingBox();
     assert.ok(card);
     let point;
-    for (const selector of ['#map-focus', '[data-testid="floor-2"]', '[data-testid="floor-1"]']) {
+    for (const selector of ['#map-focus', '[data-testid="floor-2"]', '[data-testid="floor-1"]', '[data-testid="focus-current-action"]', '[data-testid="focus-inventory"]']) {
       const rect = await page.locator(selector).boundingBox();
       if (!rect) continue;
       const candidate = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };

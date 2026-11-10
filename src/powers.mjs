@@ -11,7 +11,7 @@ const CARDS = {
   4: ['动来动去', 0, 'stage', '秘密查看一个房间，再重排未被潜伏者盖住的角落标志。'],
   5: ['我在你身后', 6, 'stage', '发动后在下一次箱娃阶段开始前杀死箱娃同房访问者；届时公开八枚手记时也杀死箱人同房访问者。'],
   6: ['好想打开它', 5, 'interrupt', '取消已声明的访问者行动，由该访问者自己选择同房角落强制窥探。'],
-  7: ['快把它给我', 0, 'interrupt', '抢夺访问者的指定道具或随机一枚随身标志，旧赃物交给这次受害者。'],
+  7: ['快把它给我', 0, 'interrupt', '按匿名牌背抢夺访问者的一张技能，或随机抢一枚随身标志；旧赃物交给这次受害者。'],
   8: ['我的玛丽小姐', 0, 'interrupt', '人偶持有者从下次回合起须连翻两枚，不能转交或丢弃人偶；与铃合计三枚。'],
   9: ['虚假的回应', 0, 'passive', '设置后可在回答访问者道具的问题时说谎，无需翻开。'],
   10: ['鬼来电', 0, 'interrupt', '所有访问者只能沿最短路线向客厅移动，首人进入后全体解除；每局一次。'],
@@ -37,20 +37,21 @@ export function powerCard(cardOrId) {
 function normalizePowers(powers) {
   // Old saves dealt NO.11 through the deck. Migrate it into the hand while retaining
   // a card already set in a slot and its once-per-game use restriction.
+  const elevenRemoved = powers.removed?.some(card => (typeof card === 'object' ? card?.id : card) === 11);
   let foundEleven = false;
   powers.slots = powers.slots.map(card => {
     if (card?.id !== 11) return card;
-    if (foundEleven) return null;
+    if (elevenRemoved || foundEleven) return null;
     foundEleven = true;
     return card;
   });
   powers.hand = powers.hand.filter(card => {
     if (card.id !== 11) return true;
-    if (foundEleven) return false;
+    if (elevenRemoved || foundEleven) return false;
     foundEleven = true;
     return true;
   });
-  if (!foundEleven) powers.hand.push({ id: 11, ignoreThreshold: false });
+  if (!foundEleven && !elevenRemoved) powers.hand.push({ id: 11, ignoreThreshold: false });
   powers.deck = powers.deck.filter(id => id !== 11 && id !== 12);
   // Previous saves did not record historical cries. Recover only the one cry
   // evidenced by the saved stage, never substitute total rounds for cry count.
@@ -178,11 +179,12 @@ function cry(play, action, ctx) {
     powers.falseCryPending = true;
     recordUsed(play, 11);
   }
-  const guaranteed = powers.cryCount === 10 ? powers.deck.indexOf('despair') : -1;
-  const drawn = guaranteed >= 0 ? powers.deck.splice(guaranteed, 1)[0] : powers.deck.shift();
+  const drawn = powers.deck.shift();
   if (drawn === undefined) { powers.lastDraw = { kind: 'empty_deck', cards: [] }; return; }
   if (drawn === 'despair') {
     powers.deck.push(drawn);
+    // Legacy shuffled decks can expose this early; never grant it before ten cries.
+    if (powers.cryCount < 10) { powers.lastDraw = { kind: 'despair_locked', cards: [] }; return; }
     const gained = [];
     // The liberation card remains in the deck and cannot recursively draw itself.
     for (let count = 0; count < 2; count++) {

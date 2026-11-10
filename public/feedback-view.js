@@ -1,4 +1,5 @@
 import { createFeedbackTracker } from './feedback.js';
+import { cornerName } from './tile.js';
 
 const $ = id => document.getElementById(id);
 const NS = 'http://www.w3.org/2000/svg';
@@ -32,7 +33,7 @@ function symbol(kind) {
 }
 
 export function createFeedbackUI() {
-  const tracker = createFeedbackTracker();
+  const tracker = createFeedbackTracker({ locationName: cornerName });
   const dialog = $('event-dialog');
   let displayed = [];
   let identity = '';
@@ -69,6 +70,11 @@ export function createFeedbackUI() {
     $('event-body').textContent = event.body;
     $('event-visibility').textContent = event.privateLabel;
     $('event-symbol').replaceChildren(symbol(event.symbol));
+    $('event-locate').hidden = !event.cornerId;
+    $('event-locate').onclick = () => {
+      close();
+      document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: { cornerId: event.cornerId } }));
+    };
     const others = events.filter(item => item.id !== event.id);
     $('event-companions').hidden = others.length === 0;
     $('event-companions').replaceChildren(...others.map(item => {

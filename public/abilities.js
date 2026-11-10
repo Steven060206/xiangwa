@@ -1,5 +1,6 @@
 import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
+import { describeItemEvent } from './feedback.js';
 
 const rooms = getLogicalRooms();
 const selections = new Map();
@@ -117,7 +118,24 @@ function answerItem(container, state, locked, action) {
   container.append(controls);
 }
 
-function itemResult(container, items) {
+function itemResult(container, items, state) {
+  if (items.inspection) {
+    const inspection = node('section', 'exploration-section private-memory');
+    inspection.dataset.testid = 'item-room-inspection';
+    inspection.append(node('h3', '', `腹语人偶 · ${roomName(items.inspection.roomId)}（仅你可见）`),
+      node('p', 'small-note', `第${items.inspection.cycle}轮使用时查看的真实棋子；这是当时记录，不随后续取放更新。`));
+    const list = node('dl', 'inspected-tokens');
+    for (const corner of items.inspection.corners || []) {
+      const line = node('div');
+      const actors = corner.actors || [];
+      const contents = actors.length ? actors.map(actor => `${playerName(state, actor.playerId)} · ${actor.type === 'hako' ? '箱娃' : '箱人'}`).join('、')
+        : tokenName(corner.token);
+      line.append(node('dt', '', cornerName(corner.id)), node('dd', '', contents));
+      list.append(line);
+    }
+    inspection.append(list);
+    container.append(inspection);
+  }
   if (items.result?.kind !== 'phone') return;
   const result = node('section', 'exploration-section personal-result');
   result.dataset.testid = 'item-private-result';
@@ -133,12 +151,8 @@ function itemEvents(container, state, events) {
   details.append(node('summary', '', '道具记录'));
   const list = node('ol');
   for (const event of events.slice(-8)) {
-    const item = itemNames[event.itemId] || '访问者道具';
-    let text = `${playerName(state, event.userId)}使用${item}`;
-    if (event.roomId) text += `，指定${roomName(event.roomId)}`;
-    if (event.kind === 'item_answer') text += `；箱娃${event.itemId === 'ventriloquist_doll' ? event.answer ? '大喊：我是玛丽小姐' : '没有叫喊' : `回答：${typeof event.answer === 'boolean' ? event.answer ? '是' : '否' : floorName(event.answer)}`}`;
-    if (event.notebooks?.length) text += `；公开手记${event.notebooks.map(token => token.number).join('、')}`;
-    list.append(node('li', '', `${text}。`));
+    const description = describeItemEvent(event, state, cornerName);
+    list.append(node('li', '', `${description.title}。${description.body}`));
   }
   details.append(list);
   container.append(details);
@@ -196,7 +210,7 @@ export function renderActiveItems({ container, resultContainer = container, refe
     controls.append(targets, use);
     container.append(controls);
   }
-  itemResult(resultContainer, items);
+  itemResult(resultContainer, items, state);
   itemEvents(referenceContainer, state, items.events);
 }
 
@@ -214,7 +228,7 @@ function publicPowers(container, state, powers) {
     slots.append(row);
   }
   section.append(slots, node('p', 'small-note', `箱娃手牌 ${powers.handCount ?? 0} 张 · 牌库 ${powers.deckCount ?? 0} 张`));
-  const cryCount = node('p', 'small-note', `累计哭喊 ${powers.cryCount ?? 0} 次 · 第10次哭喊保底「绝望时刻」。`);
+  const cryCount = node('p', 'small-note', `累计哭喊 ${powers.cryCount ?? 0} 次 · 前9次不能获得「绝望时刻」；第10次起按牌序抽取，噩梦的来信可以延后。`);
   cryCount.dataset.testid = 'power-cry-count';
   section.append(cryCount);
   if (isHako && powers.pendingBehindYou) {
@@ -316,7 +330,7 @@ function activatePowers(container, state, powers, locked, action) {
       if (option.rooms?.length) room = select(group, `power-room-${option.slot}`, '选择作用房间', option.rooms, locked || !option.canActivate);
       if (option.doors?.length) door = select(group, `power-door-${option.slot}`, '选择要封锁的门', option.doors.map((value, index) => ({ id: index, name: value.name || `${roomName(value.fromRoomId)} — ${roomName(value.toRoomId)}` })), locked || !option.canActivate);
       if (card.id === 7) {
-        const choices = (option.stealOptions?.items || []).map(item => ({ id: `item:${item.id}`, name: `抢走道具：${item.name || itemNames[item.id] || '访问者道具'}` }));
+        const choices = (option.stealOptions?.items || []).map(item => ({ id: `item:${item.index}`, name: `抢走${item.name || `技能牌背 ${item.index + 1}`}` }));
         if (option.stealOptions?.canStealToken) choices.push({ id: 'token', name: '随机抢走1枚盖放标志' });
         steal = select(group, `power-steal-${option.slot}`, '选择抢夺方式', choices, locked || !option.canActivate);
         group.append(node('p', 'small-note', '抢夺后，访问者可重新选择行动，不消耗标准行动。'));
@@ -332,7 +346,7 @@ function activatePowers(container, state, powers, locked, action) {
         }
         if (steal) {
           payload.stealKind = steal.value === 'token' ? 'token' : 'item';
-          if (payload.stealKind === 'item') payload.itemId = steal.value.slice(5);
+          if (payload.stealKind === 'item') payload.itemIndex = Number(steal.value.slice(5));
         }
         action('activate_power', payload);
       });

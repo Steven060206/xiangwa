@@ -8,6 +8,8 @@ import { createPowers, startPowerStage, applyPowerAction, getPowersView, powerCa
 import { declareItem, resolveItem, answerItem, getItemView, itemResolutionView } from './items.mjs';
 import { revealWithEffects, syncNoiseEffects, getNoiseEffectsView } from './noise-effects.mjs';
 import { getLogicalRoomId } from './maps.mjs';
+import { emitGameEvent } from './events.mjs';
+import { applyWalkieAction, getWalkieView, isLockedWalkie, invalidateWalkieForDeath } from './walkie.mjs';
 
 const TAKEABLE = new Set(['key', 'password', 'doll', 'weakness_clue', 'weapon', 'amulet', 'extinguisher']);
 const NAMES = { hako: '箱娃', box_person: '箱人', notebook: '手记', empty_box: '空箱', safe: '转轮式保险箱',
@@ -122,18 +124,34 @@ function die(play, id, killerCornerId) {
   const player = assertAlive(play, id);
   if (!actorsAt(play, killerCornerId).length) throw new Error('死亡须由实际潜伏的箱娃或箱人结算。');
   const ring = hasItem(play, id, 'relic_ring');
+  if (ring && !play.ringAllies.includes(id)) {
+    play.ringAllies.push(id);
+    emitGameEvent(play, { kind: 'item_used', itemId: 'relic_ring', userId: id, status: 'triggered' });
+  }
+  // Cards leave play permanently; only physical carried tokens can be inherited.
+  play.removedItems ??= [];
+  play.removedItems.push(...inventory(play, id).items);
+  inventory(play, id).items = [];
+  invalidateWalkieForDeath(play, id);
   // End the living turn before removing the seat so silent mode preserves its successor.
   if (play.round.silent.phase === 'visitor_action' && play.round.silent.turnPlayerId === id) finishAction(play, id);
   removeSilentVisitor(play.round.silent, id);
   player.status = 'box_person';
   delete player.roomId;
   play.ghosts.push({ playerId: id, cornerId: killerCornerId, banished: false, carriedTokens: [] });
+  const death = emitGameEvent(play, { kind: 'death', userId: id, cornerId: killerCornerId, status: 'triggered' });
+  play.deathEvents ??= [];
+  play.deathEvents.push({ id: death.id, userId: id, cornerId: killerCornerId, cycle: death.cycle });
+  play.deathLocations ??= [];
+  play.deathLocations.push({ id: death.id, userId: id, cornerId: killerCornerId, cycle: death.cycle });
   play.exchangeOffers = play.exchangeOffers.filter(offer => offer.fromId !== id && offer.targetId !== id);
   play.resolution = null;
-  if (play.round.visitors.some(candidate => candidate.status === 'alive')) {
-    if (ring) play.ringAllies.push(id);
+  if (inventory(play, id).tokens.length && play.round.visitors.some(candidate => candidate.status === 'alive')) {
     play.resolution = { kind: 'inheritance', playerId: id };
   } else revealDiscard(play, id);
+  // Delayed stage-boundary deaths occur after the action-level noise sync.
+  // Return an attached Mary card in this same death transaction, before any view.
+  syncNoiseEffects(play);
   checkVictory(play);
 }
 
@@ -157,7 +175,7 @@ export function createPlay(setup, opening, { numbers } = {}) {
     safeOpened: false, resolution: null, exchangeOffers: [], nextOfferId: 1, surrenderVotes: [],
     sharedTokens: {}, publicDiscoveries: [], totalRounds: 0, ringAllies: [], hakoStage: null, result: null,
     powers: createPowers(opening), extraCorners: {}, placedItems: [], itemResults: {}, itemEvents: [],
-    interruption: null, inheritanceQueue: [],
+    interruption: null, inheritanceQueue: [], removedItems: [], deathEvents: [], deathLocations: [],
     lastBlockedWait: null, hidingMemories: { [opening.hakoId]: getInitialRoomMemory(opening) },
   };
 }
@@ -170,6 +188,7 @@ function context(play) {
     die: (id, cornerId) => die(play, id, cornerId), finishAction: id => finishAction(play, id), powerCard,
     canLie: () => hasActivePower(play, 9), forcePeek: id => forcePeek(play, id),
     processDeaths: deaths => processDeaths(play, deaths),
+    assertFree: id => assertFree(play, id),
   };
 }
 
@@ -262,6 +281,7 @@ function respondExtinguisher(play, id, action) {
   const held = inventory(play, id);
   const index = held.tokens.findIndex(token => token.type === 'extinguisher');
   play.removedTokens.push(held.tokens.splice(index, 1)[0]);
+  emitGameEvent(play, { kind: 'item_used', itemId: 'extinguisher', userId: id, status: 'triggered' });
   applyRoundAction(play.round, play.round.hakoId, { type: 'pass_noise_reaction' });
   // The stage boundary still resolves previously scheduled effects.
   beginHakoStage(play);
@@ -277,12 +297,19 @@ function declarePeek(play, id, action) {
   if (action.useNightVision && !hasItem(play, id, 'night_vision')) throw new Error('你没有携带夜视仪。');
   if (action.useNightVision !== undefined && typeof action.useNightVision !== 'boolean') throw new Error('请选择是否使用夜视仪。');
   play.round.pendingAction = { type: 'peek', playerId: id, cornerId: action.cornerId, useNightVision: action.useNightVision === true };
+  if (action.useNightVision) emitGameEvent(play, { kind: 'item_declared', itemId: 'night_vision', userId: id, status: 'declared' });
 }
 function beginPeek(play, pending) {
   const { playerId: id, cornerId } = pending;
   assertTurn(play, id);
   assertCorner(play, id, cornerId, { mustBeOccupied: true });
   const actors = actorsAt(play, cornerId);
+  if (pending.useNightVision) {
+    const effective = !actors.length && play.tokens[cornerId]?.type === 'notebook'
+      && getLogicalRoomId(roomOf(play.round.hidingCornerId)) !== getLogicalRoomId(visitor(play, id).roomId);
+    emitGameEvent(play, { kind: effective ? 'item_used' : 'item_ineffective', itemId: 'night_vision', userId: id,
+      status: effective ? 'triggered' : 'ineffective' });
+  }
   if (actors.length) { die(play, id, cornerId); return; }
   const token = play.tokens[cornerId];
   if (token.type === 'notebook') {
@@ -311,6 +338,7 @@ function replaceCorner(play, id, cornerId, action) {
     if (!play.opening.emptyBoxTokens.length) throw new Error('备用空箱已用尽，请弃置随身标志或留空。');
     if (action.faceUp && !hasItem(play, id, 'deduction')) throw new Error('携带归纳推理法才可将空箱的X面朝上。');
     play.tokens[cornerId] = { ...play.opening.emptyBoxTokens.shift(), faceUp: action.faceUp === true };
+    if (action.faceUp) emitGameEvent(play, { kind: 'item_used', itemId: 'deduction', userId: id, cornerId, status: 'triggered' });
   } else if (action.replacement === 'none') {
     if (play.opening.emptyBoxTokens.length) throw new Error('仍有备用空箱，取走标志后须补位。');
     play.tokens[cornerId] = null;
@@ -358,6 +386,11 @@ function guessSafe(play, id, action) {
     throw new Error(using ? '听诊器需要声明一个1至6的数字。' : '请声明三个不同的1至6密码数字，顺序不限。');
   }
   if (using && !hasItem(play, id, 'stethoscope')) throw new Error('你没有携带听诊器。');
+  if (using) {
+    const lethal = roomOf(play.round.hidingCornerId) === visitor(play, id).roomId;
+    emitGameEvent(play, { kind: lethal ? 'item_ineffective' : 'item_used', itemId: 'stethoscope', userId: id,
+      status: lethal ? 'ineffective' : 'triggered' });
+  }
   if (using && roomOf(play.round.hidingCornerId) === visitor(play, id).roomId) {
     die(play, id, play.round.hidingCornerId); return;
   }
@@ -378,6 +411,8 @@ function declareWeapon(play, id, action) {
     throw new Error('请选择自己持有的一枚讨伐道具。');
   }
   play.round.pendingAction = { type: 'weapon', playerId: id, cornerId: action.cornerId, tokenId: action.tokenId };
+  const weapon = inventory(play, id).tokens.find(token => token.id === action.tokenId);
+  emitGameEvent(play, { kind: 'item_declared', itemId: 'weapon', name: tokenView(weapon).name, userId: id, cornerId: action.cornerId, status: 'declared' });
 }
 function resolveWeapon(play, pending) {
   const { playerId: id, cornerId, tokenId } = pending;
@@ -388,6 +423,7 @@ function resolveWeapon(play, pending) {
   if (index < 0) throw new Error('声明使用的讨伐道具已不在身上。');
   const weapon = held.tokens.splice(index, 1)[0];
   play.removedTokens.push(weapon);
+  emitGameEvent(play, { kind: 'item_used', itemId: 'weapon', name: tokenView(weapon).name, userId: id, cornerId, status: 'triggered' });
   const hitHako = cornerId === play.round.hidingCornerId;
   if (hitHako && weapon.tool === play.opening.weakness) { setResult(play, 'visitors', '讨伐', id); return; }
   for (const ghost of play.ghosts.filter(candidate => !candidate.banished && candidate.cornerId === cornerId)) {
@@ -477,6 +513,7 @@ function selectedIds(value) {
   return [...value];
 }
 function applyFreeAction(play, id, action) {
+  if (action.type.startsWith('walkie_')) return applyWalkieAction(play, id, action, context(play));
   const handlers = { show_token: showToken, offer_exchange: offerExchange,
     respond_exchange: respondExchange, drop_token: dropToken };
   handlers[action.type](play, id, action);
@@ -486,6 +523,7 @@ function freeAction(play, id, action) {
   if (!hasActivePower(play, 7) && !hasActivePower(play, 8)) return applyFreeAction(play, id, action);
   applyFreeAction(clone(play), id, action);
   play.round.pendingAction = { type: 'free', playerId: id, actionType: action.type, action: clone(action) };
+  if (action.type.startsWith('walkie_')) emitGameEvent(play, { kind: 'item_declared', itemId: 'walkie_talkie', userId: id, status: 'declared' });
 }
 function recheckMaryDeclaration(play) {
   const pending = play.round.pendingAction;
@@ -509,6 +547,9 @@ function assertHeld(play, id, tokenIds, itemIds) {
   if (tokenIds.some(tokenId => !held.tokens.some(token => token.id === tokenId))
       || itemIds.some(itemId => !held.items.some(item => item.id === itemId))) {
     throw new Error('拟交换的标志或道具已不在持有者身上。');
+  }
+  if (held.items.some(item => itemIds.includes(item.id) && isLockedWalkie(play, item))) {
+    throw new Error('配对后的对讲机不能转交或交换。');
   }
 }
 function offerExchange(play, id, action) {
@@ -597,8 +638,12 @@ function bequeath(play, id, action) {
   if (play.resolution?.kind !== 'inheritance' || play.resolution.playerId !== id) throw new Error('当前没有等待你决定的遗物继承。');
   assertAlive(play, action.targetId);
   const held = inventory(play, id), target = inventory(play, action.targetId);
-  target.tokens.push(...held.tokens); target.items.push(...held.items);
-  held.tokens = []; held.items = [];
+  target.tokens.push(...held.tokens);
+  held.tokens = [];
+  // Old saves can still be paused at an inheritance created before this ruling.
+  play.removedItems ??= [];
+  play.removedItems.push(...held.items);
+  held.items = [];
   play.inheritanceQueue ??= [];
   play.resolution = play.inheritanceQueue.length ? { kind: 'inheritance', playerId: play.inheritanceQueue.shift() } : null;
 }
@@ -622,10 +667,16 @@ export function applyPlayAction(previous, playerId, action) {
   // Saved games may still use the printed sub-area names as room IDs.
   for (const player of play.round.visitors) if (player.roomId) player.roomId = getLogicalRoomId(player.roomId);
   if (action.roomId) action = { ...action, roomId: getLogicalRoomId(action.roomId) };
+  const previousPending = clone(play.round.pendingAction);
   // Sharing current possessions conveys information without advancing or
   // interrupting the current game operation, including another player's turn.
   if (action.type === 'show_possession') {
     showPossession(play, playerId, action);
+    return play;
+  }
+  if (['walkie_cancel', 'walkie_show_cancel'].includes(action.type)
+      || action.type === 'walkie_respond' && action.accept === false) {
+    applyWalkieAction(play, playerId, action, context(play));
     return play;
   }
   if (play.interruption && action.type !== 'extinguisher_response') throw new Error('请先等待灭火器持有者回应。');
@@ -648,6 +699,8 @@ export function applyPlayAction(previous, playerId, action) {
     case 'inspect_hiding_room': inspectHidingRoom(play, playerId, action.roomId); break;
     case 'hako_hide': case 'ghost_hide': hide(play, playerId, action); break;
     case 'show_token': case 'offer_exchange': case 'respond_exchange': case 'drop_token':
+    case 'walkie_propose': case 'walkie_respond': case 'walkie_cancel':
+    case 'walkie_show_propose': case 'walkie_show_confirm': case 'walkie_show_cancel':
       freeAction(play, playerId, action); break;
     case 'bequeath': bequeath(play, playerId, action); break;
     case 'surrender': surrender(play, playerId, action); break;
@@ -667,11 +720,21 @@ export function applyPlayAction(previous, playerId, action) {
       applyRoundAction(play.round, playerId, action); break;
     case 'pass_noise_reaction': applyRoundAction(play.round, playerId, action); break;
     default: {
-      if (action.type === 'begin_hako_action' && play.hakoStage) play.hakoStage.publicCorners = publicCorners(play);
+      if (action.type === 'begin_hako_action' && play.hakoStage) {
+        play.hakoStage.publicCorners = publicCorners(play);
+        play.deathLocations = [];
+      }
       if (!applyPowerAction(play, playerId, action, context(play))) throw new Error('该回合操作尚未实现。');
       if (action.type === 'activate_power' && play.powers.lastActivation?.powerId === 8) recheckMaryDeclaration(play);
     }
   }
+  if (action.type === 'activate_power' && previousPending && !play.round.pendingAction) {
+    const itemId = previousPending.type === 'item' ? previousPending.itemId
+      : previousPending.type === 'weapon' ? 'weapon' : previousPending.useNightVision ? 'night_vision'
+        : previousPending.actionType?.startsWith('walkie_') ? 'walkie_talkie' : null;
+    if (itemId) emitGameEvent(play, { kind: 'item_interrupted', itemId, userId: previousPending.playerId, status: 'interrupted' });
+  }
+  syncNoiseEffects(play);
   finishBlockedMove(play);
   checkVictory(play);
   beginHakoStage(play);
@@ -685,8 +748,12 @@ function ordinaryHidingTargets(play, cornerId) {
   const roomIds = new Set(base.map(roomOf));
   return [...base, ...Object.values(play.extraCorners).filter(corner => roomIds.has(getLogicalRoomId(corner.roomId))).map(corner => corner.id)].sort();
 }
-function publicCorners(play) {
-  return Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id),
+function publicCorners(play, playerId) {
+  // A revealed notebook is temporarily removed while its owner chooses a
+  // replacement. That private intermediate vacancy must not identify the peek.
+  const pendingNotebook = !play.result && play.resolution?.kind === 'notebook' && play.resolution.playerId !== playerId
+    ? play.resolution.cornerId : null;
+  return Object.keys(play.tokens).map(id => ({ id, roomId: roomOf(id), occupied: occupied(play, id) || id === pendingNotebook,
     ...(play.tokens[id]?.type === 'empty_box' && play.tokens[id].faceUp && !actorsAt(play, id).length
       ? { faceUp: true, token: tokenView(play.tokens[id]) } : {}) }));
 }
@@ -773,6 +840,7 @@ function reviewView(play) {
     discarded: play.discarded.map(entry => ({ playerId: entry.playerId,
       tokens: entry.tokens.map(tokenView), items: entry.items.map(itemView) })),
     removedTokens: play.removedTokens.map(tokenView),
+    removedItems: (play.removedItems ?? []).map(itemView),
     powers: { ...clone(play.powers), hand: play.powers.hand.map(reviewPower),
       deck: play.powers.deck.map(reviewPower), slots: play.powers.slots.map(card => card ? { ...clone(card), ...reviewPower(card) } : null),
       removed: play.powers.removed.map(reviewPower), used: play.powers.used.map(reviewPower),
@@ -802,7 +870,11 @@ export function getPlayView(play, playerId) {
     && !play.round.pendingAction && !play.resolution && !play.result && !play.interruption;
   view.phase = play.result ? 'game_over' : play.resolution ? 'visitor_resolution' : view.phase;
   view.visitors = play.round.visitors.map(player => ({ id: player.id, status: player.status,
-    ...(player.status === 'alive' ? { roomId: getLogicalRoomId(player.roomId) } : {}) }));
+    ...(player.status === 'alive' ? { roomId: getLogicalRoomId(player.roomId) } : {}),
+    ...(playerId === play.round.hakoId ? { itemCount: inventory(play, player.id).items.length,
+      tokenCount: inventory(play, player.id).tokens.length } : {}) }));
+  view.deathEvents = clone(play.deathEvents ?? []);
+  view.deathLocations = clone(play.deathLocations ?? []);
   // getRoundView may calculate movement for a dead seat; never retain its public position.
   view.moveTargets = canAct ? restrictPowerMoves(play, playerId, view.moveTargets) : [];
   if (view.pendingAction) {
@@ -811,7 +883,7 @@ export function getPlayView(play, playerId) {
       ...(pending.type === 'free' ? { actionType: pending.actionType }
         : pending.type === 'move' ? { fromRoomId: pending.fromRoomId, toRoomId: pending.toRoomId }
         : pending.type === 'item' ? { itemId: pending.itemId, ...(pending.roomId ? { roomId: pending.roomId } : {}) }
-          : { cornerId: pending.cornerId }) };
+          : pending.type === 'peek' && pending.playerId !== playerId ? {} : { cornerId: pending.cornerId }) };
   }
   view.inventory = player ? { tokens: inventory(play, playerId).tokens.map(tokenView), items: inventory(play, playerId).items.map(itemView) }
     : { tokens: [], items: [] };
@@ -845,7 +917,7 @@ export function getPlayView(play, playerId) {
   view.resolution = resolutionView(play, playerId);
   view.notebooks = play.notebooks.map(tokenView);
   view.cornerState = alive(play, playerId) && play.powers.step === 'action' && play.hakoStage?.publicCorners
-    ? clone(play.hakoStage.publicCorners) : publicCorners(play);
+    ? clone(play.hakoStage.publicCorners) : publicCorners(play, playerId);
   view.extraCorners = clone(Object.values(play.extraCorners));
   view.blockedDoors = play.round.blockedDoors.filter(() => playerId === play.round.hakoId)
     .map(({ from, to }) => ({ from: getLogicalRoomId(from), to: getLogicalRoomId(to) }));
@@ -853,6 +925,7 @@ export function getPlayView(play, playerId) {
   view.powers = getPowersView(play, playerId);
   view.noiseEffects = getNoiseEffectsView(play, playerId);
   view.items = getItemView(play, playerId, context(play));
+  view.walkie = getWalkieView(play, playerId, tokenView);
   if (!canChoose) view.items.usableItems = [];
   view.interruption = extinguisherHolder ? { kind: 'noise', canRespond: extinguisherHolder === playerId } : null;
   view.safe = { opened: play.safeOpened, publicNumbers: [...play.publicNumbers], numberOptions: [1, 2, 3, 4, 5, 6] };

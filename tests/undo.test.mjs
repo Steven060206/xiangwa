@@ -39,7 +39,8 @@ async function service(t, options = {}) {
   };
   const restart = async () => {
     await close();
-    server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], dataFile, ...options });
+    server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], dataFile,
+      initialItemOrder: ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'], ...options });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -96,11 +97,7 @@ async function readyOpening(request, people) {
   await readyAndStart(request, people);
   let result = await action(request, people[0], 'claim_hako');
   assert.equal(result.status, 200);
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(person => person.playerId === result.body.draft.turnPlayerId);
-    result = await action(request, person, 'choose_item', { itemId: result.body.draft.availableItems[0].id });
-    assert.equal(result.status, 200);
-  }
+  assert.equal(result.body.initialItems.length, 3);
   while (result.body.phase === 'map_setup') {
     const person = people.find(person => person.playerId === result.body.setup.turnPlayerId);
     const drawn = await action(request, person, 'draw');
@@ -127,7 +124,7 @@ async function play(request, people) {
     assert.equal(result.status, 200);
   }
   const candidates = result.body.opening.initialPowerOptions;
-  result = await action(request, people[0], 'choose_initial_power', { powerId: candidates[0].id });
+  result = await action(request, people[0], 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
   assert.equal(result.status, 200);
   return result.body;
 }
@@ -335,11 +332,7 @@ test('undoing draw and placement restores the same deck order and pending map wi
   const people = await four(request);
   await readyAndStart(request, people);
   let result = await action(request, people[0], 'claim_hako');
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(person => person.playerId === result.body.draft.turnPlayerId);
-    result = await action(request, person, 'choose_item', { itemId: result.body.draft.availableItems[0].id });
-    assert.equal(result.status, 200);
-  }
+  assert.equal(result.body.initialItems.length, 3);
   const visitor = people.find(person => person.playerId === result.body.setup.turnPlayerId);
   const before = await state(request, visitor);
   const drawn = await action(request, visitor, 'draw', { expectedVersion: before.version });
@@ -456,11 +449,13 @@ test('one human can undo a bot step without a vote and bots stay paused until th
   await action(request, host, 'ready', { ready: true });
   await action(request, host, 'start');
   await action(request, host, 'claim_hako');
-  const chosen = await waitState(request, host, value => value.initialItems.length === 1);
+  const chosen = await waitState(request, host, value => value.setup?.drawnTileId);
   const undone = await requestUndo(request, host, chosen);
   assert.equal(undone.status, 200);
   assert.equal(undone.body.undo.pending, null);
-  assert.equal(undone.body.initialItems.length, 0);
+  assert.equal(undone.body.initialItems.length, 3);
+  assert.deepEqual(undone.body.initialItems, chosen.initialItems);
+  assert.equal(undone.body.setup.drawnTileId, null);
   assert.equal(undone.body.undo.paused, true);
   assert.equal(undone.body.undo.canResume, true);
   await delay(450);
@@ -468,5 +463,5 @@ test('one human can undo a bot step without a vote and bots stay paused until th
   const resumed = await action(request, host, 'undo_resume');
   assert.equal(resumed.status, 200);
   assert.equal(resumed.body.undo.paused, false);
-  assert.ok((await waitState(request, host, value => value.initialItems.length >= 1)).version > resumed.body.version);
+  assert.ok((await waitState(request, host, value => value.setup?.drawnTileId)).version > resumed.body.version);
 });

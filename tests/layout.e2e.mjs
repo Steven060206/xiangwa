@@ -39,10 +39,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(people[0], 'start');
   let state = await act(people[0], 'claim_hako');
-  for (let i = 0; i < 3; i++) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = await act(person, 'choose_item', { itemId: state.draft.availableItems[0].id });
-  }
+  assert.equal(state.phase, 'map_setup');
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -53,7 +50,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
   await act(people[0], 'place_remains', { cornerId: 'living_sofa' });
   await act(people[0], 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  await act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
   const pages = [];
   for (let index = 0; index < 2; index++) {
@@ -159,6 +156,19 @@ test('compact desktop and mobile boards show public players and only the viewer 
   assert.equal(ghostPrivacy.own.length, 1);
   assert.equal(ghostPrivacy.own[0].cornerId, 'children_cabinet');
   assert.deepEqual(ghostPrivacy.others, []);
+  const stacks = await pages[1].evaluate(async () => {
+    const { createTileSvg } = await import('/tile.js');
+    return [0, 1, 2, 3].flatMap(rotation => ['room', 'corner'].map(kind => {
+      const players = Array.from({ length: 5 }, (_, seat) => ({ id: `p${seat}`, name: `座位${seat + 1}`, seat, kind: 'visitor', roomId: 'children_room',
+        ...(kind === 'corner' ? { cornerId: 'children_cabinet' } : {}) }));
+      const svg = createTileSvg('children', rotation, [], players);
+      return [...svg.querySelectorAll('.map-player-marker')].map(marker => ({ x: Number(marker.getAttribute('transform').match(/translate\(([^ ]+)/)[1]), radius: Number(marker.querySelector('circle').getAttribute('r')) }));
+    }));
+  });
+  for (const stack of stacks) {
+    assert.equal(stack.length, 5);
+    for (let i = 1; i < stack.length; i++) assert.ok(Math.abs(stack[i].x - stack[i - 1].x - stack[i].radius * 4 / 3) < .001);
+  }
   await mkdir('test-results', { recursive: true });
   await pages[0].screenshot({ path: 'test-results/compact-map-desktop.png', fullPage: true });
   await pages[1].screenshot({ path: 'test-results/compact-map-mobile.png', fullPage: true });

@@ -1,6 +1,7 @@
 import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
 import { cardName, renderAbilities, renderActiveItems } from './abilities.js';
+import { renderWalkieControls } from './walkie.js';
 
 const rooms = getLogicalRooms();
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
@@ -87,7 +88,7 @@ export function explorationDescription(state) {
   const resolution = round.resolution;
   if (resolution) {
     if (resolution.kind === 'waiting') return `等待${playerName(state, resolution.playerId)}完成结算。`;
-    if (resolution.kind === 'inheritance') return '选择一名存活访问者，交付全部随身物品后成为箱人。';
+    if (resolution.kind === 'inheritance') return '你已成为箱人。技能牌已消失，请选择一名存活访问者继承全部随身标志。';
     if (resolution.kind === 'safe') return '你窥探到了保险箱。选择数字并尝试开锁。';
     if (resolution.kind === 'item_answer') return '选择对道具询问的回答。';
     if (resolution.kind === 'forced_peek') return '行动被能力打断。请选择本房间的一个角落窥探。';
@@ -151,6 +152,13 @@ function publicProgress(container, state) {
     for (const entry of round.publicDiscoveries) discoveries.append(node('p', 'small-note',
       `${playerName(state, entry.playerId)}：${tokenName(entry.token)}`));
     section.append(discoveries);
+  }
+  if (round.deathEvents?.length) {
+    const deaths = node('details', 'reference-details');
+    deaths.dataset.testid = 'death-location-history';
+    deaths.append(node('summary', '', '死亡位置记录 · 全员可见'));
+    for (const event of round.deathEvents) deaths.append(node('p', 'small-note', `${playerName(state, event.userId)} · ${cornerName(event.cornerId)}（第${event.cycle}轮死亡时的位置，后续潜伏不更新）`));
+    section.append(deaths);
   }
   if (round.safe) {
     const safe = node('p', 'small-note', round.safe.opened ? '保险箱已打开。' : `保险箱已知数字：${round.safe.publicNumbers?.length ? round.safe.publicNumbers.join('、') : '暂无'}`);
@@ -220,6 +228,8 @@ function gameReview(container, state) {
     `${playerName(state, entry.playerId)}公开弃置：${[...entry.tokens.map(tokenName), ...entry.items.map(item => item.name)].join('、')}`));
   if (review.removedTokens?.length) inventories.append(node('p', 'small-note',
     `已消耗或移出的标志：${review.removedTokens.map(tokenName).join('、')}`));
+  if (review.removedItems?.length) inventories.append(node('p', 'small-note',
+    `死亡后移出的技能牌：${review.removedItems.map(item => item.name).join('、')}`));
   const powers = node('details', 'reference-details review-powers');
   powers.open = true;
   powers.dataset.testid = 'review-powers';
@@ -315,7 +325,7 @@ function pendingControls(container, state, locked, action) {
     ? `${playerName(state, pending.playerId)}：${roomName(pending.fromRoomId)} → ${roomName(pending.toRoomId)}`
     : kind === 'item' ? `${playerName(state, pending.playerId)}声明使用道具。`
       : kind === 'free' ? `${playerName(state, pending.playerId)}声明${freeActionNames[pending.actionType] || '自由行动'}。`
-      : `${playerName(state, pending.playerId)}声明${kind === 'weapon' || kind === 'use_weapon' ? '使用讨伐道具' : '窥探'}：${cornerName(pending.cornerId)}`;
+      : `${playerName(state, pending.playerId)}声明${kind === 'weapon' || kind === 'use_weapon' ? '使用讨伐道具' : '窥探'}${pending.cornerId ? `：${cornerName(pending.cornerId)}` : '：目标角落仅本人可见'}`;
   const section = node('section', 'current-response');
   section.append(node('h3', '', round.hako.playerId === state.you ? '请确认访问者的行动' : '等待箱娃确认行动'), node('p', 'pending-move', text));
   if (round.hako.playerId === state.you) section.append(button('确认行动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
@@ -368,7 +378,7 @@ function resolutionControls(container, state, locked, action) {
   if (resolution.kind !== 'inheritance') section.append(node('p', 'section-meta', resolution.kind === 'notebook' ? '本次手记 · 已向全体公开' : '本次窥探 · 仅你可见'));
   if (resolution.kind === 'inheritance') {
     const targets = (resolution.targets || state.round.visitors.filter(visitor => visitor.status === 'alive').map(visitor => visitor.id)).map(value => ({ id: typeof value === 'string' ? value : value.id, name: playerName(state, typeof value === 'string' ? value : value.id) }));
-    section.append(node('p', 'small-note', '必须将全部随身标志和道具交给一名存活访问者。交付后成为箱人。'));
+    section.append(node('p', 'small-note', '死亡时全部技能牌已消失。请选择一名存活访问者继承全部随身标志；你已成为箱人。'));
     const target = select(section, 'inheritance-target', '接收遗物的访问者', targets, locked);
     section.append(button('交付全部遗物', 'bequeath', locked || !target.value, () => action('bequeath', { targetId: target.value })));
   } else if (resolution.kind === 'safe') {
@@ -687,6 +697,8 @@ export function renderExploration({ panel, state, pending, online, action, silen
   const references = document.createDocumentFragment();
   if (!round.result) {
     resolutionControls(controls, state, locked, action);
+    const walkie = renderWalkieControls(state, action, { locked });
+    if (walkie) controls.append(walkie);
     pendingControls(controls, state, locked, action);
     if (round.phase === 'hako_reaction' && round.hako.playerId === state.you) controls.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked || Boolean(round.interruption), () => action('pass_noise_reaction')));
     renderAbilities({ container: controls, referenceContainer: references, state, locked, action });
@@ -709,7 +721,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
   }
   if (state.initialItems?.length) {
     const initial = node('details', 'initial-items reference-details');
-    initial.append(node('summary', '', '开局领取的道具'));
+    initial.append(node('summary', '', '开局随机分发的技能'));
     const list = node('dl', 'round-positions');
     for (const item of state.initialItems) {
       const row = node('div');
@@ -725,7 +737,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
       row.append(node('dt', '', playerName(state, item.playerId)), description);
       list.append(row);
     }
-    initial.append(list, node('p', 'small-note', '这是开局领取记录；当前持有物品见「你的随身物品」。'));
+    initial.append(list, node('p', 'small-note', '这是开局发牌记录，不代表实时持有情况；自己的当前卡牌见「你的随身物品」。'));
     fragment.append(initial);
   }
   const positions = node('dl', 'round-positions');
@@ -735,6 +747,7 @@ export function renderExploration({ panel, state, pending, online, action, silen
     line.dataset.playerId = visitor.id;
     if (visitor.status === 'alive' && visitor.roomId) line.dataset.roomId = visitor.roomId;
     line.append(node('dt', '', `${playerName(state, visitor.id)}${visitor.id === state.you ? '（你）' : ''}`), node('dd', '', visitor.status === 'box_person' ? '箱人' : visitor.status === 'banished' ? '已被消灭' : roomName(visitor.roomId)));
+    if (Number.isInteger(visitor.itemCount) && Number.isInteger(visitor.tokenCount)) line.append(node('dd', 'small-note', `${visitor.itemCount}张技能牌 · ${visitor.tokenCount}枚标志`));
     positions.append(line);
   }
   fragment.append(positions);

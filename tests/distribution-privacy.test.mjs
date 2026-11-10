@@ -10,6 +10,26 @@ import { isIP } from 'node:net';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
 
+test('source distribution includes MIT terms and distinguishes original game materials', async () => {
+  for (const path of ['LICENSE', 'NOTICE.md']) assert.ok(tracked.includes(path), path);
+  const license = await readFile(join(root, 'LICENSE'), 'utf8');
+  assert.match(license, /^MIT License\r?\n/);
+  assert.match(license, /Permission is hereby granted, free of charge/);
+  assert.match(license, /THE SOFTWARE IS PROVIDED "AS IS"/);
+  const notice = await readFile(join(root, 'NOTICE.md'), 'utf8');
+  assert.match(notice, /\[MIT 许可证\]\(LICENSE\)/);
+  assert.match(notice, /`references\/`/);
+  assert.match(notice, /不适用本项目的 MIT 许可证/);
+  const readme = await readFile(join(root, 'README.md'), 'utf8');
+  assert.match(readme, /\[MIT 许可证\]\(LICENSE\)/);
+  assert.match(readme, /\[许可与原作素材\]\(NOTICE\.md\)/);
+  assert.doesNotMatch(readme, /私有仓库需要先登录/);
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  const lockfile = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
+  assert.equal(manifest.license, 'MIT');
+  assert.equal(lockfile.packages[''].license, manifest.license);
+});
+
 test('distribution excludes local settings, saved identities, keys and private backups', () => {
   for (const path of tracked) {
     assert.doesNotMatch(path, /^(data|config|state|logs|private|backups|test-results|node_modules)\//, path);
