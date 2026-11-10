@@ -73,7 +73,7 @@ export function revealSilent(state, playerId, index, { count = 1 } = {}) {
   state.total += card.number;
   state.revealsRemaining = remaining - 1;
   if (state.total > 10) {
-    // 留出杂音触发后的即时能力窗口，随后才开始箱娃阶段。
+    // 留给本次翻牌者即时使用灭火器，随后才开始箱娃阶段。
     state.phase = 'hako_reaction';
     state.turnPlayerId = null;
     state.resumePlayerId = playerId;

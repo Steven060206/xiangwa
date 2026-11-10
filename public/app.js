@@ -56,6 +56,7 @@ function showError(error) {
 
 function setConnection(connected) {
   const changed = online !== connected;
+  if (changed && !connected) feedback.resetBaseline();
   online = connected;
   $('connection-state').textContent = connected ? '已连接' : '重新连接中';
   $('connection-state').classList.toggle('offline', !connected);
@@ -225,7 +226,7 @@ function connect() {
         const next = await api(path, undefined, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]));
         if (controller.signal.aborted) return;
         // Do not rebuild form controls when only an unchanged snapshot arrives.
-        if (JSON.stringify(next) !== JSON.stringify(state)) receiveState(next);
+        if (!online || JSON.stringify(next) !== JSON.stringify(state)) receiveState(next);
         setConnection(true);
       } catch (error) {
         if (controller.signal.aborted) return;

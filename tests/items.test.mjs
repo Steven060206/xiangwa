@@ -101,21 +101,33 @@ test('active items wait for hako, consume one standard action, and remain reusab
   assert.equal(play.inventories[first].items[0].id, 'dowsing_rod');
 });
 
-test('spirit pen requires a living companion and only active NO9 permits a false answer', () => {
-  for (const lying of [false, true]) {
+test('spirit pen requires a companion and active NO9 announces every legal truthful or false answer alike', () => {
+  for (const [active, answer] of [[false, true], [true, true], [true, false]]) {
     let play = reveal(newPlay());
     play.round.visitors.find(player => player.id === second).roomId = 'study_room';
     play.round.visitors.find(player => player.id === third).roomId = 'study_room';
     rejects(play, first, { type: 'use_item', itemId: 'spirit_pen', roomId: 'children_room' });
     play.round.visitors.find(player => player.id === second).roomId = 'hall_room';
-    if (lying) play.powers.slots[0] = { id: 9, ignoreThreshold: false, faceUp: false };
+    if (active) play.powers.slots[0] = { id: 9, ignoreThreshold: false, faceUp: false };
     rejects(play, first, { type: 'use_item', itemId: 'spirit_pen', roomId: 'not-a-room' });
     play = use(play, 'spirit_pen', { roomId: 'children_room' });
     assert.equal(getPlayView(play, hako).resolution.truth, true);
-    assert.equal(getPlayView(play, hako).resolution.answerOptions.length, lying ? 2 : 1);
-    if (!lying) rejects(play, hako, { type: 'answer_item', answer: false });
-    play = act(play, hako, { type: 'answer_item', answer: !lying });
-    assert.equal(play.itemEvents.at(-1).answer, !lying);
+    assert.equal(getPlayView(play, hako).resolution.answerOptions.length, active ? 2 : 1);
+    rejects(play, hako, { type: 'answer_item', answer: 'true' });
+    if (!active) rejects(play, hako, { type: 'answer_item', answer: false });
+    assert.equal(play.powers.activationNotice, null, 'Rejected answers cannot produce an announcement');
+    play = act(play, hako, { type: 'answer_item', answer });
+    assert.equal(play.itemEvents.at(-1).answer, answer);
+    assert.equal(getPlayView(play, first).powers.lastActivation, null);
+    assert.deepEqual(getPlayView(play, first).powers.activationNotice, active ? { serial: 1, cycle: 1 } : null);
+    assert.equal(getPlayView(play, hako).powers.lastActivation?.powerId, active ? 9 : undefined);
+    assert.equal(getPlayView(play, first).powers.slots[0].card, undefined);
+    for (const id of visitors) {
+      const event = getPlayView(play, id).items.events.at(-1);
+      for (const key of ['truth', 'canLie', 'sourcePowerId', 'powerId', 'card']) {
+        assert.equal(Object.hasOwn(event, key), false);
+      }
+    }
     assert.equal(play.round.silent.turnPlayerId, second);
   }
 });

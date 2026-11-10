@@ -5,7 +5,7 @@ import { getTile } from '../src/maps.mjs';
 import { getRoom, getMoveTargets, getHidingTargets } from '../src/movement.mjs';
 import { INITIAL_ITEMS, createOpening, chooseSecrets, placeRemains, inspectInitialRoom,
   chooseInitialHiding, chooseInitialPower } from '../src/preparation.mjs';
-import { createPlay, applyPlayAction, getPlayView } from '../src/play.mjs';
+import { createPlay, applyPlayAction, getPlayView, normalizePlayForRules } from '../src/play.mjs';
 import { createPowers, powerCard, powerHidingTargets } from '../src/powers.mjs';
 
 const visitors = ['visitor-a', 'visitor-b', 'visitor-c'];
@@ -13,8 +13,8 @@ const [first, second, third] = visitors;
 const hakoId = 'hako';
 const piece = (id, type, rest = {}) => ({ id, type, ...rest });
 
-function fixture() {
-  const setup = createSetup(visitors, { deck: ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'] });
+function fixture(visitorIds = visitors) {
+  const setup = createSetup(visitorIds, { deck: ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'] });
   for (const [floor, x, y, rotation] of [
     [1, 0, -1, 2], [1, -1, 0, 0], [1, 1, 0, 0], [2, 0, 0, 0],
     [-1, 0, 0, 0], [1, -1, -1, 1], [1, -2, 0, 2], [1, 2, 0, 0],
@@ -23,7 +23,7 @@ function fixture() {
     placeTile(setup, setup.turnPlayerId, { floor, x, y, rotation });
   }
   const opening = createOpening(setup, { hakoId,
-    itemChoices: visitors.map((playerId, index) => ({ playerId, itemId: INITIAL_ITEMS[index].id })) });
+    itemChoices: visitorIds.map((playerId, index) => ({ playerId, itemId: INITIAL_ITEMS[index].id })) });
   chooseSecrets(opening, hakoId, { password: [1, 3, 5], weakness: 'gasoline' });
   placeRemains(opening, hakoId, 'hall_clock');
   inspectInitialRoom(opening, hakoId, 'children_room');
@@ -43,9 +43,9 @@ function reject(play, id, action) {
   assert.throws(() => applyPlayAction(play, id, action), /[\u4e00-\u9fff]/);
   assert.equal(JSON.stringify(play), before, 'illegal action changed the original state');
 }
-function stage(play) {
+function stage(play, triggerId = play.round.silent.visitorIds[0]) {
   Object.assign(play.round.silent, { phase: 'hako_reaction', turnPlayerId: null,
-    resumePlayerId: play.round.silent.visitorIds[0], trigger: 'overflow', total: 11 });
+    resumePlayerId: triggerId, trigger: 'overflow', total: 11 });
   play.round.silent.cards.forEach(card => {
     card.status = [2, 4, 5].includes(card.number) ? 'up' : 'down';
     delete card.holderId;
@@ -239,7 +239,7 @@ test('same-floor movement includes dynamic corners, excludes other floors and ca
   assert.ok(targets.includes('suitcase:living_room'));
   assert.equal(targets.includes('upstairs_armor'), false);
   assert.equal(targets.includes('basement_barrel'), false);
-  assert.deepEqual(getPlayView(play, first).powers.lastActivation, { cycle: 1 });
+  assert.equal(getPlayView(play, first).powers.lastActivation, null);
   assert.deepEqual(getPlayView(play, hakoId).powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
   play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'living_room' });
   reject(play, hakoId, { type: 'activate_power', slot: 1 });
@@ -285,7 +285,7 @@ test('two-room power cannot be activated after the final room has already been i
   assert.deepEqual(getPlayView(play, hakoId).powers.pathRooms, []);
 });
 
-test('powers one through four reveal only an activation unless hako explicitly makes the ability public', () => {
+test('powers one through four silently empty the slot even if an old client requests publication', () => {
   for (const powerId of [1, 2, 3, 4]) for (const publicChoice of [false, true]) {
     let play = fixture();
     givePower(play, powerId, { slot: 0, ignoreThreshold: true });
@@ -294,22 +294,49 @@ test('powers one through four reveal only an activation unless hako explicitly m
       ...(powerId === 3 ? { fromRoomId: 'hall_room', toRoomId: 'study_room' } : {}),
       ...(powerId === 4 ? { roomId: 'study_room' } : {}),
     });
-    const own = getPlayView(play, hakoId).powers;
-    const visitor = getPlayView(play, first).powers;
-    assert.equal(own.lastActivation.powerId, powerId);
-    assert.equal(visitor.lastActivation.powerId, publicChoice ? powerId : undefined);
-    assert.equal(visitor.lastActivation.name, publicChoice ? powerCard(powerId).name : undefined);
-    if (powerId === 3) assert.equal(play.round.blockedDoors[0].public, publicChoice);
-    if (powerId === 4) {
-      assert.equal(visitor.slots[0].faceUp, publicChoice);
-      assert.equal(visitor.slots[0].card?.id, publicChoice ? 4 : undefined);
-      assert.equal(Object.hasOwn(visitor, 'rearrangement'), false);
-      if (!publicChoice) {
-        // Saves written by the former implementation turned this card face up automatically.
-        play.powers.slots[0].faceUp = true;
-        assert.equal(getPlayView(play, first).powers.slots[0].card, undefined);
-      }
+    assert.equal(getPlayView(play, hakoId).powers.lastActivation.powerId, powerId);
+    for (const id of visitors) {
+      const view = getPlayView(play, id);
+      assert.equal(view.powers.lastActivation, null);
+      assert.equal(view.powers.activationNotice, null);
+      assert.deepEqual(view.powers.slots[0], { slot: 0, occupied: false });
+      assert.deepEqual(view.blockedDoors, []);
+      assert.equal(Object.hasOwn(view.powers, 'rearrangement'), false);
     }
+    if (powerId === 4) {
+      assert.ok(getPlayView(play, hakoId).powers.rearrangement.corners.length);
+      play = act(play, hakoId, { type: 'power_rearrange', order: play.powers.rearrangement.cornerIds });
+      assert.equal(play.powers.hand.filter(card => card.id === 4).length, 1);
+    }
+  }
+});
+
+test('powers five through ten announce without a card identity, including legacy public flags', () => {
+  for (const powerId of [5, 6, 7, 8, 10]) {
+    let play = fixture();
+    givePower(play, powerId, { slot: 0, ignoreThreshold: true });
+    play.inventories[first].tokens.push(piece('test-doll', 'doll'));
+    if (powerId === 5) play = begin(stage(play));
+    else {
+      play = reveal(play);
+      play = act(play, first, { type: 'move', roomId: 'study_room' });
+    }
+    play = act(play, hakoId, { type: 'activate_power', slot: 0, public: true,
+      ...(powerId === 7 ? { stealKind: 'item', itemId: play.inventories[first].items[0].id } : {}),
+    });
+    // Simulate records already persisted by older clients and servers.
+    play.powers.lastActivation.public = true;
+    if (play.powers.slots[0]) Object.assign(play.powers.slots[0], { faceUp: true, public: true });
+    play = JSON.parse(JSON.stringify(play));
+    for (const id of visitors) {
+      const powers = getPlayView(play, id).powers;
+      assert.equal(powers.lastActivation, null);
+      assert.deepEqual(powers.activationNotice, { serial: 1, cycle: 1 });
+      assert.equal(powers.slots[0].card, undefined);
+      assert.equal(powers.pendingBehindYou, null);
+      assert.equal(JSON.stringify(powers).includes(powerCard(powerId).name), false);
+    }
+    assert.equal(getPlayView(play, hakoId).powers.lastActivation.powerId, powerId);
   }
 });
 
@@ -397,6 +424,65 @@ test('rearrangement targets one whole map board including its subrooms and old s
   assert.deepEqual(pending.corners.map(corner => play.tokens[corner.id]?.id ?? null).sort(), before);
 });
 
+test('legacy NO.4 saves return the old occupied slot once and keep private rearrangement usable', () => {
+  for (const legacySlot of ['four', 'empty', 'other']) {
+    let play = fixture();
+    givePower(play, 4, { slot: 0 });
+    play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0, roomId: 'study_room' });
+    play.powers.rearrangement.slot = 0;
+    if (legacySlot === 'four') {
+      play.powers.slots[0] = { ...play.powers.hand.find(card => card.id === 4), faceUp: true, public: true };
+      play.powers.hand = play.powers.hand.filter(card => card.id !== 4);
+    } else if (legacySlot === 'other') {
+      givePower(play, 3, { slot: 0 });
+    }
+    play.powers.lastActivation.public = true;
+    play = JSON.parse(JSON.stringify(play));
+    const before = JSON.stringify(play);
+    const privateView = getPlayView(play, hakoId).powers;
+    assert.equal(privateView.hand.filter(card => card.id === 4).length, 1);
+    assert.equal(privateView.slots[0].occupied, legacySlot === 'other');
+    for (const id of visitors) {
+      const view = getPlayView(play, id).powers;
+      assert.equal(view.slots[0].occupied, legacySlot === 'other');
+      assert.equal(view.lastActivation, null);
+      assert.equal(view.activationNotice, null);
+      assert.equal(Object.hasOwn(view, 'rearrangement'), false);
+    }
+    assert.equal(JSON.stringify(play), before, 'Legacy view filtering cannot write to the save');
+    const restored = structuredClone(play);
+    normalizePlayForRules(restored);
+    const normalized = JSON.stringify(restored);
+    normalizePlayForRules(restored);
+    assert.equal(JSON.stringify(restored), normalized, 'Repeated restore cannot return the card twice');
+    assert.equal(Object.hasOwn(restored.powers.rearrangement, 'slot'), false);
+    reject(play, hakoId, { type: 'power_rearrange', order: [] });
+    const order = [...play.powers.rearrangement.cornerIds].reverse();
+    play = act(play, hakoId, { type: 'power_rearrange', order });
+    assert.equal(play.powers.rearrangement, null);
+    assert.equal(play.powers.hand.filter(card => card.id === 4).length, 1);
+    assert.equal(play.powers.slots[0]?.id ?? null, legacySlot === 'other' ? 3 : null);
+  }
+});
+
+test('an anonymous activation followed by a silent power retains the same public notice', () => {
+  let play = fixture();
+  givePower(play, 5, { slot: 0, ignoreThreshold: true });
+  givePower(play, 4, { slot: 1 });
+  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  assert.deepEqual(getPlayView(play, first).powers.activationNotice, { serial: 1, cycle: 1 });
+  play = act(play, hakoId, { type: 'activate_power', slot: 1, roomId: 'study_room', public: true });
+  for (const id of visitors) {
+    const view = getPlayView(play, id).powers;
+    assert.deepEqual(view.activationNotice, { serial: 1, cycle: 1 });
+    assert.equal(view.lastActivation, null);
+    assert.equal(view.slots[0].occupied, false);
+    assert.equal(view.slots[1].occupied, false);
+    assert.equal(Object.hasOwn(view, 'rearrangement'), false);
+  }
+  assert.equal(getPlayView(play, hakoId).powers.lastActivation.powerId, 4);
+});
+
 test('same-board visitors share the behind-you effect across printed subroom boundaries', () => {
   let play = fixture();
   play.round.hidingCornerId = 'dark_bed';
@@ -455,36 +541,278 @@ test('behind-you settles once using next-stage positions and notebooks before an
   assert.equal(play.round.visitors[0].status, 'alive');
 });
 
-test('behind-you waits for extinguisher responses and using one restores the unactivated card', () => {
+test('four and five player games allow only the overflow flipper to use or decline their extinguisher', () => {
+  for (const visitorIds of [visitors, [...visitors, 'visitor-d']]) {
+    for (const triggerId of visitorIds) for (const use of [false, true]) {
+      let play = fixture(visitorIds);
+      for (const id of visitorIds) play.inventories[id].tokens.push(piece(`extinguisher-${id}`, 'extinguisher'));
+      Object.assign(play.round.silent, { turnPlayerId: triggerId, total: 9 });
+      play = act(play, triggerId, { type: 'silent_reveal', index: 5 });
+      assert.equal(play.round.silent.resumePlayerId, triggerId);
+      assert.equal(Object.hasOwn(play.round.silent, 'triggerPlayerId'), false);
+      assert.deepEqual(play.interruption, { kind: 'noise', responders: [triggerId], passed: [] });
+      reject(play, hakoId, { type: 'pass_noise_reaction' });
+      for (const id of visitorIds) {
+        assert.equal(getPlayView(play, id).interruption.canRespond, id === triggerId);
+        if (id !== triggerId) {
+          reject(play, id, { type: 'extinguisher_response', use: true });
+          reject(play, id, { type: 'extinguisher_response', use: false });
+        }
+      }
+      play = JSON.parse(JSON.stringify(play));
+      play = act(play, triggerId, { type: 'extinguisher_response', use });
+      assert.equal(play.interruption, null);
+      assert.equal(play.inventories[triggerId].tokens.some(token => token.type === 'extinguisher'), !use);
+      if (use) {
+        assert.equal(play.round.silent.phase, 'visitor_reveal');
+        assert.equal(play.round.silent.cycle, 2);
+        assert.equal(play.round.silent.turnPlayerId, triggerId);
+        assert.equal(play.hakoStage, null);
+        assert.equal(play.powers.step, null);
+        assert.equal(play.totalRounds, 1);
+        assert.equal(play.round.hidingCornerId, 'children_bed');
+      } else {
+        assert.equal(play.round.silent.phase, 'hako_reaction');
+        play = act(play, hakoId, { type: 'pass_noise_reaction' });
+        assert.equal(play.round.silent.phase, 'hako_phase');
+        reject(play, triggerId, { type: 'extinguisher_response', use: true });
+      }
+      for (const id of visitorIds.filter(id => id !== triggerId)) {
+        assert.ok(play.inventories[id].tokens.some(token => token.type === 'extinguisher'));
+      }
+    }
+  }
+});
+
+test('another visitor holding an extinguisher cannot respond when the overflow flipper owns none', () => {
+  for (const visitorIds of [visitors, [...visitors, 'visitor-d']]) {
+    let play = fixture(visitorIds);
+    for (const id of visitorIds.slice(1)) play.inventories[id].tokens.push(piece(`other-${id}`, 'extinguisher'));
+    play.round.silent.total = 9;
+    play = act(play, first, { type: 'silent_reveal', index: 5 });
+    assert.equal(play.interruption, null);
+    for (const id of visitorIds) reject(play, id, { type: 'extinguisher_response', use: true });
+    play = act(play, hakoId, { type: 'pass_noise_reaction' });
+    assert.equal(play.round.silent.phase, 'hako_phase');
+  }
+});
+
+test('exactly ten and the last hidden card never open extinguisher windows, including NO.5 activation', () => {
+  let exact = fixture();
+  exact.inventories[first].tokens.push(piece('exact-ten', 'extinguisher'));
+  exact.round.silent.total = 5;
+  exact = act(exact, first, { type: 'silent_reveal', index: 5 });
+  assert.equal(exact.round.silent.total, 10);
+  assert.equal(exact.round.silent.phase, 'visitor_action');
+  assert.equal(exact.interruption, null);
+  reject(exact, first, { type: 'extinguisher_response', use: true });
+  let play = fixture();
+  givePower(play, 5, { slot: 0, ignoreThreshold: true });
+  for (const id of visitors) play.inventories[id].tokens.push(piece(`last-hidden-${id}`, 'extinguisher'));
+  for (let index = 0; index < 5; index++) {
+    play = act(play, play.round.silent.turnPlayerId, { type: 'silent_skip', index });
+  }
+  assert.equal(play.round.silent.trigger, 'one_hidden');
+  assert.equal(play.round.silent.resumePlayerId, third);
+  assert.equal(play.interruption, null);
+  for (const id of visitors) reject(play, id, { type: 'extinguisher_response', use: true });
+  play = act(begin(play), hakoId, { type: 'activate_power', slot: 0 });
+  assert.equal(play.interruption, null);
+  assert.deepEqual(play.powers.pendingBehindYou, { cycle: 2 });
+  assert.equal(play.powers.slots[0], null);
+  assert.equal(play.powers.hand.filter(card => card.id === 5).length, 1);
+  for (const id of visitors) reject(play, id, { type: 'extinguisher_response', use: true });
+  play = finishStage(play);
+  assert.equal(play.round.silent.turnPlayerId, third);
+});
+
+test('NO.5 activation after declining an overflow response has no second extinguisher window', () => {
+  let play = fixture();
+  givePower(play, 5, { slot: 0, ignoreThreshold: true });
+  play.inventories[first].tokens.push(piece('declined-extinguisher', 'extinguisher'));
+  play.round.silent.total = 9;
+  play = act(play, first, { type: 'silent_reveal', index: 5 });
+  play = act(play, first, { type: 'extinguisher_response', use: false });
+  play = act(play, hakoId, { type: 'pass_noise_reaction' });
+  play = act(begin(play), hakoId, { type: 'activate_power', slot: 0 });
+  assert.equal(play.interruption, null);
+  assert.deepEqual(play.powers.pendingBehindYou, { cycle: 2 });
+  reject(play, first, { type: 'extinguisher_response', use: true });
+  assert.ok(play.inventories[first].tokens.some(token => token.type === 'extinguisher'));
+  play = finishStage(play);
+  assert.equal(play.round.silent.cycle, 2);
+});
+
+test('continuous Mary and bell reveals stop at overflow and only the actual flipper can respond', () => {
+  for (const overflowIndex of [0, 1, 2]) {
+    let play = fixture();
+    play.inventories[first].tokens.push(piece('mary-doll', 'doll'), piece('mary-extinguisher', 'extinguisher'));
+    play.inventories[second].tokens.push(piece('other-extinguisher', 'extinguisher'));
+    play.inventories[first].items.push(structuredClone(INITIAL_ITEMS.find(item => item.id === 'shrine_bell')));
+    play.noiseEffects = { mary: { playerId: first, deferredCycle: 0, deferredTurn: -1,
+      card: { id: 8, ignoreThreshold: true } } };
+    const indices = overflowIndex === 0 ? [5] : overflowIndex === 1 ? [0, 5] : [0, 1, 5];
+    play.round.silent.total = 9;
+    for (let index = 0; index <= overflowIndex; index++) {
+      play = act(play, first, { type: 'silent_reveal', index: indices[index],
+        ...(index === 0 ? { useBell: true } : {}) });
+      if (index < overflowIndex) assert.equal(play.interruption, null);
+    }
+    assert.equal(play.round.silent.phase, 'hako_reaction');
+    assert.equal(play.round.silent.revealsRemaining, 0);
+    assert.equal(play.round.silent.resumePlayerId, first);
+    assert.deepEqual(play.interruption.responders, [first]);
+    reject(play, second, { type: 'extinguisher_response', use: true });
+    play = act(play, first, { type: 'extinguisher_response', use: true });
+    assert.equal(play.round.silent.turnPlayerId, first);
+    assert.equal(play.round.silent.revealsRemaining, 0);
+    assert.equal(play.noiseEffects.bellIntent, null);
+    assert.equal(play.noiseEffects.bellReady, null);
+  }
+});
+
+test('legacy overflow windows retain only a living unpassed flipper and GET never changes saved state', () => {
+  for (const kind of ['valid', 'passed', 'other', 'missing', 'dead', 'stage']) {
+    let play = fixture();
+    for (const id of kind === 'missing' ? [second] : [first, second]) {
+      play.inventories[id].tokens.push(piece(`old-${id}`, 'extinguisher'));
+    }
+    Object.assign(play.round.silent, { phase: 'hako_reaction', turnPlayerId: null,
+      resumePlayerId: first, trigger: 'overflow', total: 11 });
+    play.round.silent.triggerPlayerId = second;
+    if (kind === 'dead') play.round.visitors[0].status = 'box_person';
+    if (kind === 'stage') play.round.silent.phase = 'hako_phase';
+    play.interruption = { kind: 'noise', responders: kind === 'other' ? [second] : [first, second],
+      passed: kind === 'passed' ? [first] : [] };
+    play = JSON.parse(JSON.stringify(play));
+    const before = JSON.stringify(play);
+    for (const id of [hakoId, ...visitors]) {
+      assert.equal(getPlayView(play, id).interruption?.canRespond ?? false, kind === 'valid' && id === first);
+    }
+    assert.equal(JSON.stringify(play), before, 'Reading an old window cannot normalize or kill in the saved state');
+    reject(play, second, { type: 'extinguisher_response', use: true });
+    const restored = structuredClone(play);
+    normalizePlayForRules(restored);
+    assert.equal(Object.hasOwn(restored.round.silent, 'triggerPlayerId'), false);
+    assert.deepEqual(restored.interruption, kind === 'valid' ? { kind: 'noise', responders: [first], passed: [] } : null);
+    normalizePlayForRules(restored);
+    if (kind === 'valid') play = act(play, first, { type: 'extinguisher_response', use: false });
+    if (kind !== 'stage') {
+      play = act(play, hakoId, { type: 'pass_noise_reaction' });
+      assert.equal(play.interruption, null);
+      assert.equal(play.round.silent.phase, 'hako_phase');
+    }
+  }
+});
+
+test('legacy NO.5 response windows close without rolling back powers or settling deaths during GET or normalization', () => {
   let play = fixture();
   givePower(play, 5, { slot: 0, ignoreThreshold: true });
   play.round.visitors[0].roomId = 'children_room';
-  play.inventories[third].tokens.push(piece('counter-extinguisher', 'extinguisher'));
-  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
-  assert.equal(play.round.visitors[0].status, 'alive');
-  assert.equal(getPlayView(play, third).interruption.canRespond, true);
-  reject(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
+  play.inventories[first].tokens.push(piece('old-power-extinguisher', 'extinguisher'));
+  play = begin(stage(play));
+  const restorePowers = structuredClone(play.powers);
+  play = act(play, hakoId, { type: 'activate_power', slot: 0 });
+  play.interruption = { kind: 'power', responders: [first], passed: [], restorePowers,
+    deaths: [{ playerId: first, killerCornerId: 'children_bed' }] };
+  play = JSON.parse(JSON.stringify(play));
+  const before = JSON.stringify(play);
+  for (const id of [hakoId, ...visitors]) assert.equal(getPlayView(play, id).interruption, null);
+  assert.equal(JSON.stringify(play), before);
+  const restored = structuredClone(play);
+  normalizePlayForRules(restored);
+  assert.equal(restored.interruption, null);
+  assert.deepEqual(restored.powers.pendingBehindYou, { cycle: 2 });
+  assert.equal(restored.powers.slots[0], null);
+  assert.equal(restored.round.visitors[0].status, 'alive');
   reject(play, first, { type: 'extinguisher_response', use: true });
-  play = act(play, third, { type: 'extinguisher_response', use: true });
-  assert.equal(play.round.visitors[0].status, 'alive');
-  assert.equal(play.powers.slots[0].id, 5);
-  assert.equal(play.powers.slots[0].faceUp, false);
-  assert.equal(play.powers.pendingBehindYou, null);
-  assert.equal(play.round.silent.phase, 'visitor_reveal');
+  play = finishStage(play);
   assert.equal(play.interruption, null);
-  assert.ok(play.removedTokens.some(token => token.id === 'counter-extinguisher'));
+  assert.equal(play.powers.slots[0], null);
+  play = stage(play);
+  assert.equal(play.round.visitors[0].status, 'box_person');
+  assert.equal(play.powers.pendingBehindYou, null);
 });
 
-test('declining the extinguisher lets group deaths finish before a relic-ring inheritance decision', () => {
+test('using an extinguisher still settles due group deaths and inheritance, skips ghosts and resumes after the dead flipper', () => {
+  let play = fixture([...visitors, 'visitor-d']);
+  ghost(play, 'visitor-d', 'children_toys');
+  givePower(play, 5, { slot: 0, ignoreThreshold: true });
+  play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
+  play = act(play, hakoId, { type: 'inspect_hiding_room', roomId: 'children_room' });
+  play = act(play, hakoId, { type: 'hako_hide', cornerId: 'children_bed' });
+  play = act(play, 'visitor-d', { type: 'inspect_hiding_room', roomId: 'children_room' });
+  play = act(play, 'visitor-d', { type: 'ghost_hide', cornerId: 'children_toys' });
+  play.round.visitors[0].roomId = 'children_room';
+  play.round.visitors[1].roomId = 'children_room';
+  play.inventories[first].tokens.push(piece('spent-before-death', 'extinguisher'), piece('inherited-key', 'key'));
+  play.inventories[first].items.push(structuredClone(INITIAL_ITEMS.find(item => item.id === 'relic_ring')));
+  // Restart before the due boundary and again while inheritance is pending.
+  play = JSON.parse(JSON.stringify(play));
+  play.round.silent.cards.forEach((card, index) => { card.number = index; });
+  play.round.silent.total = 9;
+  play = act(play, first, { type: 'silent_reveal', index: 5 });
+  const beforeBoundary = JSON.stringify(play);
+  for (const id of [hakoId, ...visitors, 'visitor-d']) getPlayView(play, id);
+  assert.equal(JSON.stringify(play), beforeBoundary, 'Reading a due effect cannot settle its deaths');
+  assert.ok(play.round.visitors.filter(player => player.id !== 'visitor-d').every(player => player.status === 'alive'));
+  play = act(play, first, { type: 'extinguisher_response', use: true });
+  assert.equal(play.round.visitors[0].status, 'box_person');
+  assert.equal(play.round.visitors[1].status, 'box_person');
+  assert.equal(play.round.visitors[2].status, 'alive');
+  assert.equal(play.powers.pendingBehindYou, null);
+  assert.equal(play.round.silent.phase, 'visitor_reveal');
+  assert.equal(play.round.silent.turnPlayerId, third);
+  assert.equal(play.round.silent.cycle, 3);
+  assert.equal(play.hakoStage, null);
+  assert.equal(play.powers.step, null);
+  assert.equal(play.round.hidingCornerId, 'children_bed');
+  assert.equal(play.ghosts.find(actor => actor.playerId === 'visitor-d').cornerId, 'children_toys');
+  assert.ok(play.removedTokens.some(token => token.id === 'spent-before-death'));
+  assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
+  reject(play, hakoId, { type: 'begin_hako_action' });
+  reject(play, 'visitor-d', { type: 'inspect_hiding_room', roomId: 'children_room' });
+  reject(play, third, { type: 'silent_reveal', index: 0 });
+  play = JSON.parse(JSON.stringify(play));
+  play = act(play, first, { type: 'bequeath', targetId: third });
+  assert.ok(play.inventories[third].tokens.some(token => token.id === 'inherited-key'));
+  assert.equal(play.inventories[third].tokens.some(token => token.id === 'spent-before-death'), false);
+  assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: second });
+  play = act(play, second, { type: 'bequeath', targetId: third });
+  assert.equal(play.resolution, null);
+  play = act(play, third, { type: 'silent_reveal', index: play.round.silent.cards.findIndex(card => card.number === 0) });
+  assert.equal(play.round.silent.phase, 'visitor_action');
+  play.round.visitors[2].roomId = 'children_room';
+  play = stage(play);
+  assert.equal(play.round.visitors[2].status, 'alive', 'The settled NO.5 effect must not run again at the following stage');
+  assert.equal(play.ghosts.length, 3);
+});
+
+test('a due NO.5 effect can end the game despite an extinguisher and leaves no inheritance decisions', () => {
+  let play = fixture();
+  play.round.visitors.forEach(player => { player.roomId = 'children_room'; });
+  play.inventories[first].tokens.push(piece('last-extinguisher', 'extinguisher'));
+  play.powers.pendingBehindYou = { cycle: 1 };
+  play.round.silent.total = 9;
+  play = act(play, first, { type: 'silent_reveal', index: 5 });
+  play = act(play, first, { type: 'extinguisher_response', use: true });
+  assert.equal(play.result.winner, 'hako');
+  assert.ok(play.round.visitors.every(player => player.status === 'box_person'));
+  assert.equal(play.powers.pendingBehindYou, null);
+  assert.equal(play.resolution, null);
+  assert.equal(play.inheritanceQueue.length, 0);
+  assert.ok(play.removedTokens.some(token => token.id === 'last-extinguisher'));
+  for (const id of [hakoId, ...visitors]) reject(play, id, { type: 'extinguisher_response', use: false });
+});
+
+test('due group deaths finish before relic-ring inheritance when no extinguisher is used', () => {
   let play = fixture();
   givePower(play, 5, { slot: 0, ignoreThreshold: true });
   play.round.visitors[0].roomId = 'children_room';
   play.round.visitors[1].roomId = 'children_room';
   play.inventories[first].items.push(structuredClone(INITIAL_ITEMS.find(item => item.id === 'relic_ring')));
   play.inventories[first].tokens.push(piece('inherited-key', 'key'));
-  play.inventories[third].tokens.push(piece('unused-extinguisher', 'extinguisher'));
   play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0 });
-  play = act(play, third, { type: 'extinguisher_response', use: false });
   assert.equal(play.round.visitors[0].status, 'alive');
   assert.equal(play.round.visitors[1].status, 'alive');
   assert.equal(play.resolution, null);
@@ -555,7 +883,9 @@ test('ghost call replaces the declared action, forces shortest moves and ends fo
   play = act(play, hakoId, { type: 'activate_power', slot: 0 });
   assert.equal(play.round.pendingAction, null);
   assert.equal(play.powers.ghostCall.active, true);
-  assert.equal(getPlayView(play, second).powers.slots[0].card.id, 10);
+  assert.equal(getPlayView(play, second).powers.slots[0].card, undefined);
+  assert.equal(getPlayView(play, second).powers.lastActivation, null);
+  assert.deepEqual(getPlayView(play, second).powers.activationNotice, { serial: 1, cycle: 1 });
   reject(play, first, { type: 'peek', cornerId: 'hall_clock' });
   reject(play, first, { type: 'move', roomId: 'upstairs_hall' });
   play = act(play, first, { type: 'move', roomId: 'dining_room' });
@@ -649,13 +979,12 @@ test('power views are detached and do not expose hidden hand, rearrangement or d
   play = act(begin(stage(play)), hakoId, { type: 'activate_power', slot: 0, roomId: 'study_room' });
   const before = JSON.stringify(play);
   const own = getPlayView(play, hakoId).powers;
-  own.slots[0].card.description = 'changed';
+  own.hand[0].description = 'changed';
   own.hand[0].id = 99;
   own.rearrangement.corners[0].token.id = 'changed';
-  own.activationOptions[0].rooms[0].name = 'changed';
   own.lastActivation.powerId = 99;
   const publicView = getPlayView(play, first).powers;
-  publicView.lastActivation.cycle = 99;
+  assert.equal(publicView.lastActivation, null);
   assert.equal(Object.hasOwn(publicView.slots[0], 'card'), false);
   assert.equal(Object.hasOwn(publicView, 'hand'), false);
   assert.equal(Object.hasOwn(publicView, 'rearrangement'), false);

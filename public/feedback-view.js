@@ -94,6 +94,7 @@ export function createFeedbackUI() {
   $('event-close').addEventListener('click', close);
 
   return {
+    resetBaseline() { tracker.resetBaseline(); },
     receive(state) {
       const nextIdentity = `${state.code}:${state.you}`;
       if (identity && identity !== nextIdentity) close();

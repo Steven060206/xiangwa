@@ -13,7 +13,7 @@ const TOKEN_EFFECTS = {
   doll: '携带玛丽小姐的人偶窥探亡骸，即可超度。',
   weapon: '消耗标准行动指定角落进行讨伐；使用后该道具移出游戏。先核对已知讨伐情报。',
   amulet: '消耗标准行动和护符，移除箱娃可用能力栏中的一张能力。',
-  extinguisher: '无声累计超过10，或“NO.5 我在你身后”发动的响应窗口中，可消耗灭火器跳过本次箱娃行动。',
+  extinguisher: '仅限持有者在自己的回合翻牌使无声累计超过10时，消耗灭火器跳过本次箱娃行动。进入箱娃阶段后，使用时机结束。',
   safe: '不能获取；窥探后猜测三个密码数字，全部正确即可取得钥匙。',
   hidden_exit: '不能获取；携带钥匙窥探这里即可逃脱。',
   remains: '不能获取；携带玛丽小姐的人偶窥探这里即可超度。',
@@ -60,6 +60,7 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
   const clear = () => { previous = null; history = []; sequence = 0; };
   return {
     clear,
+    resetBaseline() { previous = null; },
     items: () => structuredClone(history),
     active: () => structuredClone(history.find(entry => !entry.dismissed) || null),
     dismiss(id) {
@@ -115,14 +116,16 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       if (round.powers?.announcement && changed(oldRound.powers?.announcement, round.powers.announcement)) {
         push(`哭喊指向${roomName(next, round.powers.announcement.roomId)}`, '地图已标记宣告房间，保留至下一次箱娃阶段开始。', 'attention', PUBLIC, true);
       }
-      const activation = round.powers?.lastActivation;
-      const activated = activation && (changed(oldRound.powers?.lastActivation, activation)
-        || logs.includes('箱娃发动了能力。'));
-      if (activated) {
-        const privateCard = round.hako?.playerId === next.you && activation.powerId <= 4 && !activation.public;
-        push(activation.name ? `箱娃发动了${powerName(activation)}` : '箱娃发动了能力',
-          activation.name ? '请查看当前操作提示，按能力效果继续结算。' : '本次能力的名称未公开，请查看当前操作提示。',
-          'attention', privateCard ? PRIVATE : PUBLIC, activation.powerId >= 5 || Boolean(round.resolution?.kind === 'forced_peek'), 'power');
+      const notice = round.powers?.activationNotice;
+      const noticeCount = (notice?.serial ?? 0) - (oldRound.powers?.activationNotice?.serial ?? 0);
+      const announced = noticeCount > 0;
+      const ownActivation = round.hako?.playerId === next.you ? round.powers?.lastActivation : null;
+      if (announced && (!ownActivation || ownActivation.powerId < 5 || noticeCount > 1)) {
+        push('箱娃发动了能力', `${noticeCount > 1 ? `期间共发动了${noticeCount}次能力。` : ''}本次能力的名称未公开，请查看当前操作提示。`, 'attention', PUBLIC, true, 'power');
+      }
+      if (ownActivation && (announced && ownActivation.powerId >= 5 || changed(oldRound.powers?.lastActivation, ownActivation))) {
+        push(`箱娃发动了${powerName(ownActivation)}`, '请查看当前操作提示，按能力效果继续结算。',
+          'attention', PRIVATE, ownActivation.powerId >= 5, 'power');
       }
       if (!oldRound.safe?.opened && round.safe?.opened) push('保险箱已打开', '钥匙已取出，携带钥匙找到隐藏出口即可逃脱。', 'success', PUBLIC, true, 'key');
 
@@ -185,9 +188,8 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
           push(`获得了${key === 'tokens' ? tokenName(piece) : piece.name || '道具'}`, `${key === 'tokens' ? tokenDescription(piece) : piece.description || '道具已加入你的随身物品。'} 可在“我的物品”中回看。`, 'success', PRIVATE, true, key === 'tokens' ? tokenSymbol(piece) : 'item');
         }
         if (!died) for (const piece of added(round.inventory?.[key], oldRound.inventory?.[key])) {
-          const stolen = activated && activation.powerId === 7;
-          push(`${stolen ? '被抢走了' : '随身物品移出：'}${key === 'tokens' ? tokenName(piece) : piece.name || '道具'}`,
-            stolen ? '这件物品已不在你的库存中，你可以重新声明行动。' : '物品已按本次操作移出库存，请以当前随身物品为准。', stolen ? 'danger' : 'info', PRIVATE, stolen, key === 'tokens' ? tokenSymbol(piece) : 'item');
+          push(`随身物品移出：${key === 'tokens' ? tokenName(piece) : piece.name || '道具'}`,
+            '物品已按本次操作移出库存，请以当前随身物品为准。', 'info', PRIVATE, false, key === 'tokens' ? tokenSymbol(piece) : 'item');
         }
       }
       for (const visitor of round.visitors || []) {

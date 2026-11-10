@@ -1515,13 +1515,14 @@ test('rematching preserves bot seats and automatic readiness while waiting for t
   assert.equal((await action(request, host, 'bot_claim_hako')).body.phase, 'item_draft');
 });
 
-test('HTTP and SSE keep phone results and false answers private while allowing a forced-peek interruption', async t => {
-  const { base, request } = await startServer(t, {
+test('HTTP and SSE keep phone results private and announce truthful and false NO.9 answers alike', async t => {
+  const saved = await persistentServer(t, {
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
       const phoneIndex = play.availableItems.findIndex(item => item.id === 'smartphone');
       play.inventories[setup.visitorIds[0]].items.push(play.availableItems.splice(phoneIndex, 1)[0]);
-      for (const id of [4, 6, 9]) play.powers.deck.splice(play.powers.deck.indexOf(id), 1);
+      play.powers.deck = play.powers.deck.filter(id => ![4, 6, 9].includes(id));
+      play.powers.hand = play.powers.hand.filter(card => ![4, 6, 9].includes(card.id));
       play.powers.hand.push({ id: 4, ignoreThreshold: false });
       play.powers.slots = [{ id: 6, ignoreThreshold: true, faceUp: false }, { id: 9, ignoreThreshold: false, faceUp: false }];
       const source = Object.keys(play.tokens).find(id => play.tokens[id]?.id === 'password_4');
@@ -1529,6 +1530,7 @@ test('HTTP and SSE keep phone results and false answers private while allowing a
       return play;
     },
   });
+  const { base, request, dataFile } = saved;
   const people = await createFour(request);
   await preparePlay(request, people);
   const [hako, first, second, third] = people;
@@ -1559,45 +1561,117 @@ test('HTTP and SSE keep phone results and false answers private while allowing a
     assert.deepEqual(waiting, { kind: 'waiting', playerId: hako.playerId });
   }
   const beforeAnswer = (await snapshot(request, second)).body;
+  assert.deepEqual(await streams[2].state(update => update.version >= beforeAnswer.version), beforeAnswer);
   assert.equal((await action(request, second, 'answer_item', { answer: true })).status, 409);
+  assert.equal((await action(request, hako, 'answer_item', { answer: 'true' })).status, 409);
+  assert.equal((await action(request, hako, 'answer_item', { answer: true, expectedVersion: beforeAnswer.version - 1 })).status, 409);
   assert.deepEqual((await snapshot(request, second)).body, beforeAnswer);
-  const answer = await action(request, hako, 'answer_item', { answer: false });
+  const bytes = await readFile(dataFile, 'utf8');
+  await mkdir(`${dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, hako, 'answer_item', { answer: true })).status, 503);
+    assert.deepEqual((await snapshot(request, second)).body, beforeAnswer);
+    assert.equal(await readFile(dataFile, 'utf8'), bytes);
+  } finally { await rm(`${dataFile}.tmp`, { recursive: true }); }
+  const answer = await action(request, hako, 'answer_item', { answer: true });
   assert.equal(answer.status, 200);
-  for (let index = 1; index < people.length; index++) {
-    const state = await streams[index].state(update => update.version >= answer.body.version);
-    assert.equal(state.round.items.events.at(-1).answer, false);
-    assert.equal(Object.hasOwn(state.round.items.events.at(-1), 'truth'), false);
-    assert.equal(state.round.powers.slots[1].card, undefined, 'A false response must not reveal the hidden NO.9 card');
+  assert.equal(answer.body.round.powers.lastActivation.powerId, 9);
+  assert.equal((await streams[2].state()).version, answer.body.version, 'Only the saved answer reaches SSE');
+  async function checkAnswer(version, serial, value) {
+    for (let index = 1; index < people.length; index++) {
+      const state = index === 2 && serial === 1 ? (await snapshot(request, second)).body
+        : await streams[index].state(update => update.version >= version);
+      assert.deepEqual(state, (await snapshot(request, people[index])).body);
+      assert.deepEqual(state, (await snapshot(request, people[index], { poll: true })).body);
+      assert.equal(state.log.at(-1), '箱娃发动了能力。');
+      assert.equal(state.undo.label, '箱娃发动了能力。');
+      assert.deepEqual(state.round.powers.activationNotice, { serial, cycle: 1 });
+      assert.equal(state.round.powers.lastActivation, null);
+      const event = state.round.items.events.at(-1);
+      assert.equal(event.answer, value);
+      assert.equal(Object.hasOwn(event, 'truth'), false);
+      assert.equal(Object.hasOwn(event, 'canLie'), false);
+      assert.equal(Object.hasOwn(event, 'sourcePowerId'), false);
+      assert.equal(Object.hasOwn(event, 'card'), false);
+      assert.equal(state.round.powers.slots[1].card, undefined);
+    }
   }
+  await checkAnswer(answer.body.version, 1, true);
   await action(request, third, 'silent_reveal', { index: 2 });
   await action(request, third, 'use_item', { itemId: 'ventriloquist_doll', roomId: 'study_room' });
-  assert.equal((await action(request, hako, 'activate_power', { slot: 0 })).status, 200);
-  const forced = (await snapshot(request, third)).body;
+  const secondQuestion = await action(request, hako, 'resolve_visitor_action');
+  assert.equal(secondQuestion.status, 200);
+  const falseAnswer = !secondQuestion.body.round.resolution.truth;
+  const lie = await action(request, hako, 'answer_item', { answer: falseAnswer });
+  assert.equal(lie.status, 200);
+  await checkAnswer(lie.body.version, 2, falseAnswer);
+  assert.equal((await action(request, first, 'silent_reveal', { index: 4 })).status, 200);
+  assert.equal((await action(request, first, 'peek', { cornerId: 'hall_clock' })).status, 200);
+  const interrupted = await action(request, hako, 'activate_power', { slot: 0, public: true });
+  assert.equal(interrupted.status, 200);
+  const forced = await streams[1].state(update => update.version >= interrupted.body.version);
+  assert.deepEqual(forced.round.powers.activationNotice, { serial: 3, cycle: 1 });
+  assert.equal(forced.round.powers.lastActivation, null);
+  assert.equal(forced.log.at(-1), '箱娃发动了能力。');
   assert.equal(forced.round.resolution.kind, 'forced_peek');
   assert.ok(forced.round.resolution.cornerIds.includes('hall_clock'));
   assert.equal(forced.round.pendingAction, null);
   assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 409);
-  const picked = await action(request, third, 'choose_forced_peek', { cornerId: 'hall_clock' });
+  const picked = await action(request, first, 'choose_forced_peek', { cornerId: 'hall_clock' });
   assert.equal(picked.status, 200);
   assert.equal(picked.body.round.resolution.token.number, 4);
-  assert.equal((await action(request, third, 'resolve_peek', { take: false })).status, 200);
+  assert.equal((await action(request, first, 'resolve_peek', { take: false })).status, 200);
   const logs = (await snapshot(request, hako)).body.log.join('\n');
   assert.equal(logs.includes('动来动去'), false);
   assert.equal(logs.includes('password_4'), false);
+
+  assert.equal((await action(request, second, 'silent_reveal', { index: 3 })).status, 200);
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 200);
+  assert.equal((await action(request, hako, 'set_power', { powerId: 4, slot: 0 })).status, 200);
+  assert.equal((await action(request, hako, 'begin_hako_action')).status, 200);
+  const beforeSilent = (await snapshot(request, first)).body;
+  const silent = await action(request, hako, 'activate_power', { slot: 0, roomId: 'bathroom_room', public: true });
+  assert.equal(silent.status, 200);
+  assert.equal(silent.body.round.powers.lastActivation.powerId, 4);
+  assert.equal(silent.body.round.powers.slots[0].occupied, false);
+  for (let index = 1; index < people.length; index++) {
+    const pushed = await streams[index].state(update => update.version >= silent.body.version);
+    assert.deepEqual(pushed, (await snapshot(request, people[index], { poll: true })).body);
+    assert.deepEqual(pushed.round.powers.activationNotice, { serial: 3, cycle: 1 });
+    assert.equal(pushed.round.powers.lastActivation, null);
+    assert.deepEqual(pushed.round.powers.slots[0], { slot: 0, occupied: false });
+    assert.equal(Object.hasOwn(pushed.round.powers, 'rearrangement'), false);
+    assert.deepEqual(pushed.log, beforeSilent.log);
+    assert.equal(pushed.undo.label, '箱娃操作');
+  }
+  const order = silent.body.round.powers.rearrangement.corners.map(corner => corner.id).reverse();
+  const rearranged = await action(request, hako, 'power_rearrange', { order });
+  assert.equal(rearranged.status, 200);
+  for (let index = 1; index < people.length; index++) {
+    const pushed = await streams[index].state(update => update.version >= rearranged.body.version);
+    assert.deepEqual(pushed.round.powers.activationNotice, { serial: 3, cycle: 1 });
+    assert.deepEqual(pushed.log, beforeSilent.log);
+    assert.equal(pushed.undo.label, '箱娃操作');
+  }
+  await Promise.all(streams.map(live => live.close()));
+  await checkRestart(saved, people);
+  assert.deepEqual((await snapshot(request, first)).body.round.powers.activationNotice, { serial: 3, cycle: 1 });
 });
 
-test('HTTP extinguisher windows block progression and cancel NO.5 without exposing hidden victims', async t => {
-  const { request } = await startServer(t, {
+test('only the overflow flipper can respond and NO.5 activation stays pending across restart and undo', async t => {
+  const saved = await persistentServer(t, {
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
       const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'extinguisher');
       play.inventories[setup.visitorIds[0]].tokens.push(play.tokens[source]);
       play.tokens[source] = null;
-      play.powers.deck.splice(play.powers.deck.indexOf(5), 1);
+      play.powers.deck = play.powers.deck.filter(id => id !== 5);
+      play.powers.hand = play.powers.hand.filter(card => card.id !== 5);
       play.powers.slots[0] = { id: 5, ignoreThreshold: true, faceUp: false };
       return play;
     },
   });
+  const { request } = saved;
   const people = await createFour(request);
   await preparePlay(request, people);
   const [hako, first, second] = people;
@@ -1610,28 +1684,128 @@ test('HTTP extinguisher windows block progression and cancel NO.5 without exposi
   }
   state = (await action(request, first, 'silent_reveal', { index: 3 })).body;
   assert.deepEqual(state.round.interruption, { kind: 'noise', canRespond: true });
+  assert.deepEqual((await snapshot(request, second)).body.round.interruption, { kind: 'noise', canRespond: false });
+  await checkRestart(saved, people);
+  state = (await snapshot(request, first)).body;
   assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
   assert.equal((await action(request, second, 'extinguisher_response', { use: true })).status, 409);
-  assert.equal((await action(request, first, 'extinguisher_response', { use: false })).status, 200);
-  await action(request, hako, 'pass_noise_reaction');
-  await action(request, hako, 'begin_hako_action');
+  assert.equal((await action(request, first, 'extinguisher_response', { use: false, expectedVersion: state.version - 1 })).status, 409);
+  const responseBytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, first, 'extinguisher_response', { use: false, expectedVersion: state.version })).status, 503);
+    assert.deepEqual((await snapshot(request, first)).body, state);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), responseBytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const responses = await Promise.all([0, 1].map(() => action(request, first, 'extinguisher_response', {
+    use: false, expectedVersion: state.version,
+  })));
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
+  state = (await snapshot(request, first)).body;
+  assert.equal(state.round.interruption, null);
+  assert.equal(state.round.phase, 'hako_reaction');
+  assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
+  await checkRestart(saved, people);
+  assert.equal((await snapshot(request, first)).body.round.interruption, null);
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 200);
+  assert.equal((await action(request, hako, 'begin_hako_action')).status, 200);
+  const restorePowers = JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms[0].play.powers;
   const activation = await action(request, hako, 'activate_power', { slot: 0 });
   assert.equal(activation.status, 200);
+  assert.deepEqual(activation.body.round.powers.pendingBehindYou, { cycle: 2 });
   state = (await snapshot(request, first)).body;
-  assert.deepEqual(state.round.interruption, { kind: 'power', canRespond: true });
-  assert.equal(JSON.stringify(state).includes('killerCornerId'), false);
-  assert.equal(JSON.stringify(state).includes('restorePowers'), false);
-  assert.equal((await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).status, 409);
-  state = (await action(request, first, 'extinguisher_response', { use: true })).body;
-  assert.equal(state.round.silent.cycle, 2);
-  assert.equal(state.round.phase, 'visitor_reveal');
-  assert.equal(state.round.silent.turnPlayerId, first.playerId);
-  assert.equal(state.round.inventory.tokens.some(token => token.type === 'extinguisher'), false);
-  assert.ok(state.round.visitors.every(visitor => visitor.status === 'alive'));
-  const owner = (await snapshot(request, hako)).body;
-  assert.equal(owner.round.powers.slots[0].card.id, 5);
-  assert.equal(owner.round.powers.slots[0].faceUp, false);
+  assert.equal(state.round.interruption, null);
+  assert.equal(state.round.powers.pendingBehindYou, null);
+  assert.equal(state.round.powers.lastActivation, null);
+  assert.deepEqual(state.round.powers.activationNotice, { serial: 1, cycle: 1 });
+  assert.equal(state.log.at(-1), '箱娃发动了能力。');
   assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
+  const inspected = await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' });
+  assert.equal(inspected.status, 200);
+
+  const archive = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  const [room] = archive.rooms;
+  const oldWindow = { kind: 'power', responders: [first.playerId], passed: [], deaths: [], restorePowers };
+  room.play.interruption = oldWindow;
+  room.undoHistory.at(-1).before.play.interruption = oldWindow;
+  await writeFile(saved.dataFile, JSON.stringify(archive));
+  await saved.restart();
+  const owner = (await snapshot(request, hako)).body;
+  assert.equal(owner.round.interruption, null);
+  assert.deepEqual(owner.round.powers.pendingBehindYou, { cycle: 2 });
+  assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
+  const undone = await action(request, hako, 'undo_request', { version: owner.version });
+  assert.equal(undone.status, 200);
+  assert.equal(undone.body.round.interruption, null);
+  assert.deepEqual(undone.body.round.powers.pendingBehindYou, { cycle: 2 });
+  const visitor = (await snapshot(request, first)).body;
+  assert.equal(visitor.round.powers.pendingBehindYou, null);
+  assert.ok(visitor.round.inventory.tokens.some(token => token.type === 'extinguisher'));
+  assert.equal((await action(request, hako, 'inspect_hiding_room', { roomId: 'children_room' })).status, 200);
+});
+
+test('legacy overflow responders are filtered and extinguisher use saves once before skipping the entire hako stage', async t => {
+  const saved = await persistentServer(t, {
+    createPlayState(setup, opening, options) {
+      const play = createPlay(setup, opening, options);
+      const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'extinguisher');
+      play.inventories[setup.visitorIds[0]].tokens.push(play.tokens[source]);
+      play.tokens[source] = null;
+      return play;
+    },
+  });
+  const { request } = saved;
+  const people = await createFour(request);
+  await preparePlay(request, people);
+  const [hako, first, second] = people;
+  for (let index = 0; index < 3; index++) {
+    const person = people[index + 1];
+    const revealed = await action(request, person, 'silent_reveal', { index });
+    assert.equal(revealed.status, 200);
+    assert.equal((await action(request, person, 'move', { roomId: revealed.body.round.moveTargets[0] })).status, 200);
+    assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
+  }
+  assert.equal((await action(request, first, 'silent_reveal', { index: 3 })).status, 200);
+  const archive = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  const [room] = archive.rooms;
+  room.play.interruption = { kind: 'noise', responders: [second.playerId, first.playerId, hako.playerId],
+    passed: [second.playerId], deaths: [{ playerId: first.playerId }], restorePowers: structuredClone(room.play.powers) };
+  await writeFile(saved.dataFile, JSON.stringify(archive));
+  await saved.restart();
+  let state = (await snapshot(request, first)).body;
+  assert.deepEqual(state.round.interruption, { kind: 'noise', canRespond: true });
+  assert.deepEqual((await snapshot(request, second)).body.round.interruption, { kind: 'noise', canRespond: false });
+  assert.equal((await action(request, second, 'extinguisher_response', { use: true })).status, 409);
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
+  assert.equal((await action(request, first, 'extinguisher_response', { use: true, expectedVersion: state.version - 1 })).status, 409);
+  assert.equal((await action(request, first, 'extinguisher_response', { use: 'true' })).status, 409);
+  const bytes = await readFile(saved.dataFile, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.equal((await action(request, first, 'extinguisher_response', { use: true, expectedVersion: state.version })).status, 503);
+    assert.deepEqual((await snapshot(request, first)).body, state);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  const results = await Promise.all([0, 1].map(() => action(request, first, 'extinguisher_response', {
+    use: true, expectedVersion: state.version,
+  })));
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 409]);
+  const accepted = results.find(result => result.status === 200).body;
+  assert.equal(accepted.version, state.version + 1);
+  assert.equal(accepted.round.phase, 'visitor_reveal');
+  assert.equal(accepted.round.interruption, null);
+  assert.equal(accepted.round.inventory.tokens.some(token => token.type === 'extinguisher'), false);
+  assert.equal((await action(request, hako, 'begin_hako_action')).status, 409);
+  assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
+  const disk = JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms[0].play;
+  assert.equal(disk.interruption, null);
+  assert.equal(disk.removedTokens.filter(token => token.type === 'extinguisher').length, 1);
+  assert.equal(disk.round.visitors.find(visitor => visitor.id === first.playerId).status, 'alive');
+  await checkRestart(saved, people);
+  state = (await snapshot(request, first, { poll: true })).body;
+  assert.equal(state.round.interruption, null);
+  assert.equal(state.round.phase, 'visitor_reveal');
+  assert.equal(state.round.inventory.tokens.some(token => token.type === 'extinguisher'), false);
 });
 
 test('stored lobbies recover identities, readiness, presence and multiple rooms; leaving stays final', async t => {

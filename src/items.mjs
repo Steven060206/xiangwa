@@ -1,6 +1,7 @@
 import { getTile, getLogicalRoomId, getLogicalRooms } from './maps.mjs';
 import { getNoiseEffectsView } from './noise-effects.mjs';
 import { INITIAL_ITEMS } from './preparation.mjs';
+import { recordPowerActivation } from './powers.mjs';
 
 const ITEM_NAMES = {
   spirit_pen: '笔仙', ventriloquist_doll: '腹语人偶', nightmare_letter: '噩梦的来信',
@@ -200,6 +201,7 @@ export function answerItem(play, id, action, ctx) {
   if (!options.some(option => option.id === JSON.stringify(action.answer))) {
     throw new Error(ctx.canLie() ? '请选择合法的道具回答。' : '虚假的回应未生效，须如实回答。');
   }
+  if (ctx.canLie()) recordPowerActivation(play, 9);
   const event = { kind: 'item_answer', itemId: resolution.itemId, userId: resolution.userId, answer: action.answer,
     ...(resolution.roomId ? { roomId: resolution.roomId } : {}),
     ...(resolution.itemId === 'ventriloquist_doll' ? { notebooks: clone(resolution.notebooks) } : {}) };

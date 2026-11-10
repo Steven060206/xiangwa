@@ -650,7 +650,7 @@ function noiseControls(container, state, locked, action, silentCards) {
       skip.title = '连续翻牌尚未完成，不能持牌跳过。';
     }
   }
-  if (effects.maryPlayerId) section.append(node('p', 'small-note', `NO.8 我的玛丽小姐：${playerName(state, effects.maryPlayerId)}受诅咒，行动前需翻两张无声标志（保留最后一张盖牌），不能交换或丢弃人偶。`));
+  if (effects.maryPlayerId) section.append(node('p', 'small-note', `${playerName(state, effects.maryPlayerId)}行动前需翻两张无声标志（保留最后一张盖牌），不能交换或丢弃人偶。`));
   if (effects.canUseBell) section.append(node('p', 'small-note', '额外翻牌已完成，可以消耗标准行动摇铃，也可选择其他行动。'));
   if (effects.bellUserId) section.append(node('p', 'small-note', `${playerName(state, effects.bellUserId)}已摇铃：${round.phase === 'hako_phase' ? '本次' : '下一次'}箱娃阶段禁止设置危险度B或C的能力。`));
   container.append(section);

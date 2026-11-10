@@ -89,7 +89,7 @@ function forcedPeek(container, state, locked, action) {
   if (resolution?.kind !== 'forced_peek' || resolution.playerId !== state.you) return;
   const controls = node('section', 'exploration-section practice-controls current-response');
   controls.dataset.testid = 'forced-peek';
-  controls.append(node('h3', '', 'NO.6 好想打开它 · 强制窥探'), node('p', 'small-note', '你的原行动被打断。选择当前房间中一个有标志的角落进行窥探。'));
+  controls.append(node('h3', '', '强制窥探'), node('p', 'small-note', '你的原行动被打断。选择当前房间中一个有标志的角落进行窥探。'));
   const target = select(controls, 'forced-peek-target', '选择窥探角落', (resolution.cornerIds || []).map(id => ({ id, name: cornerName(id) })), locked);
   const nightVision = state.round.inventory?.items?.some(item => item.id === 'night_vision')
     ? checkbox(controls, 'forced-peek-use-night-vision', '使用夜视仪：发现手记时领取未选道具', locked) : null;
@@ -210,14 +210,14 @@ function publicPowers(container, state, powers) {
     const row = node('div');
     row.dataset.testid = 'power-slot';
     row.dataset.slot = slot.slot;
-    row.append(node('dt', '', slot.slot === 0 ? '左侧能力栏' : '右侧能力栏'), node('dd', '', !slot.occupied ? '空栏' : slot.card && (isHako || slot.faceUp) ? cardName(slot.card) : '背面能力'));
+    row.append(node('dt', '', slot.slot === 0 ? '左侧能力栏' : '右侧能力栏'), node('dd', '', !slot.occupied ? '空栏' : isHako && slot.card ? cardName(slot.card) : '背面能力'));
     slots.append(row);
   }
   section.append(slots, node('p', 'small-note', `箱娃手牌 ${powers.handCount ?? 0} 张 · 牌库 ${powers.deckCount ?? 0} 张`));
   const cryCount = node('p', 'small-note', `累计哭喊 ${powers.cryCount ?? 0} 次 · 第10次哭喊保底「绝望时刻」。`);
   cryCount.dataset.testid = 'power-cry-count';
   section.append(cryCount);
-  if (powers.pendingBehindYou) {
+  if (isHako && powers.pendingBehindYou) {
     const effect = node('p', 'small-note', 'NO.5 我在你身后已发动：下一箱娃阶段开始时、移动前，结算与箱娃同房的访问者死亡；届时公开八片手记也结算与箱人同房的访问者。');
     effect.dataset.testid = 'power-delayed-death';
     section.append(effect);
@@ -227,8 +227,9 @@ function publicPowers(container, state, powers) {
     cry.dataset.testid = 'cry-announcement';
     section.append(cry);
   }
-  if (powers.lastActivation) {
-    const activation = node('p', 'small-note', powers.lastActivation.name ? `箱娃发动了${cardName(powers.lastActivation)}。` : '箱娃发动了能力。');
+  const ownActivation = isHako && powers.lastActivation;
+  if (ownActivation || powers.activationNotice) {
+    const activation = node('p', 'small-note', ownActivation ? `箱娃发动了${cardName(ownActivation)}。` : '箱娃发动了能力。');
     activation.dataset.testid = 'power-last-activation';
     section.append(activation);
   }
@@ -237,7 +238,7 @@ function publicPowers(container, state, powers) {
     doors.dataset.testid = 'blocked-doors';
     section.append(doors);
   }
-  if (powers.ghostCall?.active) section.append(node('p', 'small-note', 'NO.10 鬼来电生效：访问者只能沿最短路径前往客厅，首位到达后全体解除。'));
+  if (powers.ghostCall?.active) section.append(node('p', 'small-note', '移动受限：访问者只能沿最短路径前往客厅，首位到达后全体解除。'));
   if (isHako && powers.stolen) {
     const stolen = node('div');
     stolen.dataset.testid = 'power-stolen';
@@ -312,7 +313,6 @@ function activatePowers(container, state, powers, locked, action) {
       let room;
       let door;
       let steal;
-      const publish = card.id <= 4 ? checkbox(group, `power-public-${option.slot}`, '主动公开本次能力名称', locked || !option.canActivate) : null;
       if (option.rooms?.length) room = select(group, `power-room-${option.slot}`, '选择作用房间', option.rooms, locked || !option.canActivate);
       if (option.doors?.length) door = select(group, `power-door-${option.slot}`, '选择要封锁的门', option.doors.map((value, index) => ({ id: index, name: value.name || `${roomName(value.fromRoomId)} — ${roomName(value.toRoomId)}` })), locked || !option.canActivate);
       if (card.id === 7) {
@@ -324,7 +324,6 @@ function activatePowers(container, state, powers, locked, action) {
       if (card.id === 8) group.append(node('p', 'small-note', '诅咒从人偶持有者的下次翻牌回合起生效，本次不补翻。'));
       const activate = button(`发动${cardName(card)}`, 'activate-power', locked || !option.canActivate || Boolean(steal && !steal.value), () => {
         const payload = { slot: option.slot };
-        if (publish?.checked) payload.public = true;
         if (room) payload.roomId = room.value;
         if (door) {
           const target = option.doors[Number(door.value)];
@@ -407,7 +406,7 @@ function extinguisherControls(container, state, locked, action) {
   if (!interruption?.canRespond || state.round.result) return;
   const controls = node('section', 'exploration-section practice-controls current-response');
   controls.dataset.testid = 'extinguisher-response';
-  controls.append(node('h3', '', '灭火器 · 打断响应'), node('p', 'small-note', interruption.kind === 'noise' ? '是否消耗灭火器，直接跳过本次箱娃行动阶段？' : '是否消耗灭火器，使本次“NO.5 我在你身后”无效，并跳过箱娃行动阶段？'));
+  controls.append(node('h3', '', '灭火器 · 打断响应'), node('p', 'small-note', '你翻出的无声数字使累计超过10。是否消耗灭火器，跳过本次箱娃行动阶段？'));
   controls.append(button('使用灭火器', 'extinguisher-use', locked, () => action('extinguisher_response', { use: true })), button('放弃本次响应', 'extinguisher-pass', locked, () => action('extinguisher_response', { use: false }), true));
   container.append(controls);
 }

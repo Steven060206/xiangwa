@@ -14,7 +14,7 @@ function state(version = 1, you = 'visitor-a') {
       hako: { playerId: 'hako' }, silent: { turnPlayerId: 'visitor-b' },
       inventory: { tokens: [], items: [] }, notebooks: [], publicDiscoveries: [],
       exchangeOffers: [], sharedTokens: null, resolution: null, interruption: null,
-      powers: { slots: [], announcement: null, lastActivation: null },
+      powers: { slots: [], announcement: null, lastActivation: null, activationNotice: null },
       items: { result: null, roomOptions: [{ id: 'living_room', name: '客厅' }] },
       safe: { opened: false }, result: null,
     },
@@ -63,7 +63,9 @@ test('acquired token has its concrete name, rule explanation, privacy and symbol
     id: 'extinguisher', type: 'extinguisher',
   })));
   assert.match(extinguisher.body, /无声累计超过10/);
-  assert.match(extinguisher.body, /“NO\.5 我在你身后”发动的响应窗口/);
+  assert.match(extinguisher.body, /持有者在自己的回合/);
+  assert.match(extinguisher.body, /进入箱娃阶段后，使用时机结束/);
+  assert.doesNotMatch(extinguisher.body, /NO\.5|发动响应窗口/);
 });
 
 test('initial and later visitor items include the actual card description', () => {
@@ -152,38 +154,94 @@ test('private peek discoveries come only from the filtered resolution, including
   })), []);
 });
 
-test('anonymous abilities remain unnamed and repeated anonymous activations are recognised from new logs', () => {
+test('anonymous abilities use their notice serial, including repeat answers in the same cycle', () => {
   const initial = state();
   const tracker = trackerWith(initial);
   const activated = nextState(initial, value => {
-    value.round.powers.lastActivation = { cycle: 3 };
-    value.log.push('箱娃发动了能力。');
+    value.round.powers.activationNotice = { serial: 1, cycle: 3 };
   });
   const [first] = tracker.receive(activated);
   assert.equal(first.title, '箱娃发动了能力');
   assert.match(first.body, /名称未公开/);
   assert.doesNotMatch(JSON.stringify(first), /NO\.|动来动去|打不开的门|powerId/);
-  assert.equal(first.highlight, false);
+  assert.equal(first.highlight, true);
   assert.equal(first.symbol, 'power');
-  const repeat = nextState(activated, value => value.log.push('箱娃发动了能力。'));
+  assert.deepEqual(tracker.receive(nextState(activated, value => value.log.push('箱娃发动了能力。'))), [],
+    'A matching old log does not represent another activation');
+  const repeat = nextState(activated, value => { value.round.powers.activationNotice.serial = 2; });
+  repeat.version++;
   assert.equal(tracker.receive(repeat)[0].title, '箱娃发动了能力');
+  assert.deepEqual(tracker.receive(structuredClone(repeat)), []);
+  assert.deepEqual(tracker.receive(nextState(repeat)), []);
 });
 
-test('public and private power names follow the already filtered activation metadata', () => {
+test('a silently emptied ability slot creates no visitor activation event', () => {
+  const initial = state();
+  initial.round.powers.activationNotice = { serial: 2, cycle: 1 };
+  initial.round.powers.slots = [{ slot: 0, occupied: true, faceUp: false }];
+  const tracker = trackerWith(initial);
+  const next = nextState(initial, value => {
+    value.round.powers.slots = [{ slot: 0, occupied: false }];
+  });
+  assert.deepEqual(tracker.receive(next), []);
+});
+
+test('hako private power names stay private while anonymous notices have their own serial', () => {
   const initial = state(1, 'hako');
   const tracker = trackerWith(initial);
   const activated = nextState(initial, value => {
-    value.round.powers.lastActivation = { powerId: 2, name: '马上就到哟', public: false, cycle: 1 };
+    value.round.powers.lastActivation = { powerId: 2, name: '马上就到哟', cycle: 1 };
   });
   const [own] = tracker.receive(activated);
   assert.equal(own.privateLabel, '仅你可见');
   assert.match(own.title, /马上就到哟/);
   const publicAbility = nextState(activated, value => {
-    value.round.powers.lastActivation = { powerId: 7, name: '快把它给我', public: true, cycle: 1 };
+    value.round.powers.lastActivation = { powerId: 7, name: '快把它给我', cycle: 1 };
+    value.round.powers.activationNotice = { serial: 1, cycle: 1 };
   });
   const [publicEvent] = tracker.receive(publicAbility);
-  assert.equal(publicEvent.privateLabel, '全员可见');
+  assert.equal(publicEvent.privateLabel, '仅你可见');
   assert.equal(publicEvent.highlight, true);
+});
+
+test('refresh, reconnect and undo establish quiet notice baselines without erasing history', () => {
+  const initial = state();
+  initial.round.powers.activationNotice = { serial: 4, cycle: 2 };
+  const tracker = trackerWith(initial);
+  assert.deepEqual(tracker.receive(structuredClone(initial)), []);
+  const activated = nextState(initial, value => { value.round.powers.activationNotice.serial = 5; });
+  assert.equal(tracker.receive(activated)[0].title, '箱娃发动了能力');
+  tracker.resetBaseline();
+  const reconnected = nextState(activated, value => { value.round.powers.activationNotice.serial = 8; });
+  assert.deepEqual(tracker.receive(reconnected), []);
+  assert.equal(tracker.items().length, 1);
+  const undone = nextState(reconnected, value => {
+    value.log.push('访问者甲 撤销了上一步。');
+    value.round.powers.activationNotice.serial = 7;
+  });
+  assert.deepEqual(tracker.receive(undone).map(event => event.title), ['已撤销上一步']);
+  assert.deepEqual(tracker.receive(nextState(undone)), []);
+  const later = nextState(undone, value => { value.round.powers.activationNotice.serial = 8; });
+  later.version++;
+  assert.equal(tracker.receive(later)[0].title, '箱娃发动了能力');
+});
+
+test('a skipped anonymous notice is not identified as hako\'s later silent ability', () => {
+  const initial = state(1, 'hako');
+  const tracker = trackerWith(initial);
+  const combined = nextState(initial, value => {
+    value.round.powers.activationNotice = { serial: 1, cycle: 1 };
+    value.round.powers.lastActivation = { powerId: 4, name: '动来动去', cycle: 1 };
+  });
+  const events = tracker.receive(combined);
+  assert.deepEqual(events.map(event => event.title), ['箱娃发动了能力', '箱娃发动了NO.4 动来动去']);
+  assert.equal(events[0].privateLabel, '全员可见');
+  assert.equal(events[1].privateLabel, '仅你可见');
+  const more = nextState(combined, value => { value.round.powers.activationNotice.serial = 3; });
+  const [notice, duplicate] = tracker.receive(more);
+  assert.equal(notice.title, '箱娃发动了能力');
+  assert.match(notice.body, /共发动了2次/);
+  assert.equal(duplicate, undefined);
 });
 
 test('ordinary turn and hako stage changes stay in history without opening a highlight', () => {

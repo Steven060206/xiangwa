@@ -22,13 +22,24 @@ export function rememberAction(room, before, playerId, type, label) {
   }].slice(-40);
 }
 
+function undoLabel(room, last) {
+  if (last?.type === 'activate_power') {
+    const id = room.play?.powers?.lastActivation?.powerId;
+    return id >= 5 && id <= 10 ? '箱娃发动了能力。' : '箱娃操作';
+  }
+  if (['power_rearrange', 'inspect_path_room'].includes(last?.type)) return '箱娃操作';
+  if (last?.type === 'answer_item' && last.label !== '箱娃发动了能力。') return '箱娃完成了道具询问的回答。';
+  return last?.label || '';
+}
+
 export function undoView(room, playerId) {
   const last = room.undoHistory?.at(-1);
+  const label = undoLabel(room, last);
   return {
     available: Boolean(last), steps: room.undoHistory?.length || 0,
     mode: last?.direct && last.actorId === playerId ? 'direct' : 'vote',
-    label: last?.label || '', actorId: last?.actorId || null,
-    pending: room.undoPending ? structuredClone(room.undoPending) : null,
+    label, actorId: last?.actorId || null,
+    pending: room.undoPending ? { ...structuredClone(room.undoPending), label } : null,
     paused: Boolean(room.undoPaused), canResume: room.hostId === playerId && Boolean(room.undoPaused),
   };
 }
@@ -61,7 +72,7 @@ export function applyUndo(room, player, input, onlineIds) {
       return `${player.name} 撤销了上一步。`;
     }
     room.undoPending = { id: randomUUID(), requestedBy: player.id, requiredIds,
-      approvedIds: [player.id], label: last.label };
+      approvedIds: [player.id], label: undoLabel(room, last) };
     return `${player.name} 请求撤销上一步，等待在线真人同意。`;
   }
   if (input.type === 'undo_resume') {

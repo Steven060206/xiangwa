@@ -300,28 +300,52 @@ test('NO6 interruption is followed by the affected bot selecting and resolving a
   assert.equal(result.action.type, 'resolve_peek');
 });
 
-test('extinguisher owners respond to actual overflow and lethal power windows while other bots wait', () => {
-  for (const kind of ['noise', 'power']) {
-    let play = fixture();
-    play.inventories[first].tokens.push(piece('bot-extinguisher', 'extinguisher'));
-    if (kind === 'noise') {
-      play.round.silent.total = 9;
-      play = applyPlayAction(play, first, { type: 'silent_reveal', index: 5 });
-    } else {
-      play = stage(play);
-      play.round.hidingCornerId = 'hall_clock';
-      slot(play, 5);
-      play = applyPlayAction(play, hakoId, { type: 'begin_hako_action' });
-      play = applyPlayAction(play, hakoId, { type: 'activate_power', slot: 0 });
+test('four and five player bots use only their own overflow extinguisher while all other holders wait', () => {
+  for (const visitorIds of [visitors, [...visitors, 'visitor-four']]) {
+    const allIds = [hakoId, ...visitorIds];
+    const allPlayers = allIds.map(id => ({ id, name: id, isBot: true }));
+    for (const triggerId of visitorIds) {
+      let play = fixture('deduction', visitorIds);
+      for (const id of visitorIds) play.inventories[id].tokens.push(piece(`bot-extinguisher-${id}`, 'extinguisher'));
+      Object.assign(play.round.silent, { turnPlayerId: triggerId, total: 9 });
+      play = applyPlayAction(play, triggerId, { type: 'silent_reveal', index: 5 });
+      for (const id of allIds) {
+        const action = decide({ phase: 'practice', you: id, hostId: human, players: allPlayers,
+          round: getPlayView(play, id) });
+        assert.deepEqual(action, id === triggerId ? { type: 'extinguisher_response', use: true } : null);
+      }
+      play = applyPlayAction(play, triggerId, { type: 'extinguisher_response', use: true });
+      assert.equal(play.interruption, null);
+      assert.equal(play.round.silent.phase, 'visitor_reveal');
+      assert.equal(play.round.silent.turnPlayerId, triggerId);
+      assert.equal(play.inventories[triggerId].tokens.some(token => token.type === 'extinguisher'), false);
     }
-    assert.equal(play.interruption.kind, kind);
-    assert.equal(decide(snapshot(play, hakoId)), null);
-    assert.equal(decide(snapshot(play, second)), null);
-    const result = botAct(play, first);
-    assert.deepEqual(result.action, { type: 'extinguisher_response', use: true });
-    assert.equal(result.play.interruption, null);
-    assert.equal(result.play.round.silent.phase, 'visitor_reveal');
   }
+});
+
+test('bots never use another turn extinguisher or reopen an extinguisher response for NO.5', () => {
+  let play = fixture();
+  play.inventories[second].tokens.push(piece('off-turn-extinguisher', 'extinguisher'));
+  play.round.silent.total = 9;
+  play = applyPlayAction(play, first, { type: 'silent_reveal', index: 5 });
+  assert.equal(play.interruption, null);
+  assert.equal(decide(snapshot(play, second)), null);
+  const passed = botAct(play, hakoId);
+  assert.deepEqual(passed.action, { type: 'pass_noise_reaction' });
+  play = passed.play;
+  slot(play, 5);
+  play = applyPlayAction(play, hakoId, { type: 'begin_hako_action' });
+  play = applyPlayAction(play, hakoId, { type: 'activate_power', slot: 0 });
+  assert.equal(play.interruption, null);
+  assert.equal(decide(snapshot(play, second)), null);
+  assert.equal(botAct(play, hakoId).action.type, 'inspect_hiding_room');
+  // Older NO.5 windows cannot make a holder respond or leave the hako bot stuck.
+  play.interruption = { kind: 'power', responders: [second], passed: [], deaths: [], restorePowers: structuredClone(play.powers) };
+  assert.equal(decide(snapshot(play, second)), null);
+  const next = botAct(play, hakoId);
+  assert.equal(next.action.type, 'inspect_hiding_room');
+  assert.equal(next.play.interruption, null);
+  assert.deepEqual(next.play.powers.pendingBehindYou, { cycle: 2 });
 });
 
 test('bots accept valid gifts and reject exchanges requesting nonexistent or excessive possessions', () => {

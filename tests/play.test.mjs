@@ -865,7 +865,13 @@ test('current possessions can be privately shown to a living roommate during eve
       play.tokens.hall_clock = token('unshared-peek', 'password', { number: 6 });
       play = peek(reveal(play), 'hall_clock');
     }
-    if (window === 'interruption') play.interruption = { kind: 'noise', responders: [second], passed: [] };
+    if (window === 'interruption') {
+      play.round.silent.turnPlayerId = second;
+      play.round.silent.total = 9;
+      play.inventories[second].tokens.push(token('roommate-extinguisher', 'extinguisher'));
+      play = act(play, second, { type: 'silent_reveal', index: 5 });
+      assert.equal(getPlayView(play, second).interruption.canRespond, true);
+    }
     if (window === 'hako') play = enterHakoStage(play);
     if (window === 'multiple_reveals') play.round.silent.revealsRemaining = 1;
     const control = structuredClone({ silent: play.round.silent, pending: play.round.pendingAction,

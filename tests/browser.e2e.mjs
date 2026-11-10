@@ -602,11 +602,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.powers.handCount, 2, 'A used ordinary ability returns beside the innate NO.11 in hako hand');
   assert.deepEqual(state.round.powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
   for (const page of pages) {
-    const activationText = await page.getByTestId('power-last-activation').innerText();
-    if (page === hakoPage) assert.match(activationText, /发动了NO\.1 就在你身旁/);
+    if (page === hakoPage) assert.match(await page.getByTestId('power-last-activation').innerText(), /发动了NO\.1 就在你身旁/);
     else {
-      assert.match(activationText, /发动了能力/);
-      assert.equal(activationText.includes('就在你身旁'), false, 'NO.1 stays anonymous unless Hako explicitly reveals it');
+      assert.equal(await page.getByTestId('power-last-activation').count(), 0);
+      assert.match(await page.locator('[data-testid="power-slot"][data-slot="0"]').innerText(), /空栏/);
     }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
       'Power preparation and activation controls fit desktop and mobile viewports');

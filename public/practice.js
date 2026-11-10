@@ -112,12 +112,12 @@ function silentCards(state, locked, action) {
       const skip = button('持牌跳过', `skip-card-${card.index}`, locked || zeroRevealed || ghostCall, () => action('silent_skip', { index: card.index }), true);
       skip.classList.add('silent-skip');
       if (zeroRevealed) skip.title = '数字0已翻开，本轮不能跳过。';
-      if (ghostCall) skip.title = 'NO.10 鬼来电生效中，必须翻牌并沿最短路线移动。';
+      if (ghostCall) skip.title = '移动受限，必须翻牌并沿最短路线前往客厅。';
       cell.append(skip);
     }
     grid.append(cell);
   }
-  section.append(grid, node('p', 'small-note', ghostCall ? 'NO.10 鬼来电生效中，不能持牌跳过。照常翻牌；无路可走时自动结束本次行动，等待解封。' : zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
+  section.append(grid, node('p', 'small-note', ghostCall ? '移动受限，不能持牌跳过。照常翻牌；无路可走时自动结束本次行动，等待解封。' : zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
   return section;
 }
 

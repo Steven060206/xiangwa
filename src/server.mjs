@@ -6,7 +6,7 @@ import {
   createItemDraft, chooseItem, getItemDraftView, createOpening, getOpeningView,
   chooseSecrets, placeRemains, inspectInitialRoom, chooseInitialHiding, chooseInitialPower,
 } from './preparation.mjs';
-import { createPlay, applyPlayAction, getPlayView } from './play.mjs';
+import { createPlay, applyPlayAction, getPlayView, normalizePlayForRules } from './play.mjs';
 import { copyRoom, createRoomStore } from './storage.mjs';
 import { chooseBotAction } from './bots.mjs';
 import { checkpoint, clearUndo, rememberAction, undoView, applyUndo, membershipActions } from './undo.mjs';
@@ -110,6 +110,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
   let closing = false;
   try {
     for (const room of rooms.values()) {
+      if (room.play) normalizePlayForRules(room.play);
       for (const player of room.players) snapshot(room, player.id);
     }
   } catch (error) {
@@ -342,6 +343,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       try {
         const onlineIds = room.players.filter(candidate => candidate.connections.size || polling.has(candidate.id)).map(candidate => candidate.id);
         message = applyUndo(room, player, input, onlineIds);
+        if (room.play) normalizePlayForRules(room.play);
       } catch (error) { fail(409, error.message); }
       mapPreviews.delete(room.code);
       publish(room, message);
@@ -526,6 +528,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
       case 'extinguisher_response':
       case 'surrender': {
         if (!room.play) fail(409, '请先完成开局配置。');
+        const previousNotice = room.play.powers.activationNotice?.serial;
         try {
           room.play = applyPlayAction(room.play, player.id, input);
         }
@@ -557,13 +560,17 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
           set_power: '箱娃盖放了一张可用能力。',
           recall_power: '箱娃回收了可用能力。',
           begin_hako_action: '访问者闭眼，箱娃开始行动。',
-          activate_power: '箱娃发动了能力。',
-          power_rearrange: '箱娃完成了能力处理。',
-          inspect_path_room: '箱娃正在行动。',
+          activate_power: '',
+          power_rearrange: '',
+          inspect_path_room: '',
           extinguisher_response: input.use ? `${player.name} 使用灭火器，跳过本次箱娃行动。` : '灭火器响应已完成。',
           surrender: `${player.name}${input.agree === false ? ' 撤回了投降提议。' : ' 提出了投降。'}`,
         }[input.type];
-        if (room.play.round.pendingAction?.type === 'free') message = `${player.name} 声明了自由行动，等待箱娃确认。`;
+        const pending = room.play.round.pendingAction;
+        if (pending?.type === 'free' && pending.actionType === input.type && pending.playerId === player.id) {
+          message = `${player.name} 声明了自由行动，等待箱娃确认。`;
+        }
+        if (room.play.powers.activationNotice?.serial !== previousNotice) message = '箱娃发动了能力。';
         break;
       }
       case 'remove_player': {
@@ -593,7 +600,7 @@ export function createGameServer({ deck, silentNumbers, createPlayState = create
         fail(400, '未知操作。');
     }
     if (membershipActions.has(input.type) || input.type === 'restart_game') clearUndo(room);
-    else rememberAction(room, before, player.id, input.type, message);
+    else rememberAction(room, before, player.id, input.type, message || '箱娃操作');
     if (!player.isBot) room.undoPaused = false;
     mapPreviews.delete(room.code);
     publish(room, message);

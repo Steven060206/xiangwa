@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGameServer } from '../src/server.mjs';
@@ -11,11 +11,12 @@ const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children',
 
 async function game(t, createPlayState = createPlay) {
   const directory = await mkdtemp(join(tmpdir(), 'hako-feedback-http-'));
+  const dataFile = join(directory, 'rooms.json');
   let server, base;
   async function restart() {
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState,
-      dataFile: join(directory, 'rooms.json') });
+      dataFile });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -71,7 +72,7 @@ async function game(t, createPlayState = createPlay) {
   await act(hako, 'place_remains', { cornerId: 'living_sofa' });
   await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
   await act(hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  return { people, act, action, snapshot, restart };
+  return { people, act, action, snapshot, restart, dataFile };
 }
 
 function moveToken(play, tokenId, destination) {
@@ -226,7 +227,7 @@ test('global discoveries preserve action and inventory privacy while cry markers
   assert.equal((await g.snapshot(third)).round.powers.announcement, null);
 });
 
-test('door ability metadata stays private unless hako explicitly publishes the activation', { timeout: 20000 }, async t => {
+test('door activation stays silent across polling and restart even when an old client requests publication', { timeout: 20000 }, async t => {
   for (const publish of [false, true]) {
     const g = await game(t, (setup, opening, options) => {
       const play = createPlay(setup, opening, options);
@@ -250,18 +251,83 @@ test('door ability metadata stays private unless hako explicitly publishes the a
     const option = stage.round.powers.activationOptions.find(option => option.card.id === 3);
     assert.ok(option.canActivate && option.doors.length);
     const door = option.doors[0];
+    const before = await g.snapshot(first);
     await g.act(hako, 'activate_power', { slot: 0, fromRoomId: door.fromRoomId,
       toRoomId: door.toRoomId, ...(publish ? { public: true } : {}) });
     const own = await g.snapshot(hako);
     assert.equal(own.round.blockedDoors.length, 1);
     const visitor = await g.snapshot(first, true);
-    assert.equal(visitor.round.blockedDoors.length, publish ? 1 : 0);
-    assert.equal(visitor.round.powers.lastActivation.powerId, publish ? 3 : undefined);
-    assert.equal(visitor.round.powers.lastActivation.name, publish ? '打不开的门' : undefined);
+    assert.equal(visitor.round.blockedDoors.length, 0);
+    assert.equal(visitor.round.powers.lastActivation, null);
+    assert.equal(visitor.round.powers.activationNotice, null);
+    assert.deepEqual(visitor.round.powers.slots[0], { slot: 0, occupied: false });
+    assert.deepEqual(visitor.log, before.log);
+    assert.equal(visitor.undo.label, '箱娃操作');
     assert.equal(JSON.stringify(visitor).includes('sourcePowerId'), false);
     await g.restart();
     const restored = await g.snapshot(first);
     assert.deepEqual(restored.round.blockedDoors, visitor.round.blockedDoors);
     assert.deepEqual(restored.round.powers.lastActivation, visitor.round.powers.lastActivation);
+    assert.equal(restored.round.powers.activationNotice, null);
+    assert.equal(restored.undo.label, visitor.undo.label);
   }
+});
+
+test('legacy pending NO.4 empties its slot on restart and undo while retaining only the private rearrangement', { timeout: 20000 }, async t => {
+  const g = await game(t, (setup, opening, options) => {
+    const play = createPlay(setup, opening, options);
+    const inHand = play.powers.hand.findIndex(card => card.id === 4);
+    const card = inHand >= 0 ? play.powers.hand.splice(inHand, 1)[0] : { id: 4, ignoreThreshold: false };
+    play.powers.deck = play.powers.deck.filter(id => id !== 4);
+    play.powers.slots[0] = { ...card, faceUp: false };
+    return play;
+  });
+  const [hako, first] = g.people;
+  const candidates = (await g.snapshot()).opening.initialPowerOptions;
+  await g.act(hako, 'choose_initial_power', { powerId: candidates[0].id });
+  await nextHakoStage(g);
+  await g.act(hako, 'begin_hako_action');
+  const activated = await g.act(hako, 'activate_power', { slot: 0, roomId: 'bathroom_room' });
+  const order = activated.round.powers.rearrangement.corners.map(corner => corner.id).reverse();
+  assert.ok(order.length);
+
+  function makeLegacy(play) {
+    play.powers.hand = play.powers.hand.filter(card => card.id !== 4);
+    play.powers.slots[0] = { id: 4, ignoreThreshold: false, faceUp: false };
+    play.powers.rearrangement.slot = 0;
+  }
+  async function rewriteSaved(change) {
+    const archive = JSON.parse(await readFile(g.dataFile, 'utf8'));
+    change(archive.rooms[0]);
+    await writeFile(g.dataFile, JSON.stringify(archive));
+    await g.restart();
+  }
+  async function checkPending() {
+    const own = await g.snapshot(hako);
+    assert.equal(own.round.powers.slots[0].occupied, false);
+    assert.equal(own.round.powers.hand.filter(card => card.id === 4).length, 1);
+    assert.deepEqual(own.round.powers.rearrangement, activated.round.powers.rearrangement);
+    const visitor = await g.snapshot(first);
+    assert.deepEqual(visitor.round.powers.slots[0], { slot: 0, occupied: false });
+    assert.equal(visitor.round.powers.lastActivation, null);
+    assert.equal(visitor.round.powers.activationNotice, null);
+    assert.equal(Object.hasOwn(visitor.round.powers, 'rearrangement'), false);
+    assert.equal(JSON.stringify(visitor).includes('动来动去'), false);
+    return own;
+  }
+
+  await rewriteSaved(room => makeLegacy(room.play));
+  await checkPending();
+  const completed = await g.act(hako, 'power_rearrange', { order });
+  assert.equal(completed.round.powers.rearrangement, undefined);
+  assert.equal((await g.snapshot(first)).undo.label, '箱娃操作');
+  await rewriteSaved(room => makeLegacy(room.undoHistory.at(-1).before.play));
+  const beforeUndo = await g.snapshot(hako);
+  await g.act(hako, 'undo_request', { version: beforeUndo.version });
+  await checkPending();
+  const retried = await g.act(hako, 'power_rearrange', { order });
+  assert.equal(retried.round.powers.rearrangement, undefined);
+  const visitor = await g.snapshot(first, true);
+  assert.equal(visitor.round.powers.activationNotice, null);
+  assert.equal(visitor.undo.label, '箱娃操作');
 });

@@ -69,7 +69,7 @@ export function createPowers(opening) {
     deck: [...opening.powerDeck].filter(id => id !== 12), slots: [null, null],
     removed: [12], used: [], cooldowns: {}, stageCycle: null,
     cryUsed: false, cryCount: 0, manageUsed: false, step: 'preparation', announcement: null,
-    lastDraw: null, lastActivation: null, movement: {}, rearrangement: null, falseCryPending: false,
+    lastDraw: null, lastActivation: null, activationNotice: null, movement: {}, rearrangement: null, falseCryPending: false,
     ghostCall: { active: false, mode: 'first_arrival' }, stolen: null, pendingBehindYou: null,
   });
 }
@@ -91,6 +91,13 @@ function allCornerIds(play) { return Object.keys(play.tokens); }
 function atRoom(ctx, cornerId) { return getLogicalRoomId(ctx.roomOf ? ctx.roomOf(cornerId) : roomOf(cornerId)); }
 function phase(play) { return play.round.silent.phase; }
 function cycle(play) { return play.round.silent.cycle; }
+export function recordPowerActivation(play, powerId) {
+  const powers = play.powers;
+  powers.lastActivation = { powerId, name: powerCard(powerId).name, cycle: cycle(play) };
+  if (powerId >= 5 && powerId <= 10) {
+    powers.activationNotice = { serial: (powers.activationNotice?.serial ?? 0) + 1, cycle: cycle(play) };
+  }
+}
 function assertHako(play, id) {
   if (id !== play.round.hakoId) throw new Error('只有箱娃玩家可以管理或发动箱娃之力。');
 }
@@ -111,6 +118,12 @@ function releaseSlot(play, slot) {
   const card = play.powers.slots[slot];
   if (card) play.powers.hand.push({ id: card.id, ignoreThreshold: card.ignoreThreshold === true });
   play.powers.slots[slot] = null;
+}
+export function normalizeLegacyPowerRearrangement(play) {
+  const pending = play.powers.rearrangement;
+  if (!pending || !Object.hasOwn(pending, 'slot')) return;
+  if (play.powers.slots[pending.slot]?.id === 4) releaseSlot(play, pending.slot);
+  delete pending.slot;
 }
 function recordUsed(play, id) {
   if (!play.powers.used.includes(id)) play.powers.used.push(id);
@@ -144,8 +157,8 @@ export function startPowerStage(play, ctx) {
       return killer ? [{ playerId: player.id, killerCornerId: killer.cornerId }] : [];
     });
     powers.pendingBehindYou = null;
-    // The extinguisher window belonged to activation. The delayed effect settles
-    // once at this boundary, before preparation or any further hidden movement.
+    // An already activated effect settles before this stage's actions, even
+    // when the current visitor uses an extinguisher to skip those actions.
     ctx.processDeaths(deaths);
   }
 }
@@ -281,8 +294,7 @@ function activate(play, action, ctx) {
   if (error) throw new Error(error);
   if (powerCard(card).timing === 'stage') assertStageAction(play);
   const interruptedId = powerCard(card).timing === 'interrupt' ? interruptPlayer(play) : null;
-  play.powers.lastActivation = { powerId: card.id, name: powerCard(card).name, cycle: cycle(play),
-    ...(action.public === true ? { public: true } : {}) };
+  recordPowerActivation(play, card.id);
   if (card.id === 1 || card.id === 2) {
     play.powers.movement[card.id === 1 ? 'sameFloor' : 'twoRooms'] = true;
   } else if (card.id === 3) {
@@ -292,23 +304,18 @@ function activate(play, action, ctx) {
       candidate.fromRoomId === fromRoomId && candidate.toRoomId === toRoomId
     ) || (candidate.fromRoomId === toRoomId && candidate.toRoomId === fromRoomId));
     if (!door) throw new Error('只能封锁实际相连的门，不能封锁楼梯或墙壁。');
-    play.round.blockedDoors.push({ from: door.fromRoomId, to: door.toRoomId, sourcePowerId: 3,
-      public: action.public === true });
+    play.round.blockedDoors.push({ from: door.fromRoomId, to: door.toRoomId });
     play.powers.cooldowns[3] = cycle(play) + 1;
   } else if (card.id === 4) {
     const roomId = getLogicalRoomId(action.roomId);
     if (!rooms(play).some(room => room.id === roomId)) throw new Error('请选择本局地图内的房间。');
     const cornerIds = roomCorners(play, roomId, ctx).filter(cornerId => !ctx.actorsAt(cornerId).length);
-    play.powers.rearrangement = { roomId, cornerIds, slot: action.slot };
-    card.faceUp = action.public === true;
-    if (action.public === true) card.public = true;
+    play.powers.rearrangement = { roomId, cornerIds };
+    releaseSlot(play, action.slot);
     return;
   } else if (card.id === 5) {
     play.powers.pendingBehindYou = { cycle: cycle(play) + 1 };
     releaseSlot(play, action.slot);
-    // Keep the existing activation response window. A successful response restores
-    // the pre-activation powers (including this pending effect) and skips the stage.
-    ctx.queueDeaths([]);
     return;
   } else if (card.id === 6) {
     releaseSlot(play, action.slot);
@@ -356,7 +363,6 @@ function rearrange(play, action, ctx) {
   const pieces = order.map(id => play.tokens[id]);
   pending.cornerIds.forEach((id, index) => { play.tokens[id] = pieces[index]; });
   faceDown.forEach(id => { if (play.tokens[id]) play.tokens[id].faceUp = false; });
-  releaseSlot(play, pending.slot);
   play.powers.rearrangement = null;
 }
 function assertStageActionForRearrangement(play) {
@@ -455,23 +461,24 @@ export function getPowersView(play, id) {
   if (!play.powers) return null;
   const powers = normalizePowers(clone(play.powers));
   play = { ...play, powers };
+  normalizeLegacyPowerRearrangement(play);
   const hako = id === play.round.hakoId;
   const preparation = hako && phase(play) === 'hako_phase' && powers.step === 'preparation' && !play.result && !play.resolution;
   const canManage = preparation && !powers.manageUsed;
   const view = {
     slots: powers.slots.map((card, slot) => {
-      const faceUp = card?.faceUp === true && (card.id > 4 || card.public === true);
+      const faceUp = hako && card?.faceUp === true;
       return { slot, occupied: !!card,
-        ...(card ? { faceUp, ...(hako || faceUp ? { card: powerCard(card) } : {}) } : {}),
+        ...(card ? { faceUp, ...(hako ? { card: powerCard(card) } : {}) } : {}),
         ...(hako ? { canRecall: !!card && canManage && !(card.id === 10 && powers.ghostCall.active) } : {}) };
     }),
     handCount: powers.hand.length, deckCount: powers.deck.length,
     announcement: powers.announcement ? { ...clone(powers.announcement), roomId: getLogicalRoomId(powers.announcement.roomId) } : null, step: powers.step,
-    lastActivation: !hako && powers.lastActivation && powers.lastActivation.powerId <= 4
-      && powers.lastActivation.public !== true ? { cycle: powers.lastActivation.cycle } : clone(powers.lastActivation),
+    lastActivation: hako ? clone(powers.lastActivation) : null,
+    activationNotice: powers.activationNotice ? { serial: powers.activationNotice.serial, cycle: powers.activationNotice.cycle } : null,
     canCry: preparation && !powers.cryUsed && !powers.manageUsed,
     cryCount: powers.cryCount,
-    pendingBehindYou: clone(powers.pendingBehindYou ?? null),
+    pendingBehindYou: hako ? clone(powers.pendingBehindYou ?? null) : null,
     canManage, canBegin: preparation,
     ghostCall: { active: powers.ghostCall.active, mode: 'first_arrival' },
   };

@@ -6,8 +6,29 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGameServer } from '../src/server.mjs';
+import { undoView } from '../src/undo.mjs';
 
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
+
+test('legacy undo labels hide ability identities and silent activation announcements', () => {
+  for (const powerId of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+    const room = {
+      play: { powers: { lastActivation: { powerId } } },
+      undoHistory: [{ type: 'activate_power', actorId: 'hako', label: `发动NO.${powerId}` }],
+      undoPending: { id: 'vote', label: `发动NO.${powerId}`, requiredIds: ['visitor'], approvedIds: [] },
+    };
+    const before = structuredClone(room);
+    const view = undoView(room, 'visitor');
+    assert.equal(view.label, powerId <= 4 ? '箱娃操作' : '箱娃发动了能力。');
+    assert.equal(view.pending.label, view.label);
+    assert.doesNotMatch(JSON.stringify(view), /NO\.|powerId/);
+    assert.deepEqual(room, before);
+    for (const type of ['power_rearrange', 'inspect_path_room']) {
+      room.undoHistory[0].type = type;
+      assert.equal(undoView(room, 'visitor').label, '箱娃操作');
+    }
+  }
+});
 
 async function service(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'hako-undo-'));

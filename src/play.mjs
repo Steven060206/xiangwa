@@ -3,7 +3,8 @@ import { createRound, applyRoundAction, getRoundView } from './round.mjs';
 import { finishVisitorAction, finishHakoPhase, removeSilentVisitor } from './silent.mjs';
 import { getRoom, getCornerRoom, getHidingTargets, getMoveTargets } from './movement.mjs';
 import { createPowers, startPowerStage, applyPowerAction, getPowersView, powerCard,
-  powerHidingTargets, restrictPowerMoves, afterPowerMove, hasActivePower, isPowerMoveForced } from './powers.mjs';
+  powerHidingTargets, restrictPowerMoves, afterPowerMove, hasActivePower, isPowerMoveForced,
+  normalizeLegacyPowerRearrangement } from './powers.mjs';
 import { declareItem, resolveItem, answerItem, getItemView, itemResolutionView } from './items.mjs';
 import { revealWithEffects, syncNoiseEffects, getNoiseEffectsView } from './noise-effects.mjs';
 import { getLogicalRoomId } from './maps.mjs';
@@ -168,8 +169,7 @@ function context(play) {
     corners: roomId => corners(play, roomId), actorsAt: cornerId => actorsAt(play, cornerId), tokenView,
     die: (id, cornerId) => die(play, id, cornerId), finishAction: id => finishAction(play, id), powerCard,
     canLie: () => hasActivePower(play, 9), forcePeek: id => forcePeek(play, id),
-    queueDeaths: deaths => queueDeaths(play, deaths), processDeaths: deaths => processDeaths(play, deaths),
-    finishHakoStage: () => skipHakoStage(play),
+    processDeaths: deaths => processDeaths(play, deaths),
   };
 }
 
@@ -205,19 +205,39 @@ function processDeaths(play, deaths) {
     play.inheritanceQueue.push(...heirs);
   }
 }
-function extinguisherOwners(play) {
-  return play.round.visitors.filter(player => player.status === 'alive' && hasToken(play, player.id, 'extinguisher')).map(player => player.id);
+function overflowExtinguisherHolder(play) {
+  const silent = play.round.silent;
+  if (play.result || silent.phase !== 'hako_reaction' || silent.trigger !== 'overflow'
+      || silent.total <= 10 || play.powers.noiseRespondedCycle === silent.cycle) return null;
+  const id = silent.resumePlayerId;
+  return alive(play, id) && hasToken(play, id, 'extinguisher') ? id : null;
 }
-function queueDeaths(play, deaths) {
-  const responders = extinguisherOwners(play);
-  if (responders.length) play.interruption = { kind: 'power', responders, passed: [], deaths: clone(deaths) };
-  else processDeaths(play, deaths);
+function pendingExtinguisherHolder(play) {
+  const window = play.interruption;
+  if (window?.kind !== 'noise') return null;
+  const id = overflowExtinguisherHolder(play);
+  return id && window.responders.includes(id) && !window.passed.includes(id) ? id : null;
+}
+export function normalizePlayForRules(play) {
+  const silent = play.round.silent;
+  delete silent.triggerPlayerId;
+  normalizeLegacyPowerRearrangement(play);
+  const window = play.interruption;
+  if (!window) return;
+  const id = pendingExtinguisherHolder(play);
+  if (id) {
+    play.interruption = { kind: 'noise', responders: [id], passed: [] };
+  } else {
+    play.interruption = null;
+    if (window.kind === 'noise' && silent.phase === 'hako_reaction' && silent.trigger === 'overflow') {
+      play.powers.noiseRespondedCycle = silent.cycle;
+    }
+  }
 }
 function syncNoiseInterruption(play) {
-  if (play.result || play.interruption || play.round.silent.phase !== 'hako_reaction'
-      || play.round.silent.trigger !== 'overflow' || play.powers.noiseRespondedCycle === play.round.silent.cycle) return;
-  const responders = extinguisherOwners(play);
-  if (responders.length) play.interruption = { kind: 'noise', responders, passed: [] };
+  if (play.interruption) return;
+  const id = overflowExtinguisherHolder(play);
+  if (id) play.interruption = { kind: 'noise', responders: [id], passed: [] };
 }
 function finishBlockedMove(play) {
   const id = play.round.silent.turnPlayerId;
@@ -231,38 +251,24 @@ function finishBlockedMove(play) {
   play.lastBlockedWait = { playerId: id, roomId, cycle: play.round.silent.cycle };
   finishAction(play, id);
 }
-function skipHakoStage(play) {
-  if (play.round.silent.phase === 'hako_reaction') {
-    applyRoundAction(play.round, play.round.hakoId, { type: 'pass_noise_reaction' });
-    beginHakoStage(play);
-  }
-  play.ringAllies = [];
-  finishHakoPhase(play.round.silent);
-  play.hakoStage = null;
-  play.powers.step = null;
-  play.interruption = null;
-}
 function respondExtinguisher(play, id, action) {
-  const window = play.interruption;
-  if (!window || !window.responders.includes(id) || window.passed.includes(id) || !alive(play, id)) {
+  if (pendingExtinguisherHolder(play) !== id) {
     throw new Error('当前没有等待你的灭火器响应。');
   }
   if (typeof action.use !== 'boolean') throw new Error('请选择使用灭火器或放弃。');
-  if (action.use) {
-    const held = inventory(play, id);
-    const index = held.tokens.findIndex(token => token.type === 'extinguisher');
-    if (index < 0) throw new Error('你没有携带灭火器。');
-    play.removedTokens.push(held.tokens.splice(index, 1)[0]);
-    if (window.restorePowers) play.powers = window.restorePowers;
-    skipHakoStage(play);
-    return;
-  }
-  window.passed.push(id);
-  if (window.responders.every(responder => window.passed.includes(responder))) {
-    play.interruption = null;
-    if (window.kind === 'noise') play.powers.noiseRespondedCycle = play.round.silent.cycle;
-    else processDeaths(play, window.deaths);
-  }
+  play.interruption = null;
+  play.powers.noiseRespondedCycle = play.round.silent.cycle;
+  if (!action.use) return;
+  const held = inventory(play, id);
+  const index = held.tokens.findIndex(token => token.type === 'extinguisher');
+  play.removedTokens.push(held.tokens.splice(index, 1)[0]);
+  applyRoundAction(play.round, play.round.hakoId, { type: 'pass_noise_reaction' });
+  // The stage boundary still resolves previously scheduled effects.
+  beginHakoStage(play);
+  if (play.result) return;
+  finishHakoPhase(play.round.silent);
+  play.hakoStage = null;
+  play.powers.step = null;
 }
 
 function declarePeek(play, id, action) {
@@ -495,7 +501,7 @@ function recheckMaryDeclaration(play) {
 }
 function assertDollTransfer(play, id, tokenIds) {
   if (play.noiseEffects?.mary?.playerId === id && inventory(play, id).tokens.some(token => token.type === 'doll' && tokenIds.includes(token.id))) {
-    throw new Error('我的玛丽小姐生效中，人偶不能转交、交换、丢弃或用于补位。');
+    throw new Error('人偶受限，不能转交、交换、丢弃或用于补位。');
   }
 }
 function assertHeld(play, id, tokenIds, itemIds) {
@@ -612,6 +618,7 @@ export function applyPlayAction(previous, playerId, action) {
   if (previous.result) throw new Error('本局已经结束。');
   if (!action || typeof action.type !== 'string') throw new Error('请选择回合操作。');
   const play = clone(previous);
+  normalizePlayForRules(play);
   // Saved games may still use the printed sub-area names as room IDs.
   for (const player of play.round.visitors) if (player.roomId) player.roomId = getLogicalRoomId(player.roomId);
   if (action.roomId) action = { ...action, roomId: getLogicalRoomId(action.roomId) };
@@ -629,7 +636,7 @@ export function applyPlayAction(previous, playerId, action) {
     throw new Error('访问者已声明行动，请先等待箱娃确认。');
   }
   if (isPowerMoveForced(play, playerId) && ['peek', 'use_weapon', 'use_item', 'silent_skip'].includes(action.type)) {
-    throw new Error('鬼来电生效中，只能沿最短路径移动至客厅。');
+    throw new Error('当前移动受限，只能沿最短路径移动至客厅。');
   }
   switch (action.type) {
     case 'publish_token': publishToken(play, playerId, action); break;
@@ -655,22 +662,20 @@ export function applyPlayAction(previous, playerId, action) {
       assertAlive(play, playerId);
       if (action.type === 'move') {
         const targets = getRoundView(play.round, playerId).moveTargets;
-        if (!restrictPowerMoves(play, playerId, targets).includes(action.roomId)) throw new Error('鬼来电生效中，只能沿最短路径移动至客厅。');
+        if (!restrictPowerMoves(play, playerId, targets).includes(action.roomId)) throw new Error('当前移动受限，只能沿最短路径移动至客厅。');
       }
       applyRoundAction(play.round, playerId, action); break;
     case 'pass_noise_reaction': applyRoundAction(play.round, playerId, action); break;
     default: {
-      const beforePowers = clone(play.powers);
       if (action.type === 'begin_hako_action' && play.hakoStage) play.hakoStage.publicCorners = publicCorners(play);
       if (!applyPowerAction(play, playerId, action, context(play))) throw new Error('该回合操作尚未实现。');
       if (action.type === 'activate_power' && play.powers.lastActivation?.powerId === 8) recheckMaryDeclaration(play);
-      if (play.interruption?.kind === 'power') play.interruption.restorePowers = beforePowers;
     }
   }
-  syncNoiseEffects(play);
   finishBlockedMove(play);
   checkVictory(play);
   beginHakoStage(play);
+  syncNoiseEffects(play);
   syncNoiseInterruption(play);
   return play;
 }
@@ -784,6 +789,8 @@ function reviewView(play) {
  * hidden allies also share locations. Complete board contents are available only after a result. */
 export function getPlayView(play, playerId) {
   assertPlayer(play, playerId);
+  const extinguisherHolder = pendingExtinguisherHolder(play);
+  if (play.interruption && !extinguisherHolder) play = { ...play, interruption: null };
   const view = getRoundView(play.round, playerId);
   view.totalRounds = play.totalRounds ?? Math.max(0, play.round.silent.cycle - 1) + (play.hakoStage ? 1 : 0);
   view.mode = 'exploration';
@@ -840,15 +847,14 @@ export function getPlayView(play, playerId) {
   view.cornerState = alive(play, playerId) && play.powers.step === 'action' && play.hakoStage?.publicCorners
     ? clone(play.hakoStage.publicCorners) : publicCorners(play);
   view.extraCorners = clone(Object.values(play.extraCorners));
-  view.blockedDoors = play.round.blockedDoors.filter(door => playerId === play.round.hakoId || door.public === true)
+  view.blockedDoors = play.round.blockedDoors.filter(() => playerId === play.round.hakoId)
     .map(({ from, to }) => ({ from: getLogicalRoomId(from), to: getLogicalRoomId(to) }));
   view.blockedWait = play.lastBlockedWait?.cycle === play.round.silent.cycle ? clone(play.lastBlockedWait) : null;
   view.powers = getPowersView(play, playerId);
   view.noiseEffects = getNoiseEffectsView(play, playerId);
   view.items = getItemView(play, playerId, context(play));
   if (!canChoose) view.items.usableItems = [];
-  view.interruption = play.interruption ? { kind: play.interruption.kind,
-    canRespond: play.interruption.responders.includes(playerId) && !play.interruption.passed.includes(playerId) } : null;
+  view.interruption = extinguisherHolder ? { kind: 'noise', canRespond: extinguisherHolder === playerId } : null;
   view.safe = { opened: play.safeOpened, publicNumbers: [...play.publicNumbers], numberOptions: [1, 2, 3, 4, 5, 6] };
   view.discarded = play.discarded.map(entry => ({ playerId: entry.playerId,
     tokens: entry.tokens.map(tokenView), items: clone(entry.items) }));
