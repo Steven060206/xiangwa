@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { clueSummary, renderClueSummary, createHelpUI } from '../public/help.js';
-import { createFeedbackUI } from '../public/feedback-view.js';
 import { createFeedbackTracker } from '../public/feedback.js';
+
+// Node resolves the browser's /shared route as a disk root; keep the real map module in this harness.
+const tileSource = (await readFile(new URL('../public/tile.js', import.meta.url), 'utf8'))
+  .replace("'/shared/maps.mjs'", JSON.stringify(new URL('../src/maps.mjs', import.meta.url).href));
+const feedbackSource = (await readFile(new URL('../public/feedback-view.js', import.meta.url), 'utf8'))
+  .replace("'./tile.js'", JSON.stringify(`data:text/javascript;base64,${Buffer.from(tileSource).toString('base64')}`))
+  .replace("'./feedback.js'", JSON.stringify(new URL('../public/feedback.js', import.meta.url).href));
+const { createFeedbackUI } = await import(`data:text/javascript;base64,${Buffer.from(feedbackSource).toString('base64')}`);
 
 function state(version = 1) {
   return { code: 'ROOM01', you: 'visitor-a', version, phase: 'exploration', log: [],
@@ -54,7 +62,7 @@ function mockDocument(t) {
   doc.dispatchEvent = event => { emitted.push(event.type); return dispatch(event); };
   for (const id of ['event-dialog', 'event-count', 'event-history-toggle', 'event-history-empty', 'event-history-list',
     'event-history', 'event-position', 'event-next', 'event-primary-action', 'event-title', 'event-body',
-    'event-visibility', 'event-symbol', 'event-companions', 'event-toast', 'event-close', 'focus-current-action',
+    'event-visibility', 'event-symbol', 'event-companions', 'event-locate', 'event-toast', 'event-close', 'focus-current-action',
     'room-menu-toggle', 'room-menu', 'room-menu-content']) {
     const element = new Element();
     element.id = id;
@@ -136,6 +144,25 @@ test('help is opt-in, keyboard closable, restores focus and never navigates or s
   assert.equal(emitted.includes('game-navigate'), false);
 });
 
+test('help reflects beta2 dealing, token inheritance, power timing and fixed walkie pairing', t => {
+  const { node } = mockDocument(t);
+  const help = createHelpUI();
+  help.receive(state());
+  const text = textOf(node('help-dialog'));
+  assert.match(text, /随机各发一张不同的初始技能/);
+  assert.match(text, /全部技能牌移出游戏，包含夜视仪/);
+  assert.match(text, /只继承随身标志/);
+  assert.match(text, /没有标志就直接继续/);
+  assert.match(text, /不能选NO\.4作初始能力/);
+  assert.match(text, /前9次实际哭喊不能获得，第10次起依正常牌序抽取，不强制取得/);
+  assert.match(text, /本局固定配对/);
+  assert.match(text, /双方各自选择标志并确认/);
+  assert.match(text, /被抢后本局永久失效/);
+  assert.match(text, /NO\.1—4发动无公开宣告/);
+  assert.match(text, /NO\.9的真、假回答同样匿名宣告/);
+  assert.doesNotMatch(text, /开局依次选道具|交付全部库存|即使库存为空|第10次.*保证取得/);
+});
+
 test('same-operation snapshots keep reading position; role, room and restart changes clear old context', t => {
   const { node } = mockDocument(t);
   const help = createHelpUI();
@@ -188,7 +215,7 @@ test('ordinary highlighted events wait while help is read, then resume without s
   assert.equal(node('event-dialog').open, false);
 });
 
-for (const scenario of ['response', 'death', 'victory']) test(`${scenario} interrupts help and shows a single event dialog`, t => {
+for (const scenario of ['response', 'walkie_pair', 'walkie_show', 'death', 'victory']) test(`${scenario} interrupts help and shows a single event dialog`, t => {
   const { node, cleanup } = mockDocument(t);
   const feedback = createFeedbackUI();
   const help = createHelpUI();
@@ -199,6 +226,8 @@ for (const scenario of ['response', 'death', 'victory']) test(`${scenario} inter
   help.open();
   const changed = nextState(snapshot, value => {
     if (scenario === 'response') value.round.interruption = { canRespond: true };
+    if (scenario === 'walkie_pair') value.round.walkie = { pairRequest: { id: 'pair-1', fromId: 'visitor-b', targetId: value.you } };
+    if (scenario === 'walkie_show') value.round.walkie = { showRequest: { id: 'show-1', fromId: 'visitor-b', targetId: value.you } };
     if (scenario === 'death') value.round.visitors[1].status = 'box_person';
     if (scenario === 'victory') value.round.result = { winner: 'visitors', reason: '访问者成功逃脱。' };
   });
@@ -207,6 +236,8 @@ for (const scenario of ['response', 'death', 'victory']) test(`${scenario} inter
   assert.equal(node('help-dialog').open, false);
   assert.equal(node('event-dialog').open, true);
   if (scenario === 'response') assert.match(node('event-title').textContent, /回应灭火器/);
+  if (scenario === 'walkie_pair') assert.match(node('event-title').textContent, /配对对讲机/);
+  if (scenario === 'walkie_show') assert.match(node('event-title').textContent, /互看标志/);
   if (scenario === 'death') assert.match(node('event-title').textContent, /死亡/);
   if (scenario === 'victory') assert.match(node('event-primary-action').textContent, /复盘/);
 });
@@ -223,6 +254,7 @@ test('combined overflow and death point at inheritance, and final victory supers
   const events = tracker.receive(inheritance);
   assert.equal(events.some(event => /进入箱娃阶段|轮到箱娃行动/.test(event.title)), false);
   assert.ok(events.some(event => event.requiresResponse && /遗物/.test(event.title)));
+  assert.match(events.find(event => event.requiresResponse && /遗物/.test(event.title)).body, /技能牌已移出游戏.*随身标志/);
   assert.match(events.find(event => event.symbol === 'death').body, /先选择.*遗物/);
   const terminal = nextState(inheritance, value => {
     value.round.visitors[1].status = 'box_person';

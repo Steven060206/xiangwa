@@ -9,6 +9,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createGameServer } from '../src/server.mjs';
 import { createPlay } from '../src/play.mjs';
+import { INITIAL_ITEMS, createItemDraft, chooseItem } from '../src/preparation.mjs';
+import { checkpoint } from '../src/undo.mjs';
 
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 const underlyingTokens = corners => corners.map(({ id, token }) => ({
@@ -16,7 +18,8 @@ const underlyingTokens = corners => corners.map(({ id, token }) => ({
 }));
 
 async function startServer(t, options = {}) {
-  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3], ...options });
+  const server = createGameServer({ deck, silentNumbers: [5, 4, 1, 2, 0, 3],
+    initialItemOrder: INITIAL_ITEMS.map(item => item.id), ...options });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -58,6 +61,109 @@ async function checkRestart(saved, people) {
     });
   }
 }
+
+test('random four- and five-player skill deals persist through refresh, polling and service restarts', async t => {
+  const saved = await persistentServer(t, { initialItemOrder: undefined });
+  for (const create of [createFour, createFive]) {
+    const people = await create(saved.request);
+    for (const person of people) await action(saved.request, person, 'ready', { ready: true });
+    await action(saved.request, people[0], 'start');
+    const claimed = await action(saved.request, people[0], 'claim_hako');
+    assert.equal(claimed.status, 200);
+    assert.equal(claimed.body.phase, 'map_setup');
+    const deal = claimed.body.initialItems;
+    assert.equal(deal.length, people.length - 1);
+    assert.equal(new Set(deal.map(choice => choice.itemId)).size, deal.length);
+    assert.ok(deal.every(choice => INITIAL_ITEMS.some(item => item.id === choice.itemId)));
+    for (const person of people) {
+      assert.deepEqual((await snapshot(saved.request, person)).body.initialItems, deal);
+      assert.deepEqual((await snapshot(saved.request, person, { poll: true })).body.initialItems, deal);
+    }
+    await checkRestart(saved, people);
+    assert.deepEqual((await snapshot(saved.request, people[0])).body.initialItems, deal);
+  }
+});
+
+test('legacy partial drafts and undo checkpoints complete once while retaining chosen skills and map order', async t => {
+  const saved = await persistentServer(t, { initialItemOrder: undefined });
+  const people = await createFive(saved.request);
+  for (const person of people) await action(saved.request, person, 'ready', { ready: true });
+  await action(saved.request, people[0], 'start');
+  await action(saved.request, people[0], 'claim_hako');
+  const data = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  const room = data.rooms[0];
+  const visitorIds = room.draft.visitorIds;
+  room.game = null;
+  room.draft = createItemDraft(visitorIds);
+  const before = checkpoint(room);
+  chooseItem(room.draft, visitorIds[0], 'night_vision');
+  room.undoHistory = [{ before, actorId: visitorIds[0], type: 'choose_item', label: '旧版领取技能', direct: false }];
+  const oldVersion = room.version;
+  await writeFile(saved.dataFile, JSON.stringify(data), 'utf8');
+  await saved.restart();
+  const upgraded = (await snapshot(saved.request, people[0])).body;
+  assert.equal(upgraded.phase, 'map_setup');
+  assert.equal(upgraded.version, oldVersion + 1);
+  assert.equal(upgraded.initialItems.find(choice => choice.playerId === visitorIds[0]).itemId, 'night_vision');
+  assert.equal(new Set(upgraded.initialItems.map(choice => choice.itemId)).size, 4);
+  const migratedBytes = await readFile(saved.dataFile, 'utf8');
+  const migratedRoom = JSON.parse(migratedBytes).rooms[0];
+  assert.deepEqual(migratedRoom.undoHistory[0].before.draft, migratedRoom.draft);
+  assert.deepEqual(migratedRoom.undoHistory[0].before.game, migratedRoom.game);
+  for (const person of people) assert.deepEqual((await snapshot(saved.request, person)).body.initialItems, upgraded.initialItems);
+  await checkRestart(saved, people);
+  assert.equal(await readFile(saved.dataFile, 'utf8'), migratedBytes, 'Reads and later restarts must not redraw or rewrite the migration');
+  const undone = await action(saved.request, people[0], 'undo_request', { version: upgraded.version });
+  assert.equal(undone.status, 200);
+  assert.equal(undone.body.phase, 'map_setup');
+  assert.deepEqual(undone.body.initialItems, upgraded.initialItems);
+  assert.deepEqual(undone.body.setup, upgraded.setup);
+});
+
+test('legacy auto-deal save failure refuses startup without changing the original partial draft', async t => {
+  const saved = await persistentServer(t);
+  const people = await createFour(saved.request);
+  for (const person of people) await action(saved.request, person, 'ready', { ready: true });
+  await action(saved.request, people[0], 'start');
+  await action(saved.request, people[0], 'claim_hako');
+  const data = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  const room = data.rooms[0];
+  room.game = null;
+  room.draft = createItemDraft(room.draft.visitorIds);
+  chooseItem(room.draft, room.draft.visitorIds[0], 'night_vision');
+  const bytes = JSON.stringify(data);
+  await writeFile(saved.dataFile, bytes, 'utf8');
+  await mkdir(`${saved.dataFile}.tmp`);
+  try {
+    assert.throws(() => createGameServer({ dataFile: saved.dataFile, deck }), /无法恢复/);
+    assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+  } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
+  await saved.restart();
+  const restored = (await snapshot(saved.request, people[0])).body;
+  assert.equal(restored.phase, 'map_setup');
+  assert.equal(restored.initialItems[0].itemId, 'night_vision');
+  assert.equal(restored.initialItems.length, 3);
+});
+
+test('legacy initial skill help reflects current rules over HTTP without rewriting the saved deal', async t => {
+  const saved = await persistentServer(t, { initialItemOrder: ['relic_ring', 'walkie_talkie', 'night_vision'] });
+  const people = await createFour(saved.request);
+  for (const person of people) await action(saved.request, person, 'ready', { ready: true });
+  await action(saved.request, people[0], 'start');
+  await action(saved.request, people[0], 'claim_hako');
+  const data = JSON.parse(await readFile(saved.dataFile, 'utf8'));
+  for (const item of data.rooms[0].draft.items) item.description = '旧版说明';
+  const bytes = JSON.stringify(data);
+  await writeFile(saved.dataFile, bytes, 'utf8');
+  await saved.restart();
+  for (const person of people) {
+    const state = (await snapshot(saved.request, person)).body;
+    for (const choice of state.initialItems) {
+      assert.equal(choice.itemDescription, INITIAL_ITEMS.find(item => item.id === choice.itemId).description);
+    }
+  }
+  assert.equal(await readFile(saved.dataFile, 'utf8'), bytes);
+});
 
 async function createFour(request) {
   const first = await request('/api/rooms', { name: '箱娃' });
@@ -113,10 +219,7 @@ async function preparePlay(request, people, hako = people[0]) {
   for (const person of people) await action(request, person, 'ready', { ready: true });
   assert.equal((await action(request, people[0], 'start')).body.phase, 'hako_selection');
   let state = (await action(request, hako, 'claim_hako')).body;
-  for (let index = 0; index < people.length - 1; index += 1) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = (await action(request, person, 'choose_item', { itemId: state.draft.availableItems[0].id })).body;
-  }
+  assert.equal(state.initialItems.length, people.length - 1);
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = (await action(request, person, 'draw')).body;
@@ -127,7 +230,7 @@ async function preparePlay(request, people, hako = people[0]) {
   await action(request, hako, 'place_remains', { cornerId: 'living_sofa' });
   await action(request, hako, 'inspect_initial_room', { roomId: 'children_room' });
   const hidden = (await action(request, hako, 'choose_initial_hiding', { cornerId: 'children_cabinet' })).body;
-  const result = await action(request, hako, 'choose_initial_power', { powerId: hidden.opening.initialPowerOptions[0].id });
+  const result = await action(request, hako, 'choose_initial_power', { powerId: hidden.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   assert.equal(result.status, 200);
   return result.body;
 }
@@ -203,7 +306,9 @@ test('five-player rooms validate capacity, wait for everyone, and reuse the fift
   state = (await snapshot(request, host)).body;
   assert.equal(state.players.filter(player => player.role === 'hako').length, 1);
   assert.equal(state.players.filter(player => player.role === 'visitor').length, 4);
-  assert.equal(state.draft.choices.length, 0);
+  assert.equal(state.draft, null);
+  assert.equal(state.initialItems.length, 4);
+  assert.equal(new Set(state.initialItems.map(item => item.itemId)).size, 4);
 });
 
 test('five players restore each setup phase and the fourth visitor acts with private SSE and polling views', async t => {
@@ -216,17 +321,10 @@ test('five players restore each setup phase and the fourth visitor acts with pri
   await action(request, people[0], 'start');
   await checkRestart(saved, people);
   let state = (await action(request, hako, 'claim_hako')).body;
-  assert.equal(state.draft.turnPlayerId, people[0].playerId, 'Seat order wraps after a fifth-seat hako');
-  for (let index = 0; index < 4; index++) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    const result = await action(request, person, 'choose_item', { itemId: state.draft.availableItems[0].id });
-    assert.equal(result.status, 200);
-    state = result.body;
-    if (index === 2) {
-      assert.equal(state.phase, 'item_draft', 'The fourth visitor must get an item before maps begin');
-      await checkRestart(saved, people);
-    }
-  }
+  assert.equal(state.setup.turnPlayerId, people[0].playerId, 'Seat order wraps after a fifth-seat hako');
+  assert.equal(state.phase, 'map_setup');
+  assert.equal(new Set(state.initialItems.map(item => item.itemId)).size, 4);
+  await checkRestart(saved, people);
   assert.equal(state.initialItems.length, 4);
   const drawers = [];
   while (state.phase === 'map_setup') {
@@ -244,7 +342,7 @@ test('five players restore each setup phase and the fourth visitor acts with pri
   ]) assert.equal((await action(request, type === 'prepare_opening' ? people[0] : hako, type, input)).status, 200);
   await checkRestart(saved, people);
   state = (await snapshot(request, hako)).body;
-  assert.equal((await action(request, hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id })).status, 200);
+  assert.equal((await action(request, hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id })).status, 200);
   await checkRestart(saved, people);
   const fourth = people[3];
   const live = await stream(t, saved.base, fourth);
@@ -375,11 +473,12 @@ test('four HTTP identities enforce lobby capacity, roles, readiness and authoriz
   assert.equal((await action(request, host, 'start')).status, 409);
   const claimed = await action(request, third, 'claim_hako', { targetId: host.playerId });
   assert.equal(claimed.status, 200);
-  assert.equal(claimed.body.phase, 'item_draft');
+  assert.equal(claimed.body.phase, 'map_setup');
   assert.deepEqual(claimed.body.players.filter(player => player.role === 'hako').map(player => player.id), [third.playerId],
     'An extra target cannot assign another player the role');
-  assert.equal(claimed.body.draft.turnPlayerId, fourth.playerId, 'visitor after hako chooses first');
-  assert.equal(claimed.body.draft.availableItems.length, 12);
+  assert.equal(claimed.body.setup.turnPlayerId, fourth.playerId, 'visitor after hako places maps first');
+  assert.equal(claimed.body.initialItems.length, 3);
+  assert.equal(new Set(claimed.body.initialItems.map(item => item.itemId)).size, 3);
   assert.equal((await action(request, third, 'choose_item', { itemId: 'spirit_pen' })).status, 409);
   assert.equal((await action(request, host, 'start')).status, 409);
   assert.equal((await action(request, host, 'claim_hako')).status, 409);
@@ -389,7 +488,7 @@ test('four HTTP identities enforce lobby capacity, roles, readiness and authoriz
   assert.equal((await action(request, third, 'draw')).status, 409);
 });
 
-test('only a started selection accepts all four contenders and the first claim starts drafting atomically', async t => {
+test('only a started selection accepts all four contenders and the first claim deals all skills atomically', async t => {
   const { base, request } = await startServer(t);
   const people = await createFour(request);
   const [host, first] = people;
@@ -417,7 +516,7 @@ test('only a started selection accepts all four contenders and the first claim s
   const winnerIndex = attempts.findIndex(result => result.status === 200);
   const winner = people[winnerIndex];
   const state = (await snapshot(request, host)).body;
-  assert.equal(state.phase, 'item_draft', 'The first claim starts drafting without another ready or start action');
+  assert.equal(state.phase, 'map_setup', 'The first claim deals skills and starts maps without another ready or selection action');
   assert.deepEqual(state.players.filter(player => player.role === 'hako').map(player => player.id), [winner.playerId]);
   assert.equal(state.hostId, host.playerId, 'Claiming a role does not transfer host authority');
   assert.ok(state.players.every(player => player.ready));
@@ -431,15 +530,11 @@ test('only a started selection accepts all four contenders and the first claim s
     assert.equal((await action(request, person, 'release_hako', { targetId: winner.playerId })).status, 400);
   }
   assert.equal((await action(request, host, 'set_hako', { targetId: host.playerId })).status, 400);
-  let drafted = state;
   const visitorOrder = [1, 2, 3].map(offset => people[(winnerIndex + offset) % 4]);
-  for (const visitor of visitorOrder) {
-    assert.equal(drafted.draft.turnPlayerId, visitor.playerId, 'Drafting follows seats clockwise from the chosen hako');
-    const result = await action(request, visitor, 'choose_item', { itemId: drafted.draft.availableItems[0].id });
-    assert.equal(result.status, 200);
-    drafted = result.body;
-  }
-  assert.equal(drafted.phase, 'map_setup');
+  assert.deepEqual(state.initialItems.map(choice => choice.playerId), visitorOrder.map(person => person.playerId));
+  assert.equal(new Set(state.initialItems.map(choice => choice.itemId)).size, 3);
+  for (const visitor of visitorOrder) assert.equal((await action(request, visitor, 'choose_item', { itemId: 'night_vision' })).status, 409);
+  assert.deepEqual((await snapshot(request, host)).body, state, 'Rejected manual choices cannot reroll the deal');
   assert.equal((await action(request, winner, 'claim_hako')).status, 409);
 });
 
@@ -466,7 +561,7 @@ test('the ready selection and the claimed role survive restart and disconnected 
   assert.equal((await action(request, claimant, 'leave')).status, 409);
   const claimed = await action(request, claimant, 'claim_hako');
   assert.equal(claimed.status, 200);
-  assert.equal(claimed.body.phase, 'item_draft');
+  assert.equal(claimed.body.phase, 'map_setup');
   assert.equal(JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms[0].selectingHako, false);
   const reconnected = await stream(t, saved.base, claimant);
   assert.equal((await reconnected.state()).players.find(player => player.role === 'hako').id, claimant.playerId);
@@ -606,7 +701,7 @@ test('bot seats fill the lobby securely, can be removed online, and never inheri
   assert.equal(JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms.length, 0);
 });
 
-test('a human hako gets three automatic bot visitors through drafting and maps, then controls opening and reactions', async t => {
+test('a human hako gets three automatically dealt bot visitors through maps, then controls opening and reactions', async t => {
   const { base, request } = await startServer(t, { botDelayMs: 10 });
   const host = (await request('/api/rooms', { name: '真人箱娃' })).body;
   const live = await stream(t, base, host);
@@ -634,7 +729,7 @@ test('a human hako gets three automatic bot visitors through drafting and maps, 
     ['choose_initial_hiding', { cornerId: 'children_cabinet' }],
   ]) assert.equal((await action(request, host, type, values)).status, 200);
   const initialOptions = (await snapshot(request, host)).body.opening.initialPowerOptions;
-  assert.equal((await action(request, host, 'choose_initial_power', { powerId: initialOptions[0].id })).status, 200);
+  assert.equal((await action(request, host, 'choose_initial_power', { powerId: initialOptions.find(card => card.canChoose !== false).id })).status, 200);
   const pending = await live.state(state => state.round?.phase === 'visitor_reaction');
   assert.equal(pending.round.pendingAction.playerId, bots[0].id);
   await delay(40);
@@ -659,13 +754,11 @@ test('a human visitor plays beside two bot visitors and receives automatic priva
   assert.equal(claimed.status, 200);
   assert.equal(claimed.body.you, host.playerId, 'Choosing a bot hako must keep the human HTTP identity');
   assert.equal(claimed.body.players.find(player => player.role === 'hako').id, hako.id);
-  let state = await live.state(update => update.phase === 'item_draft' && update.draft.turnPlayerId === host.playerId);
-  assert.equal(state.initialItems.length, 2);
+  let state = await live.state(update => update.phase === 'map_setup' && update.setup.turnPlayerId === host.playerId);
+  assert.equal(state.initialItems.length, 3);
+  assert.equal(state.initialItems.find(choice => choice.playerId === host.playerId).itemId, 'ventriloquist_doll');
   await delay(40);
-  assert.equal((await snapshot(request, host)).body.version, state.version, 'Bots wait for the human item choice');
-  const chosen = await action(request, host, 'choose_item', { itemId: 'ventriloquist_doll' });
-  assert.equal(chosen.status, 200);
-  state = chosen.body;
+  assert.equal((await snapshot(request, host)).body.version, state.version, 'Bots wait for the human map placement');
   while (state.phase === 'map_setup') {
     if (state.setup.turnPlayerId !== host.playerId) {
       const version = state.version;
@@ -703,9 +796,10 @@ test('a human visitor plays beside two bot visitors and receives automatic priva
   const waiting = await live.state(update => update.round?.resolution?.kind === 'waiting'
     && update.round.resolution.playerId === hako.id);
   assert.deepEqual(waiting.round.resolution, { kind: 'waiting', playerId: hako.id });
-  const answered = await live.state(update => update.round?.items.events.some(event => event.itemId === 'ventriloquist_doll'
-    && event.userId === host.playerId));
-  const answer = answered.round.items.events.find(event => event.itemId === 'ventriloquist_doll' && event.userId === host.playerId);
+  const answered = await live.state(update => update.round?.items.events.some(event => event.kind === 'item_answer'
+    && event.itemId === 'ventriloquist_doll' && event.userId === host.playerId));
+  const answer = answered.round.items.events.find(event => event.kind === 'item_answer'
+    && event.itemId === 'ventriloquist_doll' && event.userId === host.playerId);
   assert.equal(typeof answer.answer, 'boolean');
   assert.equal(Object.hasOwn(answer, 'truth'), false);
 });
@@ -722,7 +816,7 @@ test('bot seats and paused progress survive restart and resume only when a human
   await delay(75);
   assert.deepEqual((await snapshot(request, host)).body, claimed.body, 'Ordinary GETs and connected-looking bots cannot start bot timers');
   const live = await stream(t, saved.base, host);
-  await live.state(state => state.initialItems.length === 1);
+  await live.state(state => state.phase === 'map_setup' && state.setup.drawnTileId === deck[0]);
   await live.close();
   const paused = await waitForSnapshot(request, host, state => !state.players.find(player => player.id === host.playerId).connected);
   await delay(75);
@@ -779,7 +873,8 @@ test('bot seat changes and scheduled bot actions commit only after successful st
     assert.equal(await readFile(saved.dataFile, 'utf8'), claimedBytes);
   } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
   const retried = await live.state(state => state.version > claimed.body.version, 4000);
-  assert.equal(retried.initialItems.length, 1, 'The same pending bot draft choice succeeds once storage is repaired');
+  assert.equal(retried.initialItems.length, 3);
+  assert.equal(retried.setup.drawnTileId, deck[0], 'The pending bot map draw succeeds once storage is repaired');
   assert.equal(retried.version, claimed.body.version + 1);
 });
 
@@ -849,10 +944,6 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   for (const person of people) await action(request, person, 'ready', { ready: true });
   assert.equal((await action(request, people[0], 'start')).body.phase, 'hako_selection');
   let state = (await action(request, people[0], 'claim_hako')).body;
-  for (let index = 0; index < 3; index += 1) {
-    const current = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = (await action(request, current, 'choose_item', { itemId: state.draft.availableItems[0].id })).body;
-  }
   assert.equal(state.phase, 'map_setup');
   assert.equal(state.draft, null);
   assert.equal(state.initialItems.length, 3);
@@ -939,7 +1030,7 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   const candidates = state.opening.initialPowerOptions.map(card => card.id);
   const unoffered = Array.from({ length: 11 }, (_, index) => index + 1).find(id => !candidates.includes(id));
   assert.equal((await action(request, hako, 'choose_initial_power', { powerId: unoffered })).status, 409);
-  const chosenPowerId = candidates[0];
+  const chosenPowerId = candidates.find(id => id !== 4);
   state = (await action(request, hako, 'choose_initial_power', { powerId: chosenPowerId })).body;
   await assertPrivateViews();
   assert.equal(state.phase, 'practice');
@@ -1093,7 +1184,7 @@ test('HTTP, polling and SSE isolate peeks, inventories, deliberate sharing and c
   assert.equal(logs.includes('密码4'), false);
 });
 
-test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a declared result', async t => {
+test('HTTP deaths discard skills without empty inheritance, preserve one-person turns, and lock a declared result', async t => {
   const { request } = await startServer(t, {
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
@@ -1110,8 +1201,8 @@ test('HTTP deaths hide ghost locations, preserve one-person turns, and lock a de
     await action(request, person, 'peek', { cornerId: 'hall_clock' });
     assert.equal((await action(request, hako, 'resolve_visitor_action')).status, 200);
     const inheritance = (await snapshot(request, person)).body.round.resolution;
-    assert.equal(inheritance.kind, 'inheritance');
-    assert.equal((await action(request, person, 'bequeath', { targetId: visitors[2].playerId })).status, 200);
+    assert.equal(inheritance, null);
+    assert.equal((await action(request, person, 'bequeath', { targetId: visitors[2].playerId })).status, 409);
     const owner = (await snapshot(request, person)).body;
     assert.equal(owner.round.ghost.cornerId, 'hall_clock');
     assert.equal(owner.round.visitors.find(player => player.id === person.playerId).status, 'box_person');
@@ -1149,7 +1240,7 @@ test('a box-person host can abandon a pending peek with an offline hako, saving 
   await action(request, host, 'silent_reveal', { index: 0 });
   await action(request, host, 'peek', { cornerId: 'hall_clock' });
   await action(request, hako, 'resolve_visitor_action');
-  assert.equal((await action(request, host, 'bequeath', { targetId: visitor.playerId })).status, 200);
+  assert.equal((await action(request, host, 'bequeath', { targetId: visitor.playerId })).status, 409);
   await action(request, visitor, 'silent_reveal', { index: 1 });
   assert.equal((await action(request, visitor, 'peek', { cornerId: 'hall_clock' })).status, 200);
   const live = await stream(t, saved.base, host);
@@ -1186,7 +1277,7 @@ test('a box-person host can abandon a pending peek with an offline hako, saving 
   await checkRestart(saved, people);
 });
 
-test('hosts can abandon unfinished role selection and item drafting while preserving the original seats', async t => {
+test('hosts can abandon unfinished role selection and map preparation while preserving the original seats', async t => {
   const { request } = await startServer(t);
   const people = await createFour(request);
   const [host, guest] = people;
@@ -1194,7 +1285,7 @@ test('hosts can abandon unfinished role selection and item drafting while preser
     for (const person of people) await action(request, person, 'ready', { ready: true });
     let current = (await action(request, host, 'start')).body;
     if (claim) current = (await action(request, guest, 'claim_hako')).body;
-    assert.equal(current.phase, claim ? 'item_draft' : 'hako_selection');
+    assert.equal(current.phase, claim ? 'map_setup' : 'hako_selection');
     assert.equal((await action(request, host, 'restart_game')).status, 409);
     const reset = await action(request, host, 'restart_game', { abandon: true, expectedVersion: current.version });
     assert.equal(reset.status, 200);
@@ -1442,10 +1533,6 @@ test('finished rooms restart in place over SSE and polling, persist clean lobbie
   let state = (await action(request, third, 'claim_hako')).body;
   assert.equal(state.players.find(player => player.role === 'hako').id, third.playerId);
   assert.equal(state.initialPower, null);
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(candidate => candidate.playerId === state.draft.turnPlayerId);
-    state = (await action(request, person, 'choose_item', { itemId: state.draft.availableItems[0].id })).body;
-  }
   assert.equal(state.phase, 'map_setup');
   assert.equal(state.setup.placements.length, 1);
   assert.equal(state.setup.remaining, 8);
@@ -1503,7 +1590,7 @@ test('rematching preserves bot seats and automatic readiness while waiting for t
     ['choose_initial_hiding', { cornerId: 'children_cabinet' }],
   ]) assert.equal((await action(request, host, type, input)).status, 200);
   const options = (await snapshot(request, host)).body.opening.initialPowerOptions;
-  assert.equal((await action(request, host, 'choose_initial_power', { powerId: options[0].id })).body.phase, 'game_over');
+  assert.equal((await action(request, host, 'choose_initial_power', { powerId: options.find(card => card.canChoose !== false).id })).body.phase, 'game_over');
   const lobby = (await action(request, host, 'restart_game')).body;
   assert.equal(lobby.phase, 'lobby');
   assert.deepEqual(lobby.players, filled.players);
@@ -1512,7 +1599,7 @@ test('rematching preserves bot seats and automatic readiness while waiting for t
   assert.equal((await action(request, host, 'start')).status, 409);
   await action(request, host, 'ready', { ready: true });
   assert.equal((await action(request, host, 'start')).body.phase, 'hako_selection');
-  assert.equal((await action(request, host, 'bot_claim_hako')).body.phase, 'item_draft');
+  assert.equal((await action(request, host, 'bot_claim_hako')).body.phase, 'map_setup');
 });
 
 test('HTTP and SSE keep phone results private and announce truthful and false NO.9 answers alike', async t => {
@@ -1833,22 +1920,17 @@ test('stored lobbies recover identities, readiness, presence and multiple rooms;
   assert.equal((await saved.request(`/api/rooms/${people[0].roomCode}/join`, { name: '替补' })).body.state.players.length, 4);
 });
 
-test('draft, a drawn map, secret opening and original shuffled decks survive restarts', async t => {
+test('automatic deal, a drawn map, secret opening and original shuffled decks survive restarts', async t => {
   const saved = await persistentServer(t);
   const { request } = saved;
   const people = await createFour(request);
   for (const person of people) await action(request, person, 'ready', { ready: true });
   assert.equal((await action(request, people[0], 'start')).body.phase, 'hako_selection');
   let state = (await action(request, people[0], 'claim_hako')).body;
-  const first = people.find(person => person.playerId === state.draft.turnPlayerId);
-  await action(request, first, 'choose_item', { itemId: 'spirit_pen' });
+  const deal = structuredClone(state.initialItems);
   await checkRestart(saved, people);
-  for (let i = 0; i < 2; i++) {
-    state = (await snapshot(request, people[0])).body;
-    const current = people.find(person => person.playerId === state.draft.turnPlayerId);
-    await action(request, current, 'choose_item', { itemId: state.draft.availableItems[0].id });
-  }
   state = (await snapshot(request, people[0])).body;
+  assert.deepEqual(state.initialItems, deal);
   while (state.phase === 'map_setup') {
     const current = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = (await action(request, current, 'draw')).body;
@@ -1872,7 +1954,7 @@ test('draft, a drawn map, secret opening and original shuffled decks survive res
   await checkRestart(saved, people);
   assert.deepEqual((await snapshot(request, people[0])).body.opening.initialPowerOptions, candidates,
     'Restart keeps the same privately dealt three-card choice');
-  assert.equal((await action(request, people[0], 'choose_initial_power', { powerId: candidates[0].id })).status, 200);
+  assert.equal((await action(request, people[0], 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id })).status, 200);
   await checkRestart(saved, people);
 });
 
@@ -1939,6 +2021,56 @@ test('confirmed hiding history survives HTTP refresh and restart without reveali
     assert.equal(JSON.stringify(view).includes('lastInspectedRoom'), false);
     assert.equal(JSON.stringify(view).includes('hidingMemories'), false);
   }
+});
+
+test('HTTP, SSE, polling and restart hide the temporary vacancy during a private notebook replacement', async t => {
+  const saved = await persistentServer(t, { createPlayState(setup, opening, options) {
+    const play = createPlay(setup, opening, options);
+    const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'notebook');
+    [play.tokens.hall_clock, play.tokens[source]] = [play.tokens[source], play.tokens.hall_clock];
+    return play;
+  } });
+  const { request } = saved;
+  const people = await createFour(request);
+  const [hako, first, second, third] = people;
+  await preparePlay(request, people);
+  assert.equal((await action(request, first, 'silent_reveal', { index: 0 })).status, 200);
+  const observers = [hako, second, third];
+  const before = new Map(await Promise.all(observers.map(async person =>
+    [person.playerId, (await snapshot(request, person)).body.round.cornerState])));
+  let streams = await Promise.all(observers.map(person => stream(t, saved.base, person)));
+  const assertHidden = async version => {
+    for (let index = 0; index < observers.length; index++) {
+      const person = observers[index];
+      const http = await snapshot(request, person);
+      const poll = await snapshot(request, person, { poll: true });
+      const sse = await streams[index].state(state => state.version >= version);
+      for (const state of [http.body, poll.body, sse]) {
+        assert.deepEqual(state.round.cornerState, before.get(person.playerId),
+          'No observer transport may expose a temporary notebook vacancy');
+        if (state.round.pendingAction) assert.deepEqual(state.round.pendingAction, { type: 'peek', playerId: first.playerId });
+        if (state.round.resolution) assert.deepEqual(state.round.resolution, { kind: 'waiting', playerId: first.playerId });
+      }
+    }
+  };
+  const declared = await action(request, first, 'peek', { cornerId: 'hall_clock' });
+  assert.equal(declared.status, 200);
+  await assertHidden(declared.body.version);
+  const pending = await action(request, hako, 'resolve_visitor_action');
+  assert.equal(pending.status, 200);
+  await assertHidden(pending.body.version);
+  const own = (await snapshot(request, first)).body;
+  assert.equal(own.round.resolution.cornerId, 'hall_clock');
+  assert.equal(own.round.cornerState.find(corner => corner.id === 'hall_clock').occupied, false);
+  assert.equal(pending.body.round.notebooks.length, 1);
+  await Promise.all(streams.map(live => live.close()));
+  await checkRestart(saved, people);
+  streams = await Promise.all(observers.map(person => stream(t, saved.base, person)));
+  await assertHidden(pending.body.version);
+  const completed = await action(request, first, 'resolve_peek', { replacement: 'empty_box' });
+  assert.equal(completed.status, 200);
+  await assertHidden(completed.body.version);
+  assert.equal(completed.body.round.resolution, null);
 });
 
 test('pending peeks, private results, inventory, exchanges and the final result recover without leaks', async t => {
@@ -2053,11 +2185,11 @@ test('failed disk writes leave actions, joins, departures and SSE unchanged and 
   } finally { await rm(`${saved.dataFile}.tmp`, { recursive: true }); }
   const claimed = await action(request, people[2], 'claim_hako');
   assert.equal(claimed.status, 200);
-  assert.equal(claimed.body.phase, 'item_draft');
+  assert.equal(claimed.body.phase, 'map_setup');
   assert.equal(claimed.body.version, selection.body.version + 1);
   assert.deepEqual(claimed.body.players.filter(player => player.role === 'hako').map(player => player.id), [people[2].playerId]);
   assert.deepEqual(await live.state(), { ...claimed.body, you: host.playerId },
-    'A failed claim must not publish a role or advance drafting');
+    'A failed claim must not publish a role or deal skills');
   await live.close();
   await checkRestart(saved, people);
 });

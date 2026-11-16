@@ -381,14 +381,19 @@ test('NO7 chooses tokens randomly without accepting an ID, hides the stolen piec
   assert.equal(play.round.silent.turnPlayerId, second);
 });
 
-test('NO7 can select a visitor card, and old loot cannot become eligible until after the new theft succeeds', () => {
+test('NO7 selects anonymous skill backs, and old loot cannot become eligible until after the new theft succeeds', () => {
   let play = fixture();
   power(play, 7);
   play.powers.stolen = { kind: 'token', piece: piece('previous-key', 'key') };
   play = declareMove(reveal(play));
   reject(play, hako, { type: 'activate_power', slot: 0, stealKind: 'token' });
   assert.equal(play.inventories[first].tokens.length, 0);
-  play = steal(play, { stealKind: 'item', itemId: 'shrine_bell' });
+  const options = getPlayView(play, hako).powers.activationOptions.find(option => option.card.id === 7).stealOptions;
+  assert.deepEqual(options, { items: [{ index: 0, name: '技能牌背 1' }], itemCount: 1, tokenCount: 0, canStealToken: false });
+  for (const values of [{ itemId: 'shrine_bell' }, { itemIndex: -1 }, { itemIndex: 1 }, { itemIndex: '0' }, { itemIndex: 0, itemId: 'shrine_bell' }]) {
+    reject(play, hako, { type: 'activate_power', slot: 0, stealKind: 'item', ...values });
+  }
+  play = steal(play, { stealKind: 'item', itemIndex: 0 });
   assert.equal(play.powers.stolen.piece.id, 'shrine_bell');
   assert.equal(play.inventories[first].items.some(card => card.id === 'shrine_bell'), false);
   assert.deepEqual(play.inventories[first].tokens.map(token => token.id), ['previous-key']);

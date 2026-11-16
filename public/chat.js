@@ -6,6 +6,7 @@ const make = (tag, value, className) => {
   if (className) element.className = className;
   return element;
 };
+const channelTitle = kind => kind === 'hako' ? '箱娃与箱人频道' : kind === 'walkie' ? '对讲机私聊' : '同房访问者频道';
 
 export function createChatUI(send) {
   const panel = make('section', undefined, 'chat-panel');
@@ -20,6 +21,11 @@ export function createChatUI(send) {
   back.dataset.testid = 'chat-return';
   back.addEventListener('click', () => document.dispatchEvent(new CustomEvent('game-navigate', { detail: { view: 'action' } })));
   header.append(heading, back);
+  const channelLabel = make('label', '选择交流频道');
+  channelLabel.htmlFor = 'chat-channel';
+  const channelSelect = make('select');
+  channelSelect.id = 'chat-channel';
+  channelSelect.dataset.testid = 'chat-channel';
   const scope = make('p', '', 'small-note');
   scope.id = 'chat-scope';
   scope.dataset.testid = 'chat-scope';
@@ -36,7 +42,7 @@ export function createChatUI(send) {
   input.dataset.testid = 'chat-text';
   input.maxLength = 600;
   input.rows = 2;
-  input.placeholder = '最多300字';
+  input.placeholder = '最多300字；Enter发送，Shift+Enter换行';
   input.setAttribute('aria-describedby', scope.id);
   const button = make('button', '发送', 'button secondary small');
   button.type = 'submit';
@@ -44,8 +50,9 @@ export function createChatUI(send) {
   const status = make('p', '', 'small-note');
   status.setAttribute('role', 'status');
   form.append(scope, label, input, button, status);
-  panel.append(header, list, form);
-  let current, previousChannel, identityKey, sending, messagesKey = '', viewingChat = false, initialized = false;
+  panel.append(header, channelLabel, channelSelect, list, form);
+  let current, previousChannel, identityKey, sending, messagesKey = '', viewingChat = false, initialized = false, selectedKind = '';
+  let composing = false, compositionEndedAt = -Infinity;
   const seenIds = new Set();
   const unreadIds = new Set();
   function updateUnread() {
@@ -64,7 +71,9 @@ export function createChatUI(send) {
   function reset() {
     current = undefined;
     previousChannel = identityKey = sending = undefined;
-    messagesKey = '';
+    messagesKey = selectedKind = '';
+    composing = false;
+    compositionEndedAt = -Infinity;
     initialized = viewingChat = false;
     seenIds.clear();
     markRead();
@@ -80,14 +89,43 @@ export function createChatUI(send) {
     }
   });
   panel.addEventListener('focusin', markRead);
+  const selectedChannel = () => current?.channels.find(channel => channel.kind === selectedKind) || current?.channels[0];
+  const updateScope = () => {
+    const channel = selectedChannel();
+    const state = current.state;
+    const key = channel ? `${channel.kind}:${channel.roomId}:${channel.participantIds.join(',')}` : '';
+    if (previousChannel !== undefined && previousChannel !== key) {
+      input.value = '';
+      status.textContent = '频道已改变，请确认当前接收范围后发送。';
+    }
+    previousChannel = key;
+    const names = (channel?.participantIds || []).filter(id => id !== state.you)
+      .map(id => state.players.find(player => player.id === id)?.name || '玩家');
+    const room = getLogicalRooms().find(room => room.id === channel?.roomId);
+    heading.textContent = channelTitle(channel?.kind);
+    scope.textContent = !channel ? '当前没有可用的交流对象。'
+      : `${channel.kind === 'hako' ? '箱娃阵营' : channel.kind === 'walkie' ? '固定对讲机同伴 · 不公开聊天内容' : room?.name || '当前房间'} · ${names.length ? `接收者：${names.join('、')}` : '目前只有你'}。`;
+    input.disabled = !current.online || !channel;
+    channelSelect.disabled = sending || !current.online;
+    button.disabled = sending || !current.online || !channel;
+  };
+  channelSelect.addEventListener('change', () => { selectedKind = channelSelect.value; updateScope(); });
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; compositionEndedAt = performance.now(); });
+  input.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || composing || event.keyCode === 229
+      || performance.now() - compositionEndedAt < 50) return;
+    event.preventDefault();
+    if (!event.repeat && !sending && current?.online && selectedChannel()) form.requestSubmit();
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    if (sending || !current?.chat.channel || !input.value.trim()) return;
+    if (sending || !current?.online || !selectedChannel() || !input.value.trim()) return;
     const text = input.value;
-    const channel = current.chat.channel;
+    const channel = selectedChannel();
     const request = { identityKey, channelKey: previousChannel };
     sending = request;
-    button.disabled = true;
+    updateScope();
     status.textContent = '正在发送…';
     try {
       await send({ text, channelKind: channel.kind, roomId: channel.roomId });
@@ -99,7 +137,7 @@ export function createChatUI(send) {
     finally {
       if (sending === request) {
         sending = undefined;
-        button.disabled = !current?.online || !current?.chat.channel;
+        updateScope();
       }
     }
   });
@@ -110,26 +148,21 @@ export function createChatUI(send) {
       if (!panel.isConnected) document.querySelector('.setup-sidebar').append(panel);
       const nextIdentity = `${state.code}:${state.you}`;
       if (identityKey !== nextIdentity) { reset(); identityKey = nextIdentity; }
-      const chat = state.chat || { messages: [], channel: null };
-      current = { chat, online };
+      const chat = state.chat;
+      const channels = chat?.channels || (chat?.channel ? [chat.channel] : []);
+      current = { chat, online, state, channels };
       panel.hidden = !state.round;
       if (!state.round) { markRead(); return; }
-      const channel = chat?.channel;
-      const key = channel ? `${channel.kind}:${channel.roomId}` : '';
-      if (previousChannel !== undefined && previousChannel !== key) {
-        input.value = '';
-        status.textContent = '频道已改变，请确认当前接收范围后发送。';
-      }
-      previousChannel = key;
-      const names = (channel?.participantIds || []).filter(id => id !== state.you)
-        .map(id => state.players.find(player => player.id === id)?.name || '玩家');
-      const room = getLogicalRooms().find(room => room.id === channel?.roomId);
-      heading.textContent = channel?.kind === 'hako' ? '箱娃与箱人频道' : '同房访问者频道';
-      scope.textContent = !channel ? '当前没有可用的交流对象。'
-        : `${channel.kind === 'hako' ? '箱娃阵营' : room?.name || '当前房间'} · ${names.length ? `接收者：${names.join('、')}` : '目前只有你'}。`;
-      input.disabled = !online || !channel;
-      button.disabled = sending || !online || !channel;
-      const messages = chat.messages || [];
+      if (!channels.some(channel => channel.kind === selectedKind)) selectedKind = channels[0]?.kind || '';
+      channelSelect.replaceChildren(...channels.map(channel => {
+        const option = make('option', channelTitle(channel.kind));
+        option.value = channel.kind;
+        return option;
+      }));
+      channelSelect.value = selectedKind;
+      channelLabel.hidden = channelSelect.hidden = channels.length < 2;
+      updateScope();
+      const messages = chat?.messages || [];
       const messageIds = new Set(messages.map(message => message.id));
       for (const id of unreadIds) if (!messageIds.has(id)) unreadIds.delete(id);
       for (const message of messages) {
@@ -147,7 +180,7 @@ export function createChatUI(send) {
           const entry = make('li');
           const sender = state.players.find(player => player.id === message.senderId)?.name || '玩家';
           const roomName = getLogicalRooms().find(room => room.id === message.roomId)?.name;
-          entry.append(make('strong', sender), make('span', message.kind === 'hako' ? '箱娃阵营' : roomName || '同房', 'chat-message-scope'),
+          entry.append(make('strong', sender), make('span', message.kind === 'hako' ? '箱娃阵营' : message.kind === 'walkie' ? '对讲机私聊' : roomName || '同房', 'chat-message-scope'),
             make('p', message.text));
           return entry;
         }));

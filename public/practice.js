@@ -17,11 +17,8 @@ let chosenPassword = [];
 let selectedWeakness = '';
 let selectedRoom = '';
 let selectedPower = '';
-let selectedDraftItem = '';
-let draftSelectionKey = '';
 let selectionScope = '';
 const choiceSelections = new Map();
-const itemNames = new Map();
 const preparationSteps = [
   ['secrets', '密码与弱点'], ['remains', '放置亡骸'], ['hiding_room', '选择怨房'],
   ['hiding_corner', '初始潜伏'], ['power', '初始能力'],
@@ -36,10 +33,9 @@ const toolNames = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '
 function resetSelectionScope(state) {
   const scope = draftScope(state);
   if (scope === selectionScope) return;
-  selectedCorner = selectedWeakness = selectedRoom = selectedPower = selectedDraftItem = draftSelectionKey = '';
+  selectedCorner = selectedWeakness = selectedRoom = selectedPower = '';
   chosenPassword = [];
   choiceSelections.clear();
-  itemNames.clear();
   selectionScope = scope;
 }
 
@@ -257,97 +253,46 @@ export function roundSeatStatus(state, player) {
 }
 
 export function preparationDescription(state) {
-  if (state.draft) return state.draft.turnPlayerId === state.you ? '轮到你领取一张初始道具。选择后，将由下一位访问者继续。' : `等待${playerName(state, state.draft.turnPlayerId)}领取初始道具。`;
+  if (state.draft) return '正在完成随机发牌，随后由访问者轮流拼图。';
   if (state.opening) {
     const name = preparationSteps.find(([phase]) => phase === state.opening.phase)?.[1] || '开局配置';
-    if (state.opening.phase === 'power') return state.opening.hakoId === state.you ? '从系统随机抽取的三张箱娃之力中秘密选择一张，可免公开手记门槛。' : '箱娃正在秘密选择初始能力。';
+    if (state.opening.phase === 'power') return state.opening.hakoId === state.you ? '从三张候选中秘密选择初始能力；NO.4可被抽到，但不能选择。' : '箱娃正在秘密选择初始能力。';
     return state.opening.hakoId === state.you ? `箱娃准备：${name}。选择内容仅你可见。` : `箱娃正在完成${name}。访问者在正门等待入场。`;
   }
   return '';
 }
 
 function itemChoiceName(choice) {
-  return choice.itemName || choice.name || itemNames.get(choice.itemId) || '已领取道具';
+  return choice.itemName || choice.name || '技能牌背';
 }
 
-export function renderDraft({ state, pending, online, action }) {
-  resetSelectionScope(state);
+export function renderDraft({ state }) {
   const panel = document.getElementById('draft-panel');
-  const draft = state.draft;
-  panel.hidden = !draft;
-  if (!draft) { panel.replaceChildren(); return; }
-  const mine = draft.turnPlayerId === state.you;
-  const locked = pending || !online;
-  const selectionKey = `${state.code}:${state.you}:${draft.turnPlayerId}`;
-  if (draftSelectionKey !== selectionKey) selectedDraftItem = '';
-  draftSelectionKey = selectionKey;
-  const expiredChoice = Boolean(selectedDraftItem && !draft.availableItems.some(item => item.id === selectedDraftItem));
-  if (expiredChoice) selectedDraftItem = '';
-  for (const item of draft.availableItems) itemNames.set(item.id, item.name);
-  const fragment = document.createDocumentFragment();
-  fragment.append(node('h2', '', '领取初始道具'));
-  fragment.append(node('p', 'draft-description', mine ? '先选择道具，再确认领取。查看完整效果不会领取。' : `当前由${playerName(state, draft.turnPlayerId)}选择，已领取 ${draft.choices.length} 张。`));
-  const choices = node('ol', 'draft-choices');
-  for (const player of state.players.filter(player => player.role === 'visitor')) {
-    const choice = draft.choices.find(item => item.playerId === player.id);
+  const records = state.initialItems || [];
+  panel.className = 'initial-deal-panel';
+  document.querySelector('.setup-sidebar').insertBefore(panel, document.querySelector('.table-players'));
+  panel.hidden = Boolean(state.round) || !records.length;
+  if (panel.hidden) { panel.replaceChildren(); return; }
+  const details = node('details', 'initial-items reference-details');
+  details.append(node('summary', '', '开局随机技能 · 发牌记录'), node('p', 'small-note', '本局技能已随机分配，无需手动领取。以下只记录开局发牌，不代表现在持有的卡牌。'));
+  const choices = node('ul', 'inventory-list');
+  for (const choice of records) {
     const line = node('li');
-    line.append(node('span', '', `${player.name}${player.id === state.you ? '（你）' : ''}`));
+    line.dataset.testid = 'initial-dealt-item';
+    line.dataset.playerId = choice.playerId;
+    line.append(node('span', '', `${playerName(state, choice.playerId)}${choice.playerId === state.you ? '（你）' : ''}`));
     if (choice?.itemDescription) {
       const detail = node('details', 'draft-chosen-item reference-details');
       detail.dataset.itemId = choice.itemId;
       detail.append(node('summary', '', `${itemChoiceName(choice)} · 查看效果`), node('p', 'item-description', choice.itemDescription));
       line.append(detail);
     } else {
-      line.append(node('span', '', choice ? itemChoiceName(choice) : draft.turnPlayerId === player.id ? '正在选择' : '等待领取'));
+      line.append(node('span', '', itemChoiceName(choice)));
     }
     choices.append(line);
   }
-  const items = node('ul', 'item-list compact-item-list');
-  const claim = node('div', 'draft-claim current-step-action');
-  claim.dataset.testid = 'draft-claim';
-  const selectedName = node('p', 'draft-selected-name');
-  selectedName.setAttribute('aria-live', 'polite');
-  const submit = button('请先选择道具', 'item-choice', true, () => action('choose_item', { itemId: selectedDraftItem }));
-  const updateSelection = () => {
-    const chosen = draft.availableItems.find(item => item.id === selectedDraftItem);
-    selectedName.textContent = chosen ? `已选：${chosen.name}` : expiredChoice ? '原道具已不可领取，请重新选择。' : '尚未选择道具';
-    submit.textContent = chosen ? `领取${chosen.name}` : '请先选择道具';
-    submit.dataset.itemId = chosen?.id || '';
-    submit.disabled = locked || !chosen;
-    for (const card of items.children) {
-      const selected = card.dataset.itemId === selectedDraftItem;
-      card.classList.toggle('selected', selected);
-      card.querySelector('[data-testid="item-select"]')?.setAttribute('aria-pressed', String(selected));
-    }
-  };
-  claim.append(selectedName, submit);
-  for (const item of draft.availableItems) {
-    const line = node('li', 'draft-item-card');
-    line.dataset.itemId = item.id;
-    const copy = node('div', 'item-copy');
-    const summary = item.description.split('；')[0];
-    const risk = item.description.includes('；') && item.description.includes('死亡') ? '；与箱娃同房有死亡风险' : '';
-    copy.append(node('h3', '', item.name), node('p', 'item-purpose small-note', `${summary}${risk}`));
-    const details = node('details', 'item-full-effect reference-details');
-    details.dataset.itemId = item.id;
-    const description = node('p', 'item-description', `效果：${item.description}`);
-    description.dataset.testid = 'item-choice-description';
-    details.append(node('summary', '', '查看完整效果'), description);
-    copy.append(details);
-    line.append(copy);
-    if (mine) {
-      const choose = button('选择这件', 'item-select', locked, () => { selectedDraftItem = item.id; updateSelection(); }, true);
-      choose.dataset.itemId = item.id;
-      choose.setAttribute('aria-label', `选择${item.name}`);
-      line.append(choose);
-    }
-    items.append(line);
-  }
-  updateSelection();
-  if (mine) fragment.append(claim, items, node('h3', '', '各位访问者的领取进度'), choices);
-  else fragment.append(choices, node('h3', '', '待选道具与效果'), items);
-  fragment.append(node('p', 'small-note', `${state.players.filter(player => player.role === 'visitor').length === 4 ? '四名' : '三名'}访问者领完道具后，开始轮流抽板拼图。`));
-  panel.replaceChildren(fragment);
+  details.append(choices);
+  panel.replaceChildren(details);
 }
 
 function choiceSelect(container, { id, label, options, selected, locked, onChange }) {
@@ -509,7 +454,8 @@ export function renderOpening({ state, pending, online, action }) {
       }
       case 'power': {
         const select = choiceSelect(controls, {
-          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(card => ({ ...card, name: cardName(card) })),
+          id: 'initial-power-select', label: '选择初始箱娃之力', options: opening.initialPowerOptions.map(card => ({ ...card,
+            name: `${cardName(card)}${card.canChoose === false ? '（不可选作初始能力）' : ''}`, disabled: card.canChoose === false })),
           selected: selectedPower, locked, onChange: value => { selectedPower = value; },
         });
         const description = node('p', 'item-description small-note');
@@ -519,7 +465,7 @@ export function renderOpening({ state, pending, online, action }) {
         describe();
         controls.append(description);
         controls.append(requireSelections(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked, () => action('choose_initial_power', { powerId: Number(select.value) })), locked, select));
-        controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
+        controls.append(node('p', 'small-note', 'NO.4可抽入三张候选但不能选作初始能力，不重抽，留在普通牌库供后续取得。选中的初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
         renderRoomMemory(controls, opening.lastInspectedRoom);
         break;
       }

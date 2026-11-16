@@ -10,8 +10,8 @@ import { INITIAL_ITEMS } from '../src/preparation.mjs';
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 
-test('mobile item choices separate details, selection and claiming and update active and night-vision explanations', { timeout: 45000 }, async t => {
-  const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5],
+test('mobile random deal records show effects and update active and night-vision explanations', { timeout: 45000 }, async t => {
+  const server = createGameServer({ deck, initialItemOrder: ['night_vision', 'walkie_talkie', 'deduction'], silentNumbers: [0, 1, 2, 3, 4, 5],
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
       const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'notebook');
@@ -48,7 +48,7 @@ test('mobile item choices separate details, selection and claiming and update ac
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(hako, 'start');
   let state = await act(hako, 'claim_hako');
-  const first = people.find(person => person.playerId === state.draft.turnPlayerId);
+  const first = people.find(person => person.playerId === state.setup.turnPlayerId);
   browser = await chromium.launch({ headless: true, ...(existsSync(chromePath) ? { executablePath: chromePath } : {}) });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await context.addInitScript(identity => sessionStorage.setItem('hako.room.session.v1', JSON.stringify(identity)), first);
@@ -57,39 +57,12 @@ test('mobile item choices separate details, selection and claiming and update ac
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${base}/?room=${hako.roomCode}`);
-  await page.getByTestId('item-select').first().waitFor();
-  let choiceRequests = 0;
-  page.on('request', request => {
-    if (request.method() === 'POST' && request.postDataJSON()?.type === 'choose_item') choiceRequests++;
-  });
-  assert.equal(await page.getByTestId('item-choice').isEnabled(), false, 'Claiming requires an explicit local selection');
-  for (const item of INITIAL_ITEMS) {
-    const card = page.locator(`.item-list > li[data-item-id="${item.id}"]`);
-    assert.equal(await card.locator('.item-purpose').isVisible(), true, 'The core purpose is available without opening details');
-    assert.equal(await card.getByTestId('item-choice-description').isVisible(), false);
-    await card.locator('.item-full-effect summary').click();
-    assert.equal(await card.getByTestId('item-choice-description').textContent(), `效果：${item.description}`);
-    assert.equal(await card.getByTestId('item-choice-description').isVisible(), true, 'Full effects expand without choosing or claiming the item');
-    await card.locator('.item-full-effect summary').click();
-  }
-  await page.locator('[data-testid="item-select"][data-item-id="night_vision"]').click();
-  assert.equal(choiceRequests, 0, 'Browsing effects and selecting a card do not submit a game action');
-  assert.equal(await page.locator('[data-testid="item-select"][data-item-id="night_vision"]').getAttribute('aria-pressed'), 'true');
-  assert.equal(await page.getByTestId('item-choice').textContent(), '领取夜视仪');
-  const claimed = page.waitForResponse(response => response.request().method() === 'POST'
-    && response.request().postDataJSON()?.type === 'choose_item');
-  await page.getByTestId('item-choice').click();
-  const claimResponse = await claimed;
-  assert.equal(claimResponse.status(), 200);
-  assert.equal(claimResponse.request().postDataJSON().itemId, 'night_vision');
-  state = await claimResponse.json();
-  assert.equal(choiceRequests, 1);
+  await page.getByTestId('initial-dealt-item').first().waitFor({ state: 'attached' });
+  assert.equal(await page.getByTestId('item-choice').count(), 0);
+  await page.locator('.initial-deal-panel > details > summary').click();
   await page.locator('.draft-chosen-item summary').first().waitFor();
   await page.locator('.draft-chosen-item summary').first().click();
-  assert.equal(await page.locator('.draft-chosen-item .item-description').textContent(), INITIAL_ITEMS.find(item => item.id === 'night_vision').description);
-  for (const itemId of ['walkie_talkie', 'deduction']) {
-    state = await act(people.find(person => person.playerId === state.draft.turnPlayerId), 'choose_item', { itemId });
-  }
+  assert.equal(await page.locator('.draft-chosen-item .item-description').first().textContent(), INITIAL_ITEMS.find(item => item.id === 'night_vision').description);
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -100,7 +73,7 @@ test('mobile item choices separate details, selection and claiming and update ac
   state = await act(hako, 'place_remains', { cornerId: 'hall_clock' });
   state = await act(hako, 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(hako, 'choose_initial_hiding', { cornerId: 'children_bed' });
-  state = await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  state = await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   await act(first, 'silent_reveal', { index: 0 });
   await page.getByTestId('active-item-select').waitFor();
   for (const itemId of ['dowsing_rod', 'suitcase']) {

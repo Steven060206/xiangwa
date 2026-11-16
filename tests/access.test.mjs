@@ -227,10 +227,7 @@ test('a default invitation expires at thirty minutes while a started five-player
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(host, 'start');
   let state = await act(host, 'claim_hako');
-  while (state.phase === 'item_draft') {
-    state = await act(people.find(person => person.playerId === state.draft.turnPlayerId), 'choose_item',
-      { itemId: state.draft.availableItems[0].id });
-  }
+  assert.equal(state.initialItems.length, 4);
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -241,7 +238,7 @@ test('a default invitation expires at thirty minutes while a started five-player
   await act(host, 'place_remains', { cornerId: 'living_sofa' });
   await act(host, 'inspect_initial_room', { roomId: 'children_room' });
   state = await act(host, 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-  state = await act(host, 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+  state = await act(host, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   assert.equal(state.phase, 'practice');
   f.advance(30 * 60 * 1000 - 1);
   assert.equal((await f.request('/api/access', undefined, cookie)).body.authorized, true);

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getLogicalRoomId } from './maps.mjs';
+import { getWalkieParticipants } from './walkie.mjs';
 
 const HISTORY_LIMIT = 120;
 
@@ -20,10 +21,17 @@ function channelFor(room, playerId) {
   return null;
 }
 
+function channelsFor(room, playerId) {
+  const normal = channelFor(room, playerId);
+  const pair = getWalkieParticipants(room.play, playerId);
+  return [...(normal ? [normal] : []), ...(pair.length ? [{ kind: 'walkie', roomId: null, recipientIds: pair }] : [])];
+}
+
 export function sendChat(room, playerId, input, now = Date.now()) {
-  const channel = channelFor(room, playerId);
-  if (!channel) throw new Error('当前没有可用的聊天频道。');
-  if (input.channelKind !== channel.kind || (input.roomId ?? null) !== channel.roomId) {
+  const channels = channelsFor(room, playerId);
+  const channel = channels.find(candidate => candidate.kind === input.channelKind);
+  if (!channels.length) throw new Error('当前没有可用的聊天频道。');
+  if (!channel || (input.roomId ?? null) !== channel.roomId) {
     throw new Error('聊天对象已改变，请查看当前频道后重新发送。');
   }
   if (typeof input.text !== 'string') throw new Error('请输入聊天内容。');
@@ -40,10 +48,10 @@ export function sendChat(room, playerId, input, now = Date.now()) {
 }
 
 export function getChatView(room, playerId) {
-  const channel = channelFor(room, playerId);
+  const channels = channelsFor(room, playerId).map(channel => ({ kind: channel.kind, roomId: channel.roomId,
+    participantIds: channel.recipientIds.filter(id => room.players.some(player => player.id === id)) }));
   return { revision: room.chatRevision || 0,
-    channel: channel ? { kind: channel.kind, roomId: channel.roomId,
-      participantIds: channel.recipientIds.filter(id => room.players.some(player => player.id === id)) } : null,
+    channel: channels[0] || null, channels,
     messages: (room.chatMessages || []).filter(message => message.recipientIds.includes(playerId))
       .slice(-60).map(({ id, senderId, text, sentAt, kind, roomId }) => ({ id, senderId, text, sentAt, kind, roomId })) };
 }

@@ -1,4 +1,5 @@
 import { createFeedbackTracker } from './feedback.js';
+import { cornerName } from './tile.js';
 
 const $ = id => document.getElementById(id);
 const NS = 'http://www.w3.org/2000/svg';
@@ -32,7 +33,7 @@ function symbol(kind) {
 }
 
 export function createFeedbackUI() {
-  const tracker = createFeedbackTracker();
+  const tracker = createFeedbackTracker({ locationName: cornerName });
   const dialog = $('event-dialog');
   let displayed = null;
   let queue = [];
@@ -104,6 +105,11 @@ export function createFeedbackUI() {
     $('event-body').textContent = event.body;
     $('event-visibility').textContent = event.privateLabel;
     $('event-symbol').replaceChildren(symbol(event.symbol));
+    $('event-locate').hidden = !event.cornerId;
+    $('event-locate').onclick = () => {
+      close();
+      document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: { cornerId: event.cornerId } }));
+    };
     $('event-companions').hidden = true;
     $('event-companions').replaceChildren();
     tracker.dismiss(event.id);
@@ -174,9 +180,11 @@ export function createFeedbackUI() {
         canReview = Boolean(state.round?.result);
         const resolution = state.round?.resolution;
         const vote = state.undo?.pending;
-        hasCurrentResponse = Boolean(state.round?.interruption?.canRespond
+        const walkie = state.round?.walkie;
+        hasCurrentResponse = !canReview && Boolean(state.round?.interruption?.canRespond
           || resolution && resolution.kind !== 'waiting' && resolution.playerId === state.you
           || state.round?.pendingAction && state.round?.hako?.playerId === state.you
+          || walkie?.pairRequest?.targetId === state.you || walkie?.showRequest
           || vote?.requiredIds?.includes(state.you) && !vote.approvedIds?.includes(state.you));
       }
       const events = tracker.receive(state);

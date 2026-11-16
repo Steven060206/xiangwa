@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getChatView, sendChat } from '../src/chat.mjs';
+import { invalidateWalkieForTheft, invalidateWalkieForDeath } from '../src/walkie.mjs';
 
 const fixture = () => ({ players: ['h', 'a', 'b', 'c'].map(id => ({ id })), play: {
   round: { hakoId: 'h', visitors: [
@@ -65,4 +66,66 @@ test('chat survives JSON storage and bounds both global and participant historie
   assert.equal(getChatView(restored, 'a').messages.length, 60);
   assert.equal(getChatView(restored, 'c').messages.length, 0);
   assert.deepEqual(getChatView(restored, 'a'), getChatView(room, 'a'));
+});
+
+function radioRoom() {
+  const room = fixture();
+  room.play.inventories = {
+    a: { items: [{ id: 'walkie_talkie' }], tokens: [] },
+    b: { items: [{ id: 'walkie_companion' }], tokens: [] },
+    c: { items: [], tokens: [] },
+  };
+  room.play.walkie = { pair: { ownerId: 'a', partnerId: 'b' }, invalidReason: null, results: {} };
+  room.play.round.visitors[1].roomId = 'study_room';
+  return room;
+}
+
+test('the fixed walkie channel reaches only both device holders without merging their room channels', () => {
+  const room = radioRoom();
+  assert.deepEqual(getChatView(room, 'a').channels.map(channel => channel.kind), ['room', 'walkie']);
+  assert.equal(getChatView(room, 'a').channel.kind, 'room');
+  sendChat(room, 'a', { text: 'paired secret', channelKind: 'walkie', roomId: null, recipientIds: ['c', 'h'] }, 1000);
+  assert.equal(getChatView(room, 'b').messages[0].text, 'paired secret');
+  for (const id of ['c', 'h']) {
+    assert.deepEqual(getChatView(room, id).messages, []);
+    assert.equal(getChatView(room, id).channels.some(channel => channel.kind === 'walkie'), false);
+  }
+  sendChat(room, 'b', { text: 'room only', channelKind: 'room', roomId: 'study_room' }, 2000);
+  assert.equal(getChatView(room, 'c').messages[0].text, 'room only');
+  assert.equal(getChatView(room, 'a').messages.length, 1);
+  assert.throws(() => sendChat(room, 'c', { text: 'forged', channelKind: 'walkie', roomId: null }, 3000), /对象已改变/);
+  assert.throws(() => sendChat(room, 'a', { text: 'forged room', channelKind: 'walkie', roomId: 'bathroom_room' }, 3000), /对象已改变/);
+});
+
+test('theft and death remove the private send channel permanently while preserving previously received messages', () => {
+  for (const cause of ['theft', 'death']) {
+    const room = radioRoom();
+    sendChat(room, 'a', { text: 'old private message', channelKind: 'walkie', roomId: null }, 1000);
+    if (cause === 'theft') invalidateWalkieForTheft(room.play, { id: 'walkie_companion' });
+    else {
+      room.play.round.visitors[1].status = 'box_person';
+      room.play.ghosts.push({ playerId: 'b', cornerId: 'children_bed', banished: false });
+      invalidateWalkieForDeath(room.play, 'b');
+    }
+    for (const id of ['a', 'b']) {
+      assert.equal(getChatView(room, id).channels.some(channel => channel.kind === 'walkie'), false);
+      assert.equal(getChatView(room, id).messages[0].text, 'old private message');
+    }
+    assert.throws(() => sendChat(room, 'a', { text: 'cannot send', channelKind: 'walkie', roomId: null }, 3000), /对象已改变/);
+    assert.deepEqual(getChatView(room, 'h').messages, []);
+    const restored = JSON.parse(JSON.stringify(room));
+    assert.equal(getChatView(restored, 'a').channels.some(channel => channel.kind === 'walkie'), false);
+    assert.equal(getChatView(restored, 'b').messages[0].text, 'old private message');
+  }
+});
+
+test('walkie text does not trigger same-room hako death or disclose the contents globally', () => {
+  const room = radioRoom();
+  room.play.round.hidingCornerId = 'study_books';
+  sendChat(room, 'b', { text: 'text remains safe', channelKind: 'walkie', roomId: null }, 1000);
+  assert.equal(room.play.round.visitors[1].status, 'alive');
+  assert.deepEqual(room.play.ghosts, []);
+  assert.equal(room.play.itemEvents, undefined);
+  assert.deepEqual(getChatView(room, 'c').messages, []);
+  assert.deepEqual(getChatView(room, 'h').messages, []);
 });

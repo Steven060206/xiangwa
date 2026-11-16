@@ -54,3 +54,13 @@ test('undo invalidates same-step local drafts without relying on a saved schema 
   assert.notEqual(draftScope(state), before);
   assert.equal(stepKey(state), stepKey(structuredClone(state)));
 });
+
+test('walkie requests and fixed partner changes delimit private selection drafts', () => {
+  const state = fixture();
+  state.round.walkie = { state: 'active', partnerId: 'visitor', showRequest: { id: 'show-a' } };
+  const next = structuredClone(state);
+  next.round.walkie.showRequest.id = 'show-b';
+  assert.notEqual(stepKey(state), stepKey(next));
+  next.round.walkie = { state: 'inactive', partnerId: 'visitor' };
+  assert.notEqual(stepKey(state), stepKey(next));
+});

@@ -33,8 +33,9 @@ function openingAction(opening, you, random) {
     case 'hiding_room': return { type: 'inspect_initial_room', roomId: pick(opening.hidingRooms, random)?.id };
     case 'hiding_corner': return { type: 'choose_initial_hiding', cornerId: pick(opening.hidingTargets, random) };
     case 'power': {
-      const power = opening.initialPowerOptions.find(card => card.id === 1)
-        ?? opening.initialPowerOptions.find(card => POWER_ORDER.includes(card.id));
+      const options = opening.initialPowerOptions.filter(card => card.canChoose !== false && card.id !== 4);
+      const power = options.find(card => card.id === 1)
+        ?? options.find(card => POWER_ORDER.includes(card.id));
       return power ? { type: 'choose_initial_power', powerId: power.id } : null;
     }
     default: return null;
@@ -104,9 +105,9 @@ function activateSimplePower(round, random, interrupt = false) {
   if (!option) return null;
   const action = { type: 'activate_power', slot: option.slot };
   if (option.card.id === 7) {
-    const item = preferredItem(option.stealOptions?.items ?? [], random);
+    const item = pick(option.stealOptions?.items ?? [], random);
     if (option.stealOptions?.canStealToken && (!item || random() < 0.6)) action.stealKind = 'token';
-    else if (item) { action.stealKind = 'item'; action.itemId = item.id; }
+    else if (item) { action.stealKind = 'item'; action.itemIndex = item.index; }
     else return null;
   }
   if (option.card.id === 3) {
@@ -210,11 +211,22 @@ function visitorAction(view, random) {
   if (player?.status !== 'alive') return hidingAction(round, round.ghost, false, random);
   const free = ['visitor_reveal', 'visitor_action'].includes(round.phase) && !(round.silent.revealsRemaining > 0);
   if (free) {
+    const walkie = round.walkie;
+    if (walkie?.pairRequest?.targetId === view.you && walkie.pairRequest.canAccept) {
+      return { type: 'walkie_respond', requestId: walkie.pairRequest.id, accept: true };
+    }
+    if (walkie?.showRequest?.canConfirm && !walkie.showRequest.confirmedIds?.includes(view.you)) {
+      return { type: 'walkie_show_confirm', requestId: walkie.showRequest.id,
+        tokenIds: (round.inventory?.tokens ?? []).map(token => token.id) };
+    }
     const exchange = exchangeAction(view);
     if (exchange) return exchange;
     const humans = view.players.filter(seat => !seat.isBot && round.visitors.some(visitor => visitor.id === seat.id && visitor.status === 'alive'));
     const shouldSurrender = humans.some(seat => round.surrenderVotes.includes(seat.id));
     if (shouldSurrender !== round.surrenderVotes.includes(view.you)) return { type: 'surrender', agree: shouldSurrender };
+    if (round.silent.turnPlayerId === view.you && walkie?.canPair && walkie.pairTargets?.length) {
+      return { type: 'walkie_propose', targetId: pick(walkie.pairTargets, random).id };
+    }
   }
   if (round.silent.turnPlayerId !== view.you) return null;
   if (round.phase === 'visitor_reveal') {
@@ -249,11 +261,7 @@ export function chooseBotAction(view, { random = Math.random } = {}) {
     case 'lobby': return view.players.find(player => player.id === view.you).ready ? null : { type: 'ready', ready: true };
     // The person chooses whether to play hako or invite a bot to claim the role.
     case 'hako_selection': case 'game_over': return null;
-    case 'item_draft': {
-      if (view.draft?.turnPlayerId !== view.you) return null;
-      const item = preferredItem(view.draft.availableItems, random);
-      return item ? { type: 'choose_item', itemId: item.id } : null;
-    }
+    case 'item_draft': return null; // Legacy drafts are completed atomically by the server.
     case 'map_setup': {
       if (view.setup?.turnPlayerId !== view.you) return null;
       if (!view.setup.drawnTileId) return { type: 'draw' };

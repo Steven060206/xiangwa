@@ -30,7 +30,7 @@ function feedbackFixture(setup, opening, options) {
 }
 
 test('mobile feedback flow names tapped corners, explains notebooks and shares discoveries with temporary room-only cry markers', { timeout: 90000 }, async t => {
-  const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: feedbackFixture });
+  const server = createGameServer({ deck, initialItemOrder: ['walkie_talkie', 'spirit_pen', 'ventriloquist_doll'], silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: feedbackFixture });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -80,10 +80,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(hako, 'start');
   let state = await act(hako, 'claim_hako');
-  for (let index = 0; index < 3; index++) {
-    const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-    state = await act(person, 'choose_item', { itemId: state.draft.availableItems[0].id });
-  }
+  assert.equal(state.phase, 'map_setup');
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -123,7 +120,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   await hp.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
   assert.deepEqual(await hp.getByTestId('initial-power-select').locator('option').evaluateAll(options => options.map(option => Number(option.value))),
     candidates.map(card => card.id));
-  state = await act(hako, 'choose_initial_power', { powerId: candidates[0].id });
+  state = await act(hako, 'choose_initial_power', { powerId: candidates.find(card => card.canChoose !== false).id });
   assert.equal(await fp.locator('.initial-power-public').count(), 0, 'A visitor DOM does not disclose the selected initial power');
   assert.equal((await snapshot(first)).initialPower == null, true);
   assert.match(await fp.getByTestId('total-rounds').innerText(), /0/);

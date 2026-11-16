@@ -50,7 +50,8 @@ function fixture({ roomId = 'bathroom_room', power4 = false } = {}) {
 }
 
 async function session(t, options = {}) {
-  const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: fixture(options) });
+  const initialItemOrder = options.items || ['night_vision', 'stethoscope', 'walkie_talkie'];
+  const server = createGameServer({ deck, initialItemOrder, silentNumbers: [0, 1, 2, 3, 4, 5], createPlayState: fixture(options) });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -136,9 +137,8 @@ async function session(t, options = {}) {
   for (const person of people) await act(person, 'ready', { ready: true });
   await act(people[0], 'start');
   let state = await act(people[0], 'claim_hako');
-  for (const itemId of options.items || ['night_vision', 'stethoscope', 'walkie_talkie']) {
-    state = await act(people.find(person => person.playerId === state.draft.turnPlayerId), 'choose_item', { itemId });
-  }
+  assert.equal(state.phase, 'map_setup');
+  assert.deepEqual(state.initialItems.map(choice => choice.itemId), initialItemOrder);
   while (state.phase === 'map_setup') {
     const person = people.find(person => person.playerId === state.setup.turnPlayerId);
     state = await act(person, 'draw');
@@ -150,7 +150,7 @@ async function session(t, options = {}) {
     await act(people[0], 'place_remains', { cornerId: 'living_sofa' });
     await act(people[0], 'inspect_initial_room', { roomId: 'children_room' });
     state = await act(people[0], 'choose_initial_hiding', { cornerId: 'children_cabinet' });
-    return act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions[0].id });
+    return act(people[0], 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   }
   return { people, act, snapshot, click, open, chat, finishOpening };
 }
@@ -324,7 +324,13 @@ test('NO.4 reorder drafts use their own step and hiding room commitment starts a
   const order = [...ids].reverse();
   for (let index = 0; index < ids.length; index++) await hp.locator(`[data-testid="power-rearrange-source"][data-corner-id="${ids[index]}"]`).selectOption(order[index]);
   await hp.locator(`[data-testid="power-rearrange-face-down"][data-corner-id="${ids[0]}"]`).check();
+  const mapContextOpen = () => hp.evaluate(() => Boolean(document.getElementById('map-context')?.matches(':popover-open')));
+  assert.equal(await mapContextOpen(), false, 'Direct NO.4 control choices only preview the map');
+  await hp.locator(`.corner-location[data-corner-id="${ids[0]}"]`).click();
+  assert.equal(await mapContextOpen(), true, 'Clicking the map still opens its nearby context');
+  await hp.locator('#map-context').getByRole('button', { name: '收起', exact: true }).click();
   await chat(hako, '重排按当前排列确认');
+  assert.equal(await mapContextOpen(), false, 'Restoring a NO.4 draft after chat does not reopen the map context');
   assert.deepEqual(await hp.getByTestId('power-rearrange-source').evaluateAll(selects => selects.map(select => select.value)), order);
   assert.equal(await fp.getByTestId('power-rearrangement').count(), 0, 'Visitors never receive rearrangement controls');
   const reordered = await click(hp, 'power_rearrange', () => hp.getByTestId('power-rearrange-submit').click());
@@ -339,6 +345,10 @@ test('NO.4 reorder drafts use their own step and hiding room commitment starts a
   assert.equal(await hp.getByTestId('activate-power').count(), 0, 'Room commitment ends phase ability selection');
   const cornerId = (await snapshot(hako)).round.hako.hidingTargets.at(-1);
   await hp.getByTestId('hiding-select').selectOption(cornerId);
+  assert.equal(await mapContextOpen(), false, 'Choosing a hiding corner in the action panel does not open the map context');
+  await chat(first, '潜伏角落保持当前选择');
+  assert.equal(await hp.getByTestId('hiding-select').inputValue(), cornerId);
+  assert.equal(await mapContextOpen(), false, 'Synchronizing the hiding draft leaves the map context closed');
   const hidden = await click(hp, 'hako_hide', () => hp.getByTestId('confirm-hiding').click());
   assert.equal(hidden.payload.cornerId, cornerId);
   assert.equal((await snapshot(first)).round.hako.cornerId, undefined);

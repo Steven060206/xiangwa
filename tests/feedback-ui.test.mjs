@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createFeedbackTracker } from '../public/feedback.js';
-import { createFeedbackUI } from '../public/feedback-view.js';
+import { readFile } from 'node:fs/promises';
+import { createFeedbackTracker, describeItemEvent } from '../public/feedback.js';
+
+// Node resolves the browser's /shared route as a disk root; keep the real map module in this harness.
+const tileSource = (await readFile(new URL('../public/tile.js', import.meta.url), 'utf8'))
+  .replace("'/shared/maps.mjs'", JSON.stringify(new URL('../src/maps.mjs', import.meta.url).href));
+const feedbackSource = (await readFile(new URL('../public/feedback-view.js', import.meta.url), 'utf8'))
+  .replace("'./tile.js'", JSON.stringify(`data:text/javascript;base64,${Buffer.from(tileSource).toString('base64')}`))
+  .replace("'./feedback.js'", JSON.stringify(new URL('../public/feedback.js', import.meta.url).href));
+const { createFeedbackUI } = await import(`data:text/javascript;base64,${Buffer.from(feedbackSource).toString('base64')}`);
 
 function state(version = 1, you = 'visitor-a') {
   return {
@@ -34,6 +42,79 @@ function trackerWith(initial = state(), options) {
   assert.deepEqual(tracker.receive(initial), []);
   return tracker;
 }
+
+test('public skill events distinguish declaration, completion and interruption without private results', () => {
+  let current = state();
+  const tracker = trackerWith(current);
+  for (const [index, status] of ['declared', 'triggered', 'interrupted', 'ineffective'].entries()) {
+    current = nextState(current, value => {
+      value.round.items.events ||= [];
+      value.round.items.events.push({ id: `item-${index}`, kind: `item_${status}`, itemId: 'smartphone', userId: value.you, status });
+    });
+    const [event] = tracker.receive(current);
+    assert.equal(event.privateLabel, '全员可见');
+    assert.equal(event.highlight, true);
+    assert.match(event.title, /智能手机/);
+    assert.doesNotMatch(event.body, /NO\.|动来动去/);
+    assert.match(event.title + event.body, { declared: /声明.*尚未/, triggered: /已触发/, interrupted: /被打断/, ineffective: /未生效/ }[status]);
+  }
+  assert.deepEqual(tracker.receive(structuredClone(current)), []);
+});
+
+test('death emits one public fixed-corner highlight and does not replay after hiding or refresh', () => {
+  const initial = state();
+  const tracker = trackerWith(initial, { locationName: id => id === 'children_cabinet' ? '19 · 儿童房 · 壁橱' : id });
+  const dead = nextState(initial, value => {
+    value.round.visitors[0].status = 'box_person';
+    value.round.deathEvents = [{ id: 'death-1', userId: value.you, cornerId: 'children_cabinet' }];
+    value.round.items.events = [{ id: 'death-1', kind: 'death', userId: value.you, cornerId: 'children_cabinet' }];
+  });
+  const [event, ...rest] = tracker.receive(dead);
+  assert.deepEqual(rest, []);
+  assert.equal(event.cornerId, 'children_cabinet');
+  assert.equal(event.privateLabel, '全员可见');
+  assert.match(event.body, /19 · 儿童房 · 壁橱.*技能牌已消失/);
+  assert.deepEqual(tracker.receive(nextState(dead, value => { value.round.deathLocations = []; })), []);
+  trackerWith(dead);
+});
+
+test('walkie requests and selected-token results highlight only their private filtered snapshots', () => {
+  let current = state();
+  const tracker = trackerWith(current);
+  current = nextState(current, value => { value.round.walkie = { pairRequest: { id: 'pair1', fromId: 'visitor-b', targetId: value.you } }; });
+  let [event] = tracker.receive(current);
+  assert.match(event.title, /访问者乙邀请你配对/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.highlight, true);
+  assert.equal(event.requiresResponse, true);
+  assert.equal(event.view, 'action');
+  current = nextState(current, value => { value.round.walkie = { showRequest: { id: 'show1', fromId: value.you, targetId: 'visitor-b' } }; });
+  [event] = tracker.receive(current);
+  assert.match(event.title, /访问者乙互看标志/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.requiresResponse, true);
+  current = nextState(current, value => { value.round.walkie = { lastShow: { id: 'show1', fromId: 'visitor-b', tokens: [{ id: 'password_4', type: 'password', number: 4 }] } }; });
+  [event] = tracker.receive(current);
+  assert.match(event.body, /密码4/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.requiresResponse, false);
+  assert.deepEqual(tracker.receive(nextState(current)), []);
+  const publicEvent = describeItemEvent({ itemId: 'walkie_talkie', userId: 'visitor-a', targetId: 'visitor-b', operation: 'show' }, current);
+  assert.match(publicEvent.body, /访问者甲与访问者乙进行标志互看/);
+  assert.doesNotMatch(JSON.stringify(publicEvent), /密码4/);
+  const outsider = state(1, 'hako');
+  assert.deepEqual(trackerWith(outsider).receive(nextState(outsider)), []);
+});
+
+test('an early despair draw is a private failed acquisition instead of a success', () => {
+  const initial = state(1, 'hako');
+  const tracker = trackerWith(initial);
+  const [event] = tracker.receive(nextState(initial, value => { value.round.powers.lastDraw = { kind: 'despair_locked', cards: [] }; }));
+  assert.match(event.title, /绝望时刻尚未到来/);
+  assert.match(event.body, /没有获得新能力/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.tone, 'attention');
+});
 
 test('first snapshot and refresh establish a quiet baseline with existing belongings', () => {
   const initial = state();
@@ -154,6 +235,24 @@ test('private peek discoveries come only from the filtered resolution, including
   assert.deepEqual(owner.receive(nextState(peek, value => {
     value.round.resolution.replacementTokens = [{ id: 'key', type: 'key' }];
   })), []);
+});
+
+test('private non-notebook discoveries retain their filtered corner for map review', () => {
+  const initial = state();
+  const tracker = trackerWith(initial, { locationName: () => '07 · 浴室 · 废旧马桶' });
+  const peek = nextState(initial, value => {
+    value.round.resolution = { kind: 'peek', playerId: value.you, cornerId: 'bathroom_toilet',
+      token: { id: 'password_4', type: 'password', number: 4 } };
+  });
+  const [event] = tracker.receive(peek);
+  assert.equal(event.cornerId, 'bathroom_toilet');
+  assert.match(event.body, /07 · 浴室 · 废旧马桶/);
+  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.requiresResponse, true);
+  const observer = trackerWith(state(1, 'visitor-b'));
+  peek.you = 'visitor-b';
+  peek.round.resolution = { kind: 'waiting', playerId: 'visitor-a' };
+  assert.deepEqual(observer.receive(peek), []);
 });
 
 test('anonymous abilities use their notice serial, including repeat answers in the same cycle', () => {
@@ -461,6 +560,7 @@ function feedbackDocument(t) {
   const oldDocument = globalThis.document;
   const nodes = new Map();
   const navigations = [];
+  const locations = [];
   const documentListeners = new Map();
   class Element {
     children = [];
@@ -498,13 +598,14 @@ function feedbackDocument(t) {
     },
     dispatchEvent(event) {
       if (event.type === 'game-navigate') navigations.push(event.detail.view);
+      if (event.type === 'hako:locate-corner') locations.push(event.detail.cornerId);
       for (const listener of documentListeners.get(event.type) || []) listener(event);
       return true;
     },
   };
   const ui = createFeedbackUI();
   t.after(() => { ui.clear(); globalThis.document = oldDocument; });
-  return { ui, nodes, navigations, node: id => document.getElementById(id) };
+  return { ui, nodes, navigations, locations, node: id => document.getElementById(id) };
 }
 
 test('important events queue without rewriting a card, mark reads, and retain unread history after close', t => {
@@ -594,4 +695,53 @@ test('a finished game offers review while an old task remains readable and old s
   assert.equal(node('event-primary-action').textContent, '查看复盘');
   node('event-primary-action').emit('click');
   assert.deepEqual(navigations, ['review']);
+});
+
+test('event map locations remain tied to the displayed card and never submit a game action', t => {
+  const { ui, node, navigations, locations } = feedbackDocument(t);
+  const initial = state();
+  ui.receive(initial);
+  const death = nextState(initial, value => {
+    value.round.visitors[1].status = 'box_person';
+    value.round.deathEvents = [{ id: 'death-1', userId: 'visitor-b', cornerId: 'children_cabinet' }];
+  });
+  ui.receive(death);
+  assert.equal(node('event-locate').hidden, false);
+  node('event-locate').onclick();
+  assert.equal(node('event-dialog').open, false);
+  assert.deepEqual(locations, ['children_cabinet']);
+  assert.deepEqual(navigations, []);
+  const peek = nextState(death, value => {
+    value.round.resolution = { kind: 'peek', playerId: value.you, cornerId: 'bathroom_toilet',
+      token: { id: 'password_4', type: 'password', number: 4 } };
+  });
+  ui.receive(peek);
+  const shared = nextState(peek, value => {
+    value.round.sharedTokens = { kind: 'shown_token', fromId: 'visitor-b', token: { id: 'key', type: 'key' } };
+  });
+  ui.receive(shared);
+  assert.equal(node('event-locate').hidden, false);
+  assert.match(node('event-title').textContent, /密码4/);
+  node('event-next').emit('click');
+  assert.match(node('event-title').textContent, /展示了钥匙/);
+  assert.equal(node('event-locate').hidden, true);
+  assert.deepEqual(navigations, []);
+});
+
+test('an outstanding walkie response routes an older inventory card to the current controls', t => {
+  const { ui, node, navigations } = feedbackDocument(t);
+  const initial = state();
+  ui.receive(initial);
+  const acquired = nextState(initial, value => value.round.inventory.tokens.push({ id: 'key', type: 'key' }));
+  ui.receive(acquired);
+  assert.equal(node('event-primary-action').textContent, '查看物品');
+  const request = nextState(acquired, value => {
+    value.round.walkie = { pairRequest: { id: 'pair-1', fromId: 'visitor-b', targetId: value.you } };
+  });
+  ui.receive(request);
+  assert.equal(node('event-title').textContent, '获得了钥匙');
+  assert.match(node('event-next').textContent, /待回应/);
+  assert.equal(node('event-primary-action').textContent, '查看当前步骤');
+  node('event-primary-action').emit('click');
+  assert.deepEqual(navigations, ['action']);
 });

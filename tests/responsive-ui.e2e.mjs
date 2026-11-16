@@ -11,7 +11,8 @@ const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children',
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
 async function session(t, playerCount) {
-  const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5],
+  const initialItemOrder = ['night_vision', 'stethoscope', 'relic_ring', 'deduction'].slice(0, playerCount - 1);
+  const server = createGameServer({ deck, initialItemOrder, silentNumbers: [0, 1, 2, 3, 4, 5],
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
       for (const [tokenId, target] of [['notebook_2', 'bathroom_toilet'], ['password_5', 'bathroom_washer']]) {
@@ -97,12 +98,6 @@ async function session(t, playerCount) {
   let state = await act(people[0], 'claim_hako');
   async function prepare({ finish = true } = {}) {
     state = await snapshot(people[0]);
-    while (state.draft) {
-      const person = people.find(person => person.playerId === state.draft.turnPlayerId);
-      const preferred = person.playerId === people[1].playerId ? 'night_vision' : null;
-      const itemId = state.draft.availableItems.find(item => item.id === preferred)?.id || state.draft.availableItems[0].id;
-      state = await act(person, 'choose_item', { itemId });
-    }
     while (state.phase === 'map_setup') {
       const person = people.find(person => person.playerId === state.setup.turnPlayerId);
       state = await act(person, 'draw');
@@ -118,7 +113,7 @@ async function session(t, playerCount) {
   }
   async function finishOpening() {
     const current = await snapshot(people[0]);
-    state = await act(people[0], 'choose_initial_power', { powerId: current.opening.initialPowerOptions[0].id });
+    state = await act(people[0], 'choose_initial_power', { powerId: current.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
     return state;
   }
   return { people, state, act, snapshot, click, open, prepare, finishOpening };
@@ -129,21 +124,17 @@ async function dismiss(page) {
   if (await page.locator('#event-dialog').evaluate(dialog => dialog.open)) await page.locator('#event-close').click();
 }
 
-test('five-player draft requires explicit selection and responsive exploration keeps actions and the map reachable', { timeout: 120000 }, async t => {
+test('five-player random deals and responsive exploration keep actions and the map reachable', { timeout: 120000 }, async t => {
   const game = await session(t, 5);
-  const { people, snapshot, act, open, click } = game;
+  const { people, snapshot, act, open } = game;
   const first = people[1];
   const page = await open(first);
-  assert.equal(await page.getByTestId('item-choice').isDisabled(), true);
-  const before = await snapshot(first);
-  const last = page.getByTestId('item-select').last();
-  const selectedId = await last.getAttribute('data-item-id');
-  await last.click();
-  assert.equal((await snapshot(first)).version, before.version, 'Browsing a card does not claim it');
-  assert.equal(await last.getAttribute('aria-pressed'), 'true');
-  assert.equal(await page.getByTestId('item-choice').getAttribute('data-item-id'), selectedId);
-  await click(page, 'choose_item', () => page.getByTestId('item-choice').click());
-  assert.equal((await snapshot(first)).initialItems.find(item => item.playerId === first.playerId).itemId, selectedId);
+  assert.equal(await page.getByTestId('item-choice').count(), 0, 'Random dealing proceeds directly to map setup');
+  const dealt = await snapshot(first);
+  assert.equal(dealt.phase, 'map_setup');
+  assert.equal(dealt.initialItems.length, 4);
+  assert.equal(new Set(dealt.initialItems.map(choice => choice.itemId)).size, 4, 'All four visitors receive distinct cards');
+  assert.equal(dealt.initialItems.find(item => item.playerId === first.playerId).itemId, 'night_vision');
   await game.prepare({ finish: false });
   await dismiss(page);
   await nav(page, 'map');
@@ -241,6 +232,7 @@ test('slow and truncated successful actions recover through read-only state chec
     && document.getElementById('connection-state').textContent === '已连接');
   assert.equal((await snapshot(first)).version, beforeRecovery.version, 'An unchanged poll confirms the same accepted action');
   assert.equal(mirrorPosts, 1, 'Polling recovery never resends the uncertain action');
+  await dismiss(mirror);
   await act(hako, 'resolve_visitor_action');
   await mirror.waitForFunction(() => document.getElementById('event-dialog').open);
   assert.match(await mirror.getByTestId('event-title').innerText(), /密码5/);

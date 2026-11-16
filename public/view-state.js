@@ -80,6 +80,8 @@ export function stepKey(state) {
     resolution?.kind, resolution?.playerId, resolution?.cornerId, resolution?.token?.id,
     round?.pendingAction, round?.interruption?.kind, round?.interruption?.canRespond,
     round?.exchangeOffers?.map(offer => offer.id),
+    round?.walkie?.state, round?.walkie?.partnerId,
+    round?.walkie?.pairRequest?.id, round?.walkie?.showRequest?.id,
     round?.powers?.step, round?.powers?.canCry, round?.powers?.canManage,
     Boolean(round?.powers?.pathRooms?.length), round?.powers?.pathInspection?.roomId, round?.powers?.rearrangement?.roomId,
     round?.powers?.rearrangement?.corners?.map(corner => corner.id),

@@ -56,6 +56,12 @@ function dueGroup(play) {
   play.round.visitors[1].roomId = 'children_room';
   play.powers.pendingBehindYou = { cycle: play.round.silent.cycle };
   play.inventories[first].items.push(structuredClone(INITIAL_ITEMS.find(item => item.id === 'relic_ring')));
+  for (const [id, tokenId] of [[first, 'password_4'], [second, 'password_6']]) {
+    const source = Object.keys(play.tokens).find(corner => play.tokens[corner]?.id === tokenId);
+    assert.ok(source);
+    play.inventories[id].tokens.push(play.tokens[source]);
+    play.tokens[source] = null;
+  }
   return play;
 }
 
@@ -104,10 +110,11 @@ test('an eligible flipper retains the exclusive window; explicit decline merges 
   assert.throws(() => applyPlayAction(declined, first, { type: 'extinguisher_response', use: true }));
 });
 
-test('automatic overflow settles due grouped deaths before mandatory empty and relic-ring inheritance', () => {
+test('automatic overflow settles due grouped deaths, removes skill cards and skips empty-token inheritance', () => {
   for (const decline of [false, true]) {
     let play = dueGroup(beforeOverflow());
-    play.inventories[second] = { tokens: [], items: [] };
+    const emptyCorner = Object.keys(play.tokens).find(corner => !play.tokens[corner]);
+    play.tokens[emptyCorner] = play.inventories[second].tokens.pop();
     if (decline) play.inventories[first].tokens.push(piece('declined', 'extinguisher'));
     const legacy = legacyRevealed(play);
     if (decline) legacy.powers.noiseRespondedCycle = legacy.round.silent.cycle;
@@ -117,15 +124,17 @@ test('automatic overflow settles due grouped deaths before mandatory empty and r
     assert.deepEqual(play, expected);
     assert.deepEqual(play.round.visitors.map(player => player.status), ['box_person', 'box_person', 'alive']);
     assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: first });
-    assert.deepEqual(play.inheritanceQueue, [second]);
+    assert.deepEqual(play.inheritanceQueue, []);
     assert.deepEqual(play.ringAllies, [first]);
     assert.equal(play.round.silent.resumePlayerId, third);
     assert.equal(play.totalRounds, 1);
     assert.equal(play.powers.pendingBehindYou, null);
+    assert.deepEqual(play.inventories[first].items, [], 'all skill cards leave play before the inheritance decision');
+    assert.ok(play.removedItems.some(item => item.id === 'relic_ring'));
     assert.throws(() => applyPlayAction(play, hako, { type: 'begin_hako_action' }));
     play = act(play, first, { type: 'bequeath', targetId: third });
-    assert.deepEqual(play.resolution, { kind: 'inheritance', playerId: second }, 'empty inventory still requires its owner to confirm');
-    play = act(play, second, { type: 'bequeath', targetId: third });
+    assert.equal(play.resolution, null, 'the victim without carried tokens has no empty inheritance step');
+    assert.throws(() => applyPlayAction(play, second, { type: 'bequeath', targetId: third }));
     assert.equal(play.resolution, null);
     assert.equal(play.totalRounds, 1);
     assert.equal(play.ghosts.length, 2, 'settled deaths cannot run again after inheritance');
