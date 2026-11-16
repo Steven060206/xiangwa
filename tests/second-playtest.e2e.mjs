@@ -146,7 +146,8 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   assert.equal(memoryBeforeControls, true, 'Private replaced-piece record sits next to the current position, before action controls');
   const cornerSize = await fp.locator('.corner-mark').first().getAttribute('width');
   assert.equal(cornerSize, '14');
-  assert.equal(await fp.locator('.corner-hit-area').first().getAttribute('width'), '18');
+  assert.ok(Number(await fp.locator('.corner-hit-area').first().getAttribute('width')) >= 36,
+    'The touch hit area is larger than the visible corner marker');
   await fp.getByTestId('possession-sharing').locator('summary').click();
   await fp.getByTestId('show-possession-target').selectOption(people[2].playerId);
   await fp.getByTestId('show-possession-select').selectOption('item:smartphone');
@@ -237,7 +238,7 @@ test('silent door and rearrangement powers empty their slots without names, noti
   for (const page of pages) assert.equal(await page.getByTestId('extinguisher-response').count(), 0,
     'The holder cannot respond to another visitor\'s overflow');
   assert.equal((await snapshot(people[2])).round.inventory.tokens.some(token => token.type === 'extinguisher'), true);
-  await act(people[0], 'pass_noise_reaction');
+  assert.equal((await snapshot(people[0])).round.phase, 'hako_phase');
   await click(hp, 'begin_hako_action', () => hp.getByTestId('begin-hako-action').click());
   assert.equal(await hp.locator('[id^="power-public-"]').count(), 0);
   await click(hp, 'activate_power', () => hp.locator('[data-testid="activate-power"][data-power-id="3"]').click());
@@ -266,7 +267,7 @@ test('anonymous stage activation and truthful or false passive answers announce 
   });
   const [hp, fp, sp] = pages;
   await act(people[1], 'silent_reveal', { index: 2 });
-  await act(people[0], 'pass_noise_reaction');
+  assert.equal((await snapshot(people[0])).round.phase, 'hako_phase');
   await act(people[0], 'begin_hako_action');
   await click(hp, 'activate_power', () => hp.locator('[data-testid="activate-power"][data-power-id="5"]').click());
   for (const page of [fp, sp]) {
@@ -323,8 +324,8 @@ for (const use of [true, false]) test(`mobile overflow owner can ${use ? 'use' :
     assert.equal(state.round.silent.turnPlayerId, people[1].playerId);
     assert.equal(state.round.silent.cycle, 2);
   } else {
-    assert.equal(state.round.phase, 'hako_reaction');
-    await click(hp, 'pass_noise_reaction', () => hp.getByTestId('pass-noise-reaction').click());
+    assert.equal(state.round.phase, 'hako_phase');
+    assert.equal(await hp.getByTestId('pass-noise-reaction').count(), 0);
     await act(people[0], 'begin_hako_action');
     await click(hp, 'activate_power', () => hp.locator('[data-testid="activate-power"][data-power-id="5"]').click());
     assert.equal((await snapshot(people[1])).round.interruption, null);

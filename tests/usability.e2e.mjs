@@ -189,7 +189,7 @@ test('important private events appear above the game, dismiss without acting, an
   await mobile.getByTestId('floor-2').click();
   await mobile.getByTestId('floor-1').click();
   assert.equal(await dialogOpen(mobile), false, 'Local map redraws do not repeat an already dismissed event');
-  state = await click(mobile, 'resolve_peek', () => mobile.getByTestId('resolve-peek').click());
+  state = await click(mobile, 'resolve_peek', () => mobile.getByTestId('resolve-peek-take').click());
   await mobile.waitForFunction(() => document.getElementById('event-dialog').open);
   assert.match(await mobile.getByTestId('event-title').innerText(), /获得|得到|取得/);
   assert.match(await mobile.getByTestId('event-title').innerText(), /密码5/);
@@ -215,6 +215,7 @@ test('important private events appear above the game, dismiss without acting, an
   for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }, { width: 844, height: 390 }]) {
     await mobile.setViewportSize(viewport);
     if (viewport.width === 375) {
+      await mobile.locator('#game-navigation [data-view="map"]').click();
       await mobile.locator('#tile-board .corner-location[data-corner-id="bathroom_toilet"]').tap();
       const selected = mobile.getByTestId('selected-corner-name');
       assert.equal(await selected.isVisible(), true, 'A short-screen tap visibly names the selected corner');
@@ -229,6 +230,7 @@ test('important private events appear above the game, dismiss without acting, an
       assert.ok(placement.top >= placement.boardTop && placement.bottom <= placement.boardBottom
         && placement.left >= placement.boardLeft && placement.right <= placement.boardRight,
       `The selected-corner label stays inside the short-screen map: ${JSON.stringify(placement)}`);
+      await mobile.locator('#game-navigation [data-view="action"]').click();
     }
     const geometry = await mobile.evaluate(() => {
       const elements = Object.fromEntries(['#board-section', '.board-toolbar', '#map-positions', '.board-caption', '.corner-guide', '.game-layout', '.setup-sidebar', '#game-status', '.room-header', '#undo-panel'].map(selector => {
@@ -252,8 +254,8 @@ test('important private events appear above the game, dismiss without acting, an
   console.log(`Usability layout metrics: ${JSON.stringify(layouts)}`);
   for (const { viewport, geometry } of layouts) {
     assert.equal(geometry.fitsWidth, true, `${viewport.width}×${viewport.height}: the page has no horizontal overflow`);
-    assert.ok(geometry.mapHeight >= 150, `${viewport.width}×${viewport.height}: the map retains useful space: ${JSON.stringify(geometry)}`);
-    assert.ok(geometry.controlsHeight >= 160, `${viewport.width}×${viewport.height}: the current controls retain useful space: ${JSON.stringify(geometry)}`);
+    assert.ok(geometry.mapHeight >= 80, `${viewport.width}×${viewport.height}: the compact map remains expandable: ${JSON.stringify(geometry)}`);
+    assert.ok(geometry.controlsHeight >= (viewport.height > 600 ? 260 : 150), `${viewport.width}×${viewport.height}: the current controls retain useful space: ${JSON.stringify(geometry)}`);
     assert.ok(geometry.statusWidth <= geometry.viewportWidth, 'The status strip fits small and landscape viewports');
   }
   await mobile.setViewportSize({ width: 390, height: 844 });
@@ -283,7 +285,7 @@ test('important private events appear above the game, dismiss without acting, an
   assert.ok(pending.undo.pending);
   if (await dialogOpen(mobile)) await mobile.keyboard.press('Escape');
   await mobile.getByTestId('focus-current-action').click();
-  assert.equal(await mobile.getByTestId('resolve-peek').isDisabled(), true,
+  assert.equal(await mobile.getByTestId('resolve-peek-take').isDisabled(), true,
     'Locating the current decision cannot bypass the undo freeze');
   assert.equal(await mobile.getByTestId('surrender').isDisabled(), true);
   assert.equal((await snapshot(first)).undo.pending.id, pending.undo.pending.id);

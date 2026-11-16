@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFeedbackTracker } from '../public/feedback.js';
+import { createFeedbackUI } from '../public/feedback-view.js';
 
 function state(version = 1, you = 'visitor-a') {
   return {
@@ -56,7 +57,8 @@ test('acquired token has its concrete name, rule explanation, privacy and symbol
   assert.equal(event.title, '获得了汽油');
   assert.match(event.body, /讨伐/);
   assert.equal(event.privateLabel, '仅你可见');
-  assert.equal(event.highlight, true);
+  assert.equal(event.highlight, false);
+  assert.equal(event.view, 'inventory');
   assert.equal(event.symbol, 'weapon');
   assert.equal(event.tone, 'success');
   const [extinguisher] = tracker.receive(nextState(next, value => value.round.inventory.tokens.push({
@@ -141,10 +143,10 @@ test('private peek discoveries come only from the filtered resolution, including
         power: { name: '马上就到哟', description: '先发动，再移动两块地图板。' } } };
   });
   const [event] = owner.receive(peek);
-  assert.equal(event.title, '你发现了手记2');
+  assert.equal(event.title, '发现手记2 · 已自动公开');
   assert.equal(event.symbol, 'notebook');
   assert.match(event.body, /马上就到哟：先发动/);
-  assert.equal(event.privateLabel, '仅你可见');
+  assert.equal(event.privateLabel, '手记内容全员可见；发现位置不公开');
   assert.equal(event.highlight, true);
   const other = structuredClone(peek);
   other.round.resolution = { kind: 'waiting', playerId: 'visitor-a' };
@@ -276,7 +278,8 @@ test('cry room, phone card and drawn powers use only fields present in the parti
   assert.equal(events[0].privateLabel, '全员可见');
   assert.equal(events[1].title, '获得了NO.3 打不开的门');
   assert.equal(events[1].privateLabel, '仅你可见');
-  assert.ok(events.every(event => event.highlight));
+  assert.equal(events[0].highlight, true);
+  assert.equal(events[1].highlight, false);
   const visitor = state();
   const visitorTracker = trackerWith(visitor);
   const publicCry = nextState(visitor, value => {
@@ -288,7 +291,8 @@ test('cry room, phone card and drawn powers use only fields present in the parti
   });
   const [phoneEvent] = visitorTracker.receive(phone);
   assert.equal(phoneEvent.title, '手机查看：NO.4 动来动去');
-  assert.equal(phoneEvent.body, '重排一个房间的标志。');
+  assert.match(phoneEvent.body, /重排一个房间的标志/);
+  assert.match(phoneEvent.body, /不表示能力已设置或生效/);
   assert.equal(phoneEvent.privateLabel, '仅你可见');
 });
 
@@ -405,4 +409,189 @@ test('dismiss retains history, clones prevent mutation leaks, history is bounded
   tracker.clear();
   assert.deepEqual(tracker.items(), []);
   assert.deepEqual(tracker.receive(current), []);
+});
+
+test('one notebook discovery merges its automatic publication without publishing the corner', () => {
+  const initial = state();
+  const tracker = trackerWith(initial);
+  const next = nextState(initial, value => {
+    const notebook = { id: 'notebook_10', type: 'notebook', number: 10,
+      power: { id: 10, name: '鬼来电', description: '第一名访问者进入客厅后全体解除。' } };
+    value.round.notebooks.push(notebook);
+    value.round.resolution = { kind: 'notebook', playerId: value.you, cornerId: 'bathroom_toilet', token: notebook };
+  });
+  const [event, duplicate] = tracker.receive(next);
+  assert.equal(duplicate, undefined);
+  assert.equal(event.title, '发现手记10 · 已自动公开');
+  assert.match(event.body, /对应能力：NO.10 鬼来电/);
+  assert.match(event.body, /卡面说明/);
+  assert.match(event.body, /选择补位方式/);
+  assert.equal(event.requiresResponse, true);
+  assert.doesNotMatch(JSON.stringify(event), /bathroom_toilet|废旧马桶/);
+  const observer = trackerWith(state(1, 'visitor-b'));
+  const filtered = structuredClone(next);
+  filtered.you = 'visitor-b';
+  filtered.round.resolution = { kind: 'waiting', playerId: 'visitor-a' };
+  const [publicEvent] = observer.receive(filtered);
+  assert.equal(publicEvent.title, '手记10已公开');
+  assert.equal(publicEvent.privateLabel, '全员可见');
+  assert.doesNotMatch(JSON.stringify(publicEvent), /bathroom_toilet|发现位置|补位/);
+});
+
+test('response events describe current controls and victory routes to review', () => {
+  const initial = state(1, 'hako');
+  const tracker = trackerWith(initial);
+  const declared = nextState(initial, value => {
+    value.round.pendingAction = { type: 'peek', playerId: 'visitor-a', cornerId: 'bathroom_toilet' };
+    value.undo.pending = { id: 'vote-1', requiredIds: ['hako'], approvedIds: [] };
+  });
+  const responses = tracker.receive(declared);
+  assert.deepEqual(responses.map(event => event.title), ['请回应撤销请求', '请确认访问者行动']);
+  assert.ok(responses.every(event => event.requiresResponse && event.view === 'action'));
+  assert.doesNotMatch(JSON.stringify(responses), /bathroom_toilet/);
+  const question = nextState(declared, value => {
+    value.round.resolution = { kind: 'item_answer', playerId: 'hako', userId: 'visitor-a' };
+  });
+  assert.equal(tracker.receive(question)[0].title, '请回答道具询问');
+  const ending = nextState(question, value => { value.round.result = { winner: 'hako', reason: '访问者投降。' }; });
+  assert.equal(tracker.receive(ending)[0].view, 'review');
+});
+
+function feedbackDocument(t) {
+  const oldDocument = globalThis.document;
+  const nodes = new Map();
+  const navigations = [];
+  const documentListeners = new Map();
+  class Element {
+    children = [];
+    listeners = new Map();
+    dataset = {};
+    attributes = {};
+    textContent = '';
+    hidden = false;
+    open = false;
+    isConnected = true;
+    classList = { toggle() {} };
+    setAttribute(key, value) { this.attributes[key] = value; }
+    append(...items) { this.children.push(...items); }
+    replaceChildren(...items) { this.children = items; }
+    addEventListener(type, listener) {
+      this.listeners.set(type, [...this.listeners.get(type) || [], listener]);
+    }
+    emit(type, data = {}) {
+      for (const listener of this.listeners.get(type) || []) listener({ target: this, preventDefault() {}, ...data });
+    }
+    focus() { document.activeElement = this; }
+    showModal() { this.open = true; }
+    close() { this.open = false; }
+    hidePopover() {}
+    getClientRects() { return this.hidden ? [] : [{}]; }
+    getBoundingClientRect() { return { left: 10, right: 100, top: 10, bottom: 100 }; }
+  }
+  globalThis.document = {
+    activeElement: new Element(),
+    getElementById(id) { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); },
+    createElement() { return new Element(); },
+    createElementNS() { return new Element(); },
+    addEventListener(type, listener) {
+      documentListeners.set(type, [...documentListeners.get(type) || [], listener]);
+    },
+    dispatchEvent(event) {
+      if (event.type === 'game-navigate') navigations.push(event.detail.view);
+      for (const listener of documentListeners.get(event.type) || []) listener(event);
+      return true;
+    },
+  };
+  const ui = createFeedbackUI();
+  t.after(() => { ui.clear(); globalThis.document = oldDocument; });
+  return { ui, nodes, navigations, node: id => document.getElementById(id) };
+}
+
+test('important events queue without rewriting a card, mark reads, and retain unread history after close', t => {
+  const { ui, node, navigations } = feedbackDocument(t);
+  const initial = state();
+  ui.receive(initial);
+  assert.equal(node('event-dialog').open, false);
+  assert.equal(node('event-count').hidden, true);
+  const next = nextState(initial, value => {
+    value.round.sharedTokens = { kind: 'shown_token', fromId: 'visitor-b', token: { id: 'password_6', type: 'password', number: 6 } };
+    value.round.powers.announcement = { roomId: 'living_room', cycle: 1 };
+  });
+  node('event-primary-action').hidden = true;
+  ui.receive(next);
+  const firstTitle = node('event-title').textContent;
+  const firstBody = node('event-body').textContent;
+  assert.equal(node('event-dialog').open, true);
+  assert.equal(node('event-primary-action').hidden, false);
+  assert.equal(node('event-count').textContent, '1');
+  const response = nextState(next, value => { value.round.interruption = { canRespond: true }; });
+  ui.receive(response);
+  assert.equal(node('event-title').textContent, firstTitle);
+  assert.equal(node('event-body').textContent, firstBody);
+  assert.equal(node('event-companions').children.length, 0);
+  assert.match(node('event-next').textContent, /待回应/);
+  assert.equal(node('event-primary-action').textContent, '查看当前步骤');
+  node('event-next').emit('click');
+  assert.equal(node('event-title').textContent, '请回应灭火器窗口');
+  assert.equal(node('event-count').textContent, '1');
+  node('event-close').emit('click');
+  assert.equal(node('event-dialog').open, false);
+  assert.deepEqual(navigations, []);
+  assert.equal(node('event-count').hidden, false);
+  const unread = node('event-history-list').children.find(row => row.children[0].children[1].textContent.startsWith('未读'));
+  unread.children[0].emit('click');
+  assert.match(node('event-position').textContent, /历史事件/);
+  assert.equal(node('event-count').hidden, true);
+  node('event-primary-action').emit('click');
+  assert.deepEqual(navigations, ['action']);
+  assert.equal(node('event-history-list').children.length, 3);
+  ui.receive(response);
+  assert.equal(node('event-dialog').open, false);
+  assert.equal(node('event-count').hidden, true);
+});
+
+test('ordinary gains use a toast, and escape or outside close restores focus without a game action', t => {
+  const { ui, node, navigations } = feedbackDocument(t);
+  const initial = state();
+  ui.receive(initial);
+  const ordinary = nextState(initial, value => value.round.inventory.items.push({ id: 'night_vision', name: '夜视仪' }));
+  ui.receive(ordinary);
+  assert.equal(node('event-dialog').open, false);
+  assert.equal(node('event-toast').hidden, false);
+  assert.match(node('event-toast').textContent, /获得了夜视仪/);
+  const origin = node('some-input');
+  origin.focus();
+  const important = nextState(ordinary, value => value.round.inventory.tokens.push({ id: 'password_3', type: 'password', number: 3 }));
+  ui.receive(important);
+  assert.equal(node('event-primary-action').textContent, '查看物品');
+  node('event-dialog').emit('cancel');
+  assert.equal(document.activeElement, origin);
+  assert.equal(node('event-dialog').open, false);
+  assert.deepEqual(navigations, []);
+  const next = nextState(important, value => value.round.inventory.tokens.push({ id: 'key', type: 'key' }));
+  ui.receive(next);
+  origin.isConnected = false;
+  node('event-dialog').emit('click', { clientX: 0, clientY: 0 });
+  assert.equal(document.activeElement, node('focus-current-action'));
+  assert.deepEqual(navigations, []);
+  ui.clear();
+  assert.equal(node('event-toast').hidden, true);
+  assert.equal(node('event-history-list').children.length, 0);
+});
+
+test('a finished game offers review while an old task remains readable and old snapshots cannot regress it', t => {
+  const { ui, node, navigations } = feedbackDocument(t);
+  const initial = state();
+  ui.receive(initial);
+  const response = nextState(initial, value => { value.round.interruption = { canRespond: true }; });
+  ui.receive(response);
+  const ending = nextState(response, value => { value.round.result = { winner: 'hako', reason: '访问者投降。' }; });
+  ui.receive(ending);
+  ui.receive(response);
+  assert.equal(node('event-title').textContent, '请回应灭火器窗口');
+  assert.match(node('event-next').textContent, /重大变化/);
+  assert.match(node('event-position').textContent, /历史事件/);
+  assert.equal(node('event-primary-action').textContent, '查看复盘');
+  node('event-primary-action').emit('click');
+  assert.deepEqual(navigations, ['review']);
 });

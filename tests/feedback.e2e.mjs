@@ -129,6 +129,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   assert.match(await fp.getByTestId('total-rounds').innerText(), /0/);
 
   const toilet = fp.locator('#tile-board .corner-location[data-corner-id="bathroom_toilet"]');
+  if (await fp.locator('#map-focus').getAttribute('aria-pressed') !== 'true') await fp.locator('#map-focus').click();
   await toilet.tap();
   const location = await fp.getByTestId('selected-corner-name').innerText();
   assert.match(location, /\d{2}/);
@@ -136,15 +137,20 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   assert.equal(await fp.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 
   const beforePublish = await snapshot(first);
+  await fp.getByTestId('focus-inventory').click();
   state = await click(fp, 'publish_token', () => fp.locator('[data-testid="publish-inventory-token"][data-token-id="password_4"]').click());
   assert.deepEqual(state.round.silent, beforePublish.round.silent);
+  await hp.locator('#game-navigation [data-view="public"]').click();
   assert.match(await hp.getByTestId('public-discoveries').innerText(), /密码4/);
   assert.equal(await fp.getByTestId('inventory-token').filter({ hasText: '密码5' }).count(), 0);
+  await fp.getByTestId('focus-current-action').click();
   await click(fp, 'silent_reveal', () => fp.getByTestId('silent-card-0').click());
   await click(fp, 'peek', () => fp.getByTestId('peek-target').filter({ hasText: '废旧马桶内' }).click());
+  await hp.getByTestId('focus-current-action').click();
   await click(hp, 'resolve_visitor_action', () => hp.getByTestId('resolve-action').click());
   assert.match(await fp.getByTestId('private-resolution').innerText(), /马上就到哟/);
   assert.match(await fp.getByTestId('private-resolution').innerText(), /先发动/);
+  await hp.locator('#game-navigation [data-view="public"]').click();
   assert.match(await hp.getByTestId('notebook-power').innerText(), /马上就到哟/);
   assert.equal(await fp.getByTestId('publish-peek-token').count(), 0);
   state = await snapshot(first);
@@ -177,7 +183,9 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   state = await nextStage();
   assert.equal(state.round.totalRounds, 1);
   assert.match(await fp.getByTestId('total-rounds').innerText(), /1/);
+  await hp.getByTestId('focus-current-action').click();
   await click(hp, 'hako_cry', () => hp.getByTestId('hako-cry').click());
+  if (await fp.locator('#map-focus').getAttribute('aria-pressed') !== 'true') await fp.locator('#map-focus').click();
   await fp.getByTestId('floor-1').click();
   const marker = fp.getByTestId('cry-map-marker');
   assert.equal(await marker.count(), 1);
@@ -186,6 +194,7 @@ test('mobile feedback flow names tapped corners, explains notebooks and shares d
   assert.equal(await fp.locator(`#tile-board .map-player-marker[data-player-id="${hako.playerId}"]`).count(), 0);
   await fp.reload();
   await fp.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
+  if (await fp.locator('#map-focus').getAttribute('aria-pressed') !== 'true') await fp.locator('#map-focus').click();
   assert.equal(await fp.getByTestId('cry-map-marker').count(), 1);
   await fp.getByTestId('cry-map-marker').scrollIntoViewIfNeeded();
   const markerGeometry = await fp.getByTestId('cry-map-marker').evaluate(element => {

@@ -29,6 +29,10 @@ const staticFiles = new Map([
   ['/feedback-view.js', ['../public/feedback-view.js', 'text/javascript; charset=utf-8']],
   ['/chat.js', ['../public/chat.js', 'text/javascript; charset=utf-8']],
   ['/chat.css', ['../public/chat.css', 'text/css; charset=utf-8']],
+  ['/layout.css', ['../public/layout.css', 'text/css; charset=utf-8']],
+  ['/view-state.js', ['../public/view-state.js', 'text/javascript; charset=utf-8']],
+  ['/help.js', ['../public/help.js', 'text/javascript; charset=utf-8']],
+  ['/help.css', ['../public/help.css', 'text/css; charset=utf-8']],
   ['/shared/maps.mjs', ['./maps.mjs', 'text/javascript; charset=utf-8']],
 ]);
 

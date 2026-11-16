@@ -239,6 +239,12 @@ function syncNoiseInterruption(play) {
   const id = overflowExtinguisherHolder(play);
   if (id) play.interruption = { kind: 'noise', responders: [id], passed: [] };
 }
+function finishEmptyOverflowReaction(play) {
+  const silent = play.round.silent;
+  if (play.result || play.resolution || silent.phase !== 'hako_reaction'
+      || silent.trigger !== 'overflow' || silent.total <= 10 || overflowExtinguisherHolder(play)) return;
+  applyRoundAction(play.round, play.round.hakoId, { type: 'pass_noise_reaction' });
+}
 function finishBlockedMove(play) {
   const id = play.round.silent.turnPlayerId;
   if (play.result || play.round.silent.phase !== 'visitor_action' || play.round.pendingAction || play.resolution
@@ -674,6 +680,11 @@ export function applyPlayAction(previous, playerId, action) {
   }
   finishBlockedMove(play);
   checkVictory(play);
+  // Collapse only the empty window created by this reveal or explicit decline.
+  // Legacy saved windows remain read-only until their existing pass action.
+  if (action.type === 'silent_reveal' || action.type === 'extinguisher_response' && action.use === false) {
+    finishEmptyOverflowReaction(play);
+  }
   beginHakoStage(play);
   syncNoiseEffects(play);
   syncNoiseInterruption(play);

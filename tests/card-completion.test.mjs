@@ -211,7 +211,7 @@ test('a three-number plan stops immediately when the first, second or third numb
     for (let index = 0; index < indices.length; index++) {
       play = reveal(play, first, { index: indices[index], ...(index === 0 ? { useBell: true } : {}) });
     }
-    assert.equal(play.round.silent.phase, 'hako_reaction');
+    assert.equal(play.round.silent.phase, 'hako_phase');
     assert.equal(play.round.silent.total, 11);
     assert.equal(play.round.silent.revealsRemaining, 0);
     assert.equal(play.round.silent.cards.filter(card => card.status === 'up').length, up.length + indices.length);

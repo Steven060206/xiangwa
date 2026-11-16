@@ -262,6 +262,7 @@ test('a polling human visitor plays with a bot Hako and recovers the same seat a
   // Other bots may leave the hall before the person acts. This question item
   // remains usable without a companion, unlike the spirit pen.
   assert.ok(state.draft.availableItems.some(item => item.id === 'dowsing_rod'));
+  await page.locator('[data-testid="item-select"][data-item-id="dowsing_rod"]').click();
   await act(page, 'choose_item', () => page.locator('[data-testid="item-choice"][data-item-id="dowsing_rod"]').click());
   let humanPlacements = 0;
   while (humanPlacements < deck.length) {

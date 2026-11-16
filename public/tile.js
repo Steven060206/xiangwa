@@ -146,7 +146,7 @@ export function createTileSvg(tileId, rotation = 0, extraCorners = [], players =
         'data-corner-id': corner.id, 'aria-label': cornerName(corner.id), role: 'button', tabindex: '0' });
       if (corner.id.startsWith('suitcase:')) mark.setAttribute('data-testid', 'suitcase-corner');
       mark.append(el('title', {}, cornerName(corner.id)));
-      mark.append(el('rect', { x: -9, y: -9, width: 18, height: 18, fill: 'transparent', class: 'corner-hit-area' }));
+      mark.append(el('rect', { x: -18, y: -18, width: 36, height: 36, fill: 'transparent', class: 'corner-hit-area' }));
       mark.append(el('rect', { x: -7, y: -7, width: 14, height: 14, rx: 1, class: 'corner-mark' }));
       mark.append(el('text', { x: 0, y: .5, 'text-anchor': 'middle', 'dominant-baseline': 'middle', class: 'corner-number' }, cornerNumber(corner.id)));
       if (corner.id === 'study_desk') {

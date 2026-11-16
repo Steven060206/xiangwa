@@ -196,7 +196,7 @@ test('NO7 browser choices protect random-token privacy, preserve free/standard t
   await fp.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
   await g.click(fp, 'show_token', () => fp.getByTestId('show-token').click());
   const steal = hp.getByTestId('power-steal-0');
-  assert.deepEqual(await steal.locator('option').evaluateAll(options => options.map(option => option.value)), ['item:smartphone', 'token']);
+  assert.deepEqual(await steal.locator('option:not(:disabled)').evaluateAll(options => options.map(option => option.value)), ['item:smartphone', 'token']);
   assert.equal((await steal.innerText()).includes('密码'), false);
   await steal.selectOption('item:smartphone');
   const theft = await g.click(hp, 'activate_power', () => hp.locator('[data-testid="activate-power"][data-power-id="7"]').click());
@@ -324,6 +324,7 @@ test('bell browser rings once, blocks B/C setup while allowing A/ungraded cards 
     assert.equal(await hp.getByTestId('set-power-select').locator(`option[value="${id}"]`).count(), 1);
   }
   await hp.getByTestId('set-power-select').selectOption('3');
+  await hp.getByTestId('set-power-slot').selectOption('1');
   await g.click(hp, 'set_power', () => hp.getByTestId('set-power').click());
   assert.equal((await g.snapshot(hako)).round.powers.slots[1].card.id, 3);
 });

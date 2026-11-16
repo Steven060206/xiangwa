@@ -105,6 +105,7 @@ test('five independent browsers choose five-player mode and complete opening plu
     const id = state.draft.turnPlayerId;
     recipients.push(id);
     const page = pageFor(id);
+    await page.getByTestId('item-select').first().click();
     state = await act(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
   }
   assert.deepEqual(recipients, identities.slice(1).map(person => person.playerId));

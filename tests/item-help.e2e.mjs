@@ -10,7 +10,7 @@ import { INITIAL_ITEMS } from '../src/preparation.mjs';
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 
-test('mobile item choices show effects before picking and update active and night-vision explanations', { timeout: 45000 }, async t => {
+test('mobile item choices separate details, selection and claiming and update active and night-vision explanations', { timeout: 45000 }, async t => {
   const server = createGameServer({ deck, silentNumbers: [0, 1, 2, 3, 4, 5],
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
@@ -57,13 +57,33 @@ test('mobile item choices show effects before picking and update active and nigh
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${base}/?room=${hako.roomCode}`);
-  await page.getByTestId('item-choice-description').first().waitFor();
+  await page.getByTestId('item-select').first().waitFor();
+  let choiceRequests = 0;
+  page.on('request', request => {
+    if (request.method() === 'POST' && request.postDataJSON()?.type === 'choose_item') choiceRequests++;
+  });
+  assert.equal(await page.getByTestId('item-choice').isEnabled(), false, 'Claiming requires an explicit local selection');
   for (const item of INITIAL_ITEMS) {
     const card = page.locator(`.item-list > li[data-item-id="${item.id}"]`);
+    assert.equal(await card.locator('.item-purpose').isVisible(), true, 'The core purpose is available without opening details');
+    assert.equal(await card.getByTestId('item-choice-description').isVisible(), false);
+    await card.locator('.item-full-effect summary').click();
     assert.equal(await card.getByTestId('item-choice-description').textContent(), `效果：${item.description}`);
-    assert.equal(await card.getByTestId('item-choice-description').isVisible(), true, 'Effects are readable without hovering or selecting the item');
+    assert.equal(await card.getByTestId('item-choice-description').isVisible(), true, 'Full effects expand without choosing or claiming the item');
+    await card.locator('.item-full-effect summary').click();
   }
-  state = await act(first, 'choose_item', { itemId: 'night_vision' });
+  await page.locator('[data-testid="item-select"][data-item-id="night_vision"]').click();
+  assert.equal(choiceRequests, 0, 'Browsing effects and selecting a card do not submit a game action');
+  assert.equal(await page.locator('[data-testid="item-select"][data-item-id="night_vision"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.getByTestId('item-choice').textContent(), '领取夜视仪');
+  const claimed = page.waitForResponse(response => response.request().method() === 'POST'
+    && response.request().postDataJSON()?.type === 'choose_item');
+  await page.getByTestId('item-choice').click();
+  const claimResponse = await claimed;
+  assert.equal(claimResponse.status(), 200);
+  assert.equal(claimResponse.request().postDataJSON().itemId, 'night_vision');
+  state = await claimResponse.json();
+  assert.equal(choiceRequests, 1);
   await page.locator('.draft-chosen-item summary').first().waitFor();
   await page.locator('.draft-chosen-item summary').first().click();
   assert.equal(await page.locator('.draft-chosen-item .item-description').textContent(), INITIAL_ITEMS.find(item => item.id === 'night_vision').description);
@@ -89,10 +109,12 @@ test('mobile item choices show effects before picking and update active and nigh
     assert.equal(await page.getByTestId('active-item-description').isVisible(), true);
   }
   const owned = page.locator('[data-testid="inventory-item"][data-item-id="suitcase"]');
+  await page.getByTestId('focus-inventory').click();
   await owned.locator('summary').click();
   assert.match(await owned.locator('.item-description').textContent(), /消耗标准行动/);
   await act(first, 'peek', { cornerId: 'hall_clock', useNightVision: true });
   await act(hako, 'resolve_visitor_action');
+  await page.getByTestId('focus-current-action').click();
   await page.getByTestId('night-vision-item').waitFor();
   for (const itemId of ['spirit_pen', 'nightmare_letter']) {
     await page.getByTestId('night-vision-item').selectOption(itemId);

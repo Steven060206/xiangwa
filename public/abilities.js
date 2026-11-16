@@ -1,8 +1,10 @@
 import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
+import { draftScope } from './view-state.js';
 
 const rooms = getLogicalRooms();
 const selections = new Map();
+let selectionScope = '';
 const roomName = id => rooms.find(room => room.id === id)?.name || '未知房间';
 const playerName = (state, id) => state.players.find(player => player.id === id)?.name || '访问者';
 const itemNames = {
@@ -18,6 +20,13 @@ const tokenNames = {
 };
 const toolNames = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '锈锁链' };
 const floorName = floor => ({ '-1': '地下室', 1: '一楼', 2: '二楼' })[floor] || String(floor);
+
+function resetSelectionScope(state) {
+  const scope = draftScope(state);
+  if (scope === selectionScope) return;
+  selections.clear();
+  selectionScope = scope;
+}
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -45,7 +54,16 @@ function button(label, testid, locked, onClick, secondary = false) {
   element.type = 'button';
   element.dataset.testid = testid;
   element.disabled = locked;
+  if (['choose-forced-peek', 'answer-item', 'begin-hako-action', 'power-rearrange-submit'].includes(testid)) element.classList.add('step-submit');
   element.addEventListener('click', onClick);
+  return element;
+}
+
+function requireSelections(element, locked, ...inputs) {
+  const choices = inputs.filter(Boolean);
+  const update = () => { element.disabled = locked || choices.some(input => !input.value); };
+  for (const input of choices) input.addEventListener('change', update);
+  update();
   return element;
 }
 
@@ -63,10 +81,17 @@ function select(container, id, labelText, options, locked) {
     input.append(option);
   }
   const remembered = selections.get(id);
-  const selected = options.find(choice => String(choice.id) === remembered && !choice.disabled) || options.find(choice => !choice.disabled) || options[0];
-  input.value = String(selected?.id ?? '');
+  const stale = remembered !== undefined && !options.some(choice => String(choice.id) === remembered && !choice.disabled);
+  if (stale) {
+    const placeholder = node('option', '', '目标已变化，请重新选择');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    input.prepend(placeholder);
+  }
+  input.value = stale ? '' : remembered ?? String(options.find(choice => !choice.disabled)?.id ?? '');
+  input.dataset.selectionInvalid = String(stale);
   selections.set(id, input.value);
-  input.addEventListener('change', () => selections.set(id, input.value));
+  input.addEventListener('change', () => { selections.set(id, input.value); input.dataset.selectionInvalid = 'false'; });
   container.append(label, input);
   return input;
 }
@@ -94,7 +119,7 @@ function forcedPeek(container, state, locked, action) {
   const nightVision = state.round.inventory?.items?.some(item => item.id === 'night_vision')
     ? checkbox(controls, 'forced-peek-use-night-vision', '使用夜视仪：发现手记时领取未选道具', locked) : null;
   if (nightVision) nightVision.dataset.testid = 'forced-peek-use-night-vision';
-  controls.append(button('确认强制窥探', 'choose-forced-peek', locked || !target.value, () => action('choose_forced_peek', { cornerId: target.value, useNightVision: Boolean(nightVision?.checked) })));
+  controls.append(requireSelections(button('确认强制窥探', 'choose-forced-peek', locked, () => action('choose_forced_peek', { cornerId: target.value, useNightVision: Boolean(nightVision?.checked) })), locked, target));
   container.append(controls);
 }
 
@@ -113,7 +138,7 @@ function answerItem(container, state, locked, action) {
   const truth = typeof resolution.truth === 'boolean' ? resolution.truth ? '是' : '否' : floorName(resolution.truth);
   controls.append(node('p', 'small-note', `真实答案（仅你可见）：${truth}。${resolution.canLie ? 'NO.9 虚假的回应已设置，你可以选择其他答案。' : '请按真实答案回答。'}`));
   const answer = select(controls, 'item-answer-select', '向访问者公开的答案', resolution.answerOptions || [], locked);
-  controls.append(button('公开回答', 'answer-item', locked || !answer.value, () => action('answer_item', { answer: JSON.parse(answer.value) })));
+  controls.append(requireSelections(button('公开回答', 'answer-item', locked, () => action('answer_item', { answer: JSON.parse(answer.value) })), locked, answer));
   container.append(controls);
 }
 
@@ -145,6 +170,7 @@ function itemEvents(container, state, events) {
 }
 
 export function renderActiveItems({ container, resultContainer = container, referenceContainer = container, state, locked, action }) {
+  resetSelectionScope(state);
   const round = state.round;
   if (!round) return;
   locked ||= Boolean(round.result);
@@ -155,6 +181,8 @@ export function renderActiveItems({ container, resultContainer = container, refe
   if (items.usableItems?.length && !round.result && !round.resolution && !round.pendingAction && !round.interruption) {
     const controls = node('section', 'exploration-section practice-controls standard-actions');
     controls.dataset.testid = 'active-items';
+    controls.id = 'action-item';
+    controls.dataset.actionCategory = 'item';
     controls.append(node('h3', 'action-group-heading', '使用随身道具'));
     const choice = select(controls, 'active-item-select', '选择可用道具', items.usableItems, locked);
     const description = node('p', 'item-description small-note');
@@ -182,11 +210,13 @@ export function renderActiveItems({ container, resultContainer = container, refe
       if (['spirit_pen', 'ventriloquist_doll'].includes(choice.value)) {
         const room = select(targets, 'active-item-room', '指定房间', items.roomOptions || [], locked);
         valid = Boolean(room.value);
+        room.addEventListener('change', () => { use.disabled = locked || !choice.value || !room.value; });
       }
       if (choice.value === 'smartphone' || choice.value === 'amulet') {
         const options = (items.phoneTargets || []).filter(target => choice.value !== 'amulet' || target.id.startsWith('slot:'));
         const target = select(targets, 'active-item-target', choice.value === 'amulet' ? '选择要移除的可用能力栏' : '选择要拍摄的能力牌', options, locked);
         valid = Boolean(target.value) && (choice.value !== 'amulet' || round.inventory?.tokens?.some(token => token.type === 'amulet'));
+        target.addEventListener('change', () => { use.disabled = locked || !choice.value || !target.value || choice.value === 'amulet' && !round.inventory?.tokens?.some(token => token.type === 'amulet'); });
       }
       if (choice.value === 'amulet') targets.append(node('p', 'small-note', '消耗一枚古怪护符，将该栏能力牌直接移出游戏。'));
       use.disabled = locked || !valid;
@@ -198,6 +228,32 @@ export function renderActiveItems({ container, resultContainer = container, refe
   }
   itemResult(resultContainer, items);
   itemEvents(referenceContainer, state, items.events);
+}
+
+export function renderCurrentEffects(container, state) {
+  const round = state.round;
+  const powers = round.powers || {};
+  const noise = round.noiseEffects || {};
+  const effects = [];
+  if (round.blockedDoors?.length) effects.push(['封门', `不能通过${round.blockedDoors.map(door => `${roomName(door.from)}与${roomName(door.to)}`).join('、')}之间的门；下一箱娃阶段开始时解封。`]);
+  if (powers.ghostCall?.active) effects.push(['移动限制', '不能持牌跳过，只能沿最短路线前往客厅；第一名访问者到达客厅后全体解除。无路可走时翻牌后自动结束行动。']);
+  if (noise.maryPlayerId) effects.push(['人偶限制', `${playerName(state, noise.maryPlayerId)}行动前须连续翻两张无声标志，并保留最后一枚盖牌；累计超过10立即停止。不能转交、交换、丢弃或补位人偶，失去人偶或死亡时解除。`]);
+  if (noise.bellUserId) effects.push(['铃的限制', `${playerName(state, noise.bellUserId)}已摇铃，${round.phase === 'hako_phase' ? '本次' : '下一次'}箱娃阶段不能设置危险度B、C能力；已设置能力仍可发动或回收。`]);
+  if (round.hako.playerId === state.you && powers.pendingBehindYou) effects.push(['等待死亡结算', 'NO.5 我在你身后将在下一箱娃阶段开始、移动前结算：与箱娃同房的访问者死亡；届时公开八片手记也结算与箱人同房的访问者。']);
+  if (round.hako.playerId === state.you && powers.slots?.some(slot => slot.card?.id === 9)) effects.push(['虚假的回应 · 仅你可见', 'NO.9已设置，回答道具问题时可选择假答案；回收或移出该能力后失效。']);
+  if (!effects.length) return;
+  const section = node('details', 'current-effects');
+  section.dataset.testid = 'current-effects';
+  const summaries = { '封门': '封门：通路受限', '移动限制': '须前往客厅', '人偶限制': '双翻与人偶限制', '铃的限制': '铃：禁设B、C能力', '等待死亡结算': 'NO.5：下阶段开始结算死亡', '虚假的回应 · 仅你可见': 'NO.9：可以假回答（仅你可见）' };
+  section.append(node('summary', '', `当前影响 · ${effects.map(([name]) => summaries[name] || name).join('；')}`));
+  const list = node('dl', 'current-effects-list');
+  for (const [name, description] of effects) {
+    const row = node('div');
+    row.append(node('dt', '', name), node('dd', '', description));
+    list.append(row);
+  }
+  section.append(list);
+  container.append(section);
 }
 
 function publicPowers(container, state, powers) {
@@ -253,7 +309,22 @@ function publicPowers(container, state, powers) {
 function managePowers(container, state, powers, locked, action) {
   const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.dataset.testid = 'power-preparation';
+  controls.id = 'personal-powers';
+  controls.dataset.hakoStep = powers.step || 'waiting';
   controls.append(node('h3', '', powers.step === 'preparation' ? '箱娃阶段 · 准备' : '你的能力手牌'));
+  if (state.round.phase === 'hako_phase') {
+    const steps = node('ol', 'hako-progress');
+    const stepNames = ['准备 · 可选事项', '能力 · 按需发动', '潜伏 · 选择房间与角落'];
+    const current = powers.step === 'preparation' ? 0 : state.round.hako.inspectedRoom || state.round.hako.finished ? 2 : 1;
+    stepNames.forEach((name, index) => {
+      const step = node('li', index === current ? 'current' : '', name);
+      if (index === current) step.setAttribute('aria-current', 'step');
+      steps.append(step);
+    });
+    controls.append(steps);
+  }
+  const slots = node('p', 'small-note hako-slot-summary', (powers.slots || []).map(slot => `${slot.slot === 0 ? '左栏' : '右栏'}：${slot.card ? cardName(slot.card) : '空栏'}`).join('；'));
+  controls.append(slots);
   let hand;
   if (powers.hand?.length) {
     hand = node('details', 'free-actions reference-details');
@@ -273,25 +344,25 @@ function managePowers(container, state, powers, locked, action) {
     controls.append(node('h4', '', '哭喊抽牌（可选）'));
     if (powers.cryRooms?.length) {
       const room = select(controls, 'hako-cry-room', 'NO.11 虚假的哭喊：选择宣告房间', powers.cryRooms, locked);
-      controls.append(button('哭喊并宣告房间', 'hako-cry', locked || !room.value, () => action('hako_cry', { roomId: room.value })));
+      controls.append(requireSelections(button('哭喊并宣告房间', 'hako-cry', locked, () => action('hako_cry', { roomId: room.value })), locked, room));
     } else controls.append(button('哭喊，公开当前房间', 'hako-cry', locked, () => action('hako_cry')));
   }
   if (powers.canManage) {
     const emptySlots = (powers.slots || []).filter(slot => !slot.occupied);
     const settable = (powers.hand || []).filter(card => card.settable && card.supported !== false);
     const recallable = (powers.slots || []).filter(slot => slot.occupied && slot.canRecall);
-    if ((emptySlots.length && settable.length) || recallable.length) controls.append(node('h4', '', '设置或回收能力（本阶段二选一）'));
+    if ((emptySlots.length && settable.length) || recallable.length) controls.append(node('h4', '', '设置或回收能力（可选，本阶段二选一）'));
     if (emptySlots.length && settable.length) {
       const power = select(controls, 'set-power-select', '设置一张手牌', settable.map(card => ({ id: card.id, name: cardName(card) })), locked);
       const slot = select(controls, 'set-power-slot', '放入可用能力栏', emptySlots.map(value => ({ id: value.slot, name: value.slot === 0 ? '左侧能力栏' : '右侧能力栏' })), locked);
-      controls.append(button('设置能力', 'set-power', locked || !power.value || !slot.value, () => action('set_power', { powerId: Number(power.value), slot: Number(slot.value) }), true));
+      controls.append(requireSelections(button('设置能力', 'set-power', locked, () => action('set_power', { powerId: Number(power.value), slot: Number(slot.value) }), true), locked, power, slot));
     }
     if (recallable.length) {
       const slot = select(controls, 'recall-power-slot', '选择回收的能力', recallable.map(value => ({ id: value.slot, name: `${value.slot === 0 ? '左栏' : '右栏'} · ${cardName(value.card)}` })), locked);
-      controls.append(button('回收至手牌', 'recall-power', locked || !slot.value, () => action('recall_power', { slot: Number(slot.value) }), true));
+      controls.append(requireSelections(button('回收至手牌', 'recall-power', locked, () => action('recall_power', { slot: Number(slot.value) }), true), locked, slot));
     }
   }
-  if (powers.canBegin) controls.append(node('p', 'small-note', '准备完成后，如需使用能力，请先发动，再选择潜伏位置。'), button('准备完毕，开始箱娃行动', 'begin-hako-action', locked, () => action('begin_hako_action')));
+  if (powers.canBegin) controls.append(node('p', 'small-note', '可以不哭喊、不设置或回收，直接开始行动。如需哭喊，先于设置或回收；进入行动后可按需发动能力，再潜伏。'), button('准备完毕，开始箱娃行动', 'begin-hako-action', locked, () => action('begin_hako_action')));
   if (hand) controls.append(hand);
   if (controls.children.length > 1) container.append(controls);
 }
@@ -300,6 +371,7 @@ function activatePowers(container, state, powers, locked, action) {
   if (!powers.activationOptions?.length || powers.rearrangement || state.round.resolution || state.round.interruption) return;
   const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.dataset.testid = 'power-activation';
+  controls.dataset.hakoStep = 'abilities';
   controls.append(node('h3', '', '发动已设置的能力'));
   for (const option of powers.activationOptions) {
     const card = option.card;
@@ -338,6 +410,7 @@ function activatePowers(container, state, powers, locked, action) {
       });
       activate.dataset.slot = option.slot;
       activate.dataset.powerId = card.id;
+      requireSelections(activate, locked || !option.canActivate, room, door, steal);
       group.append(activate);
     }
     controls.append(group);
@@ -373,7 +446,7 @@ function rearrangePowers(container, state, powers, locked, action) {
   const hint = node('p', 'small-note');
   const confirm = button('确认全部角落的新位置', 'power-rearrange-submit', locked, () => action('power_rearrange', { order: choices.map(choice => choice.value), faceDownCornerIds: faceDownChoices.filter(input => input.checked).map(input => input.dataset.cornerId) }));
   const update = () => {
-    const unique = new Set(choices.map(choice => choice.value)).size === corners.length;
+    const unique = choices.every(choice => choice.value) && new Set(choices.map(choice => choice.value)).size === corners.length;
     confirm.disabled = locked || !unique;
     hint.textContent = unique ? '每份原内容均已分配，可确认。' : '同一份原内容被重复选择，请为每个角落分配不同内容。';
   };
@@ -389,7 +462,7 @@ function inspectPath(container, state, powers, locked, action) {
   controls.append(node('h3', '', '选择移动路线'));
   if (powers.pathRooms?.length) {
     const room = select(controls, 'path-room-select', '选择本次路径上的房间', powers.pathRooms, locked);
-    controls.append(button('确认途经房间', 'inspect-path-room', locked || !room.value, () => action('inspect_path_room', { roomId: room.value }), true));
+    controls.append(requireSelections(button('确认途经房间', 'inspect-path-room', locked, () => action('inspect_path_room', { roomId: room.value }), true), locked, room));
   }
   if (powers.pathInspection) {
     const inspection = powers.pathInspection;
@@ -412,6 +485,7 @@ function extinguisherControls(container, state, locked, action) {
 }
 
 export function renderAbilities({ container, referenceContainer = container, state, locked, action }) {
+  resetSelectionScope(state);
   const round = state.round;
   if (!round) return;
   locked ||= Boolean(round.result);

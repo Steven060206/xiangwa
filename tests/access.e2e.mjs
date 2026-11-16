@@ -14,9 +14,11 @@ const sessionKey = 'hako.room.session.v1';
 
 async function fixture(t, protectedEntry = true) {
   const directory = await mkdtemp(join(tmpdir(), 'hako-access-browser-'));
-  let clock = Date.now();
-  const access = protectedEntry ? await createAccessControl({ directory, now: () => clock }) : null;
-  const server = createGameServer(protectedEntry ? { accessDirectory: directory, accessNow: () => clock } : {});
+  let clockOffset = 0;
+  // Keep ordinary token-bucket replenishment while allowing explicit invitation expiry.
+  const now = () => Date.now() + clockOffset;
+  const access = protectedEntry ? await createAccessControl({ directory, now }) : null;
+  const server = createGameServer(protectedEntry ? { accessDirectory: directory, accessNow: now } : {});
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -44,7 +46,7 @@ async function fixture(t, protectedEntry = true) {
     assert.equal(response.status, 200, JSON.stringify(result));
     return result;
   }
-  return { base, browser, server, page, admin, advance: milliseconds => { clock += milliseconds; } };
+  return { base, browser, server, page, admin, advance: milliseconds => { clockOffset += milliseconds; } };
 }
 
 async function redeem(page, code) {
@@ -55,6 +57,7 @@ async function redeem(page, code) {
 }
 
 async function enter(page, name, roomCode) {
+  await page.locator(roomCode ? '#entry-join' : '#entry-create').click();
   await page.getByTestId('nickname').fill(name);
   if (roomCode) await page.getByTestId('room-code').fill(roomCode);
   const response = page.waitForResponse(response => response.request().method() === 'POST'
@@ -121,8 +124,21 @@ test('a thirty-minute invitation admits four browsers, protects entry, and prese
   assert.deepEqual(await status.json(), { required: true, authorized: false });
 
   for (const person of people) {
+    const diagnostics = { console: [], failedRequests: [], responses: [] };
+    person.page.on('console', message => { if (message.type() === 'error') diagnostics.console.push(message.text()); });
+    person.page.on('requestfailed', request => diagnostics.failedRequests.push({ path: new URL(request.url()).pathname, error: request.failure()?.errorText }));
+    person.page.on('response', response => {
+      if (new URL(response.url()).pathname.startsWith('/api/')) diagnostics.responses.push({ path: new URL(response.url()).pathname, status: response.status() });
+    });
     await person.page.reload();
-    await person.page.getByTestId('room-code-display').waitFor();
+    try { await person.page.getByTestId('room-code-display').waitFor(); }
+    catch (error) {
+      await mkdir('test-results', { recursive: true });
+      await person.page.screenshot({ path: 'test-results/access-reload-failure.png', fullPage: true });
+      t.diagnostic(JSON.stringify({ browser: people.indexOf(person), ...diagnostics,
+        body: await person.page.locator('body').innerText(), sessionExists: await person.page.evaluate(key => Boolean(sessionStorage.getItem(key)), sessionKey) }));
+      throw error;
+    }
     assert.deepEqual(await person.page.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), person.identity);
   }
   advance(30 * 60 * 1000);
@@ -171,7 +187,9 @@ test('expired entry permission returns to verification without clearing the nick
     await visitor.goto(`${base}/?room=${identity.roomCode}`);
     assert.equal((await redeem(visitor, invite.code)).status(), 200);
     await visitor.getByTestId('nickname').fill(joining ? '等待加入' : '等待创建');
+    await visitor.locator('#entry-join').click();
     await visitor.getByTestId('room-code').fill(identity.roomCode);
+    if (!joining) await visitor.locator('#entry-create').click();
     applicants.push({ page: visitor, joining });
   }
   advance(4 * 60 * 60 * 1000 + 1);

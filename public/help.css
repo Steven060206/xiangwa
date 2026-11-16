@@ -1,0 +1,13 @@
+.help-dialog { width: min(660px, calc(100vw - 24px)); }
+.help-content { padding: 20px 24px 28px; overflow-wrap: anywhere; }
+.help-content > button { float: right; margin: 0 0 10px 16px; }
+.help-content h2 { font-size: 26px; margin: 8px 0 12px; }
+.help-content section { clear: both; margin-top: 22px; }
+.help-content h3 { font-size: 18px; margin-bottom: 8px; }
+.help-content p { font-size: 14px; line-height: 1.85; margin-block: 8px; }
+.private-clue-summary { margin-top: 16px; border-top: 1px solid var(--rule); padding-top: 12px; }
+.private-clue-summary summary { cursor: pointer; font-size: 14px; }
+.clue-summary-entry { padding-top: 10px; }
+.clue-summary-entry h4 { margin: 0 0 4px; font-size: 14px; }
+.clue-summary-entry .clue-sources { color: var(--muted); }
+@media (max-width: 480px) { .help-content { padding: 16px; } }

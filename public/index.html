@@ -8,6 +8,8 @@
   <title>箱娃 · 旧宅入席</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/chat.css">
+  <link rel="stylesheet" href="/layout.css">
+  <link rel="stylesheet" href="/help.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
@@ -33,7 +35,8 @@
           <p id="access-note" class="entry-note">邀请码有使用期限。已入席的玩家可继续原来的游戏。</p>
         </form>
         <form id="entry-form" class="entry-form" hidden>
-          <h2>请留下你的名字</h2><p class="form-description">可邀请朋友，也可创建房间后补齐人机试玩。</p>
+          <h2 id="entry-form-title">请留下你的名字</h2><p id="entry-form-description" class="form-description">可邀请朋友，也可创建房间后补齐人机试玩。</p>
+          <div class="entry-mode" role="group" aria-label="入席方式"><button type="button" id="entry-create" class="button secondary" aria-pressed="true">创建房间</button><button type="button" id="entry-join" class="button secondary" aria-pressed="false">加入房间</button></div>
           <label for="nickname">昵称</label><input id="nickname" data-testid="nickname" name="nickname" type="text" placeholder="你想被怎样称呼" maxlength="16" autocomplete="nickname" required>
           <div class="player-count-choice"><label for="player-count">建房人数</label><select id="player-count" data-testid="player-count" name="playerCount"><option value="4">四人 · 一名箱娃，三名访问者</option><option value="5">五人 · 一名箱娃，四名访问者</option></select></div>
           <button id="create-room" data-testid="create-room" class="button primary" type="submit">创建房间<span aria-hidden="true">↗</span></button>
@@ -57,6 +60,7 @@
           <div class="status-actions"><span id="turn-owner" data-testid="turn-owner" class="turn-owner"></span><button id="focus-current-action" data-testid="focus-current-action" type="button" class="button primary small">前往操作</button><div id="map-progress" class="map-progress"><strong id="map-count">1<span>/ 9</span></strong><span>地图已就位</span></div></div>
           <div id="personal-status" class="personal-status" hidden><span id="personal-role"></span><span id="personal-location"></span><button id="focus-inventory" data-testid="focus-inventory" class="text-button" type="button">我的物品</button><span id="round-context"></span></div>
         </div>
+        <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
         <div class="game-layout">
           <section id="draft-panel" data-testid="draft-panel" class="draft-panel" hidden aria-label="领取初始道具"></section>
           <section id="board-section" class="board-section" aria-label="宅邸地图"><div class="board-toolbar"><div id="floor-tabs" class="floor-tabs" role="tablist" aria-label="查看楼层"><button type="button" class="floor-tab" role="tab" data-floor="1" aria-selected="true">一楼<span id="floor-count-1"></span></button><button type="button" class="floor-tab" role="tab" data-floor="2" aria-selected="false">二楼<span id="floor-count-2"></span></button><button type="button" class="floor-tab" role="tab" data-floor="-1" aria-selected="false">地下室<span id="floor-count--1"></span></button></div><div class="map-toolbar-actions"><span class="north-mark" aria-label="上方为北">北 ↑</span><button id="map-focus" type="button" class="text-button" aria-pressed="false">专看地图</button></div></div><div id="map-positions" class="map-positions" aria-label="玩家位置；点击玩家可切换到所在楼层" hidden></div><div id="board-viewport" class="board-viewport"><div id="tile-board" data-testid="tile-board" class="tile-board"></div></div><div class="board-caption"><span class="legend-door"><i></i>门与门相接，方可通行</span><span id="board-help">选择虚线位置预览摆放</span></div></section>
@@ -69,10 +73,13 @@
             <details class="activity-details"><summary>宅邸记事</summary><ol id="activity-log"></ol></details>
           </aside>
         </div>
+        <nav id="game-navigation" class="game-navigation" aria-label="游戏导航" hidden><button type="button" data-view="action" data-ui-control aria-pressed="true">行动</button><button type="button" data-view="map" data-ui-control aria-pressed="false">地图</button><button type="button" data-view="inventory" data-ui-control aria-pressed="false">物品／能力</button><button type="button" data-view="public" data-ui-control aria-pressed="false">公开信息</button><button type="button" data-view="chat" data-ui-control aria-pressed="false">消息 <span id="chat-unread" class="unread-badge" hidden></span></button></nav>
       </section>
       <footer class="room-footer"><span id="room-phase-label">箱娃 · 准备阶段</span><span id="room-mode-label">四人联机 · 无声模式</span></footer>
     </section>
   </main>
+  <section id="room-menu" class="room-menu" popover="auto" aria-label="房间操作"><h2>房间操作</h2><div id="room-menu-content"></div><button type="button" class="text-button" popovertarget="room-menu" popovertargetaction="hide">收起</button></section>
+  <div id="event-toast" class="event-toast" role="status" aria-live="polite" hidden></div>
   <section id="event-history" data-testid="event-history" class="event-history" popover="auto" aria-label="最近事件"><div class="event-history-heading"><h2>最近事件</h2><button type="button" class="text-button" popovertarget="event-history" popovertargetaction="hide">收起</button></div><ol id="event-history-list"></ol><p id="event-history-empty" class="small-note">暂时没有新事件。获得物品和重要变化会留在这里。</p></section>
   <dialog id="event-dialog" class="event-dialog" aria-labelledby="event-title" aria-describedby="event-body">
     <article data-testid="event-highlight" class="event-highlight">
@@ -80,6 +87,8 @@
       <div id="event-symbol" class="event-symbol" aria-hidden="true"></div>
       <h2 id="event-title" data-testid="event-title"></h2><p id="event-body"></p><p id="event-visibility" class="event-visibility"></p>
       <ul id="event-companions" class="event-companions" hidden></ul>
+      <div class="event-navigation"><span id="event-position"></span><button id="event-next" type="button" class="button secondary" hidden>下一条</button></div>
+      <button id="event-primary-action" type="button" class="button primary" hidden>前往处理</button>
       <p class="event-dismiss-hint">点击卡片外，或按 Esc 返回游戏</p>
     </article>
   </dialog>

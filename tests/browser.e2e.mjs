@@ -12,6 +12,22 @@ import { MAP_TILES } from '../src/maps.mjs';
 
 const deck = ['study', 'upstairs', 'bathroom', 'basement', 'dining', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+async function roomMenu(page, open = true) {
+  if (await page.locator('#room-menu').evaluate(element => element.matches(':popover-open')) !== open) {
+    await page.getByTestId('room-menu-toggle').click();
+  }
+}
+
+async function selectDraftItem(page) {
+  await page.getByTestId('item-select').first().click();
+  return page.getByTestId('item-choice');
+}
+
+async function openDetails(page, title) {
+  const summary = page.getByText(title, { exact: true });
+  if (!await summary.evaluate(element => element.closest('details').open)) await summary.click();
+}
+
 const mapRooms = MAP_TILES.flatMap(tile => tile.rooms);
 const mapCorners = mapRooms.flatMap(room => room.corners.map(corner => ({ ...corner, room })));
 const numberedCornerName = id => {
@@ -295,8 +311,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(await page.getByTestId('claim-hako').innerText(), '抢当箱娃');
     assert.equal(await page.getByTestId('restart-current-game').count(), index === 0 ? 1 : 0,
       'Only the host can end the game during role selection');
+    await roomMenu(page);
     assert.equal(await page.getByTestId('leave-current-room').isVisible(), true,
       'Every player can exit during role selection');
+    await roomMenu(page, false);
     assert.equal(await page.getByTestId('hako-claim-status').innerText(), '四人已准备，点击按钮抢当箱娃，先抢先得。');
     assert.equal(await page.getByTestId('hako-claim-status').getAttribute('aria-live'), 'polite');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
@@ -326,7 +344,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   for (let choice = 0; choice < 3; choice++) {
     const currentIndex = identities.findIndex(person => person.playerId === state.draft.turnPlayerId);
     const page = pages[currentIndex];
-    const item = page.getByTestId('item-choice').first();
+    const item = await selectDraftItem(page);
     await item.waitFor();
     const itemId = await item.getAttribute('data-item-id');
     state = await performAction(page, 'choose_item', () => item.click());
@@ -563,13 +581,14 @@ test('four browser sessions complete private opening, powers, exploration, item 
   const interruptedIndex = identities.findIndex(person => person.playerId === interruptedVisitorId);
   const beforeOverflow = structuredClone(state.round.visitors);
   state = await performAction(pages[interruptedIndex], 'silent_reveal', () => pages[interruptedIndex].getByTestId('silent-card-3').click());
-  assert.equal(state.round.phase, 'hako_reaction');
+  assert.equal(state.round.phase, 'hako_phase');
   assert.equal(state.round.silent.total, 12);
   assert.deepEqual(state.round.visitors, beforeOverflow, 'Overflow prevents the interrupted visitor from acting');
   await assertVisitorPrivacy();
   for (const page of pages) assert.equal(await page.getByTestId('move-target').count(), 0);
   for (const page of pages.slice(1)) assert.equal(await page.getByTestId('pass-noise-reaction').count(), 0);
-  state = await performAction(hakoPage, 'pass_noise_reaction', () => hakoPage.getByTestId('pass-noise-reaction').click());
+  assert.equal(await hakoPage.getByTestId('pass-noise-reaction').count(), 0,
+    'Overflow without an eligible extinguisher response advances in the reveal transaction');
   assert.equal(state.round.phase, 'hako_phase');
   assert.equal(state.round.powers.step, 'preparation');
   assert.equal(await hakoPage.getByTestId('inspect-hiding-room').count(), 0,
@@ -727,9 +746,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assertNoPasswordTwo(await pages[i].evaluate(() => window.__hakoLastState));
     assert.equal(await pages[i].getByTestId('peek-result').count(), 0);
   }
-  await explorerPage.getByTestId('resolve-peek-take').click();
   await explorerPage.getByTestId('replacement-select').selectOption('empty_box');
-  state = await performAction(explorerPage, 'resolve_peek', () => explorerPage.getByTestId('resolve-peek').click());
+  state = await performAction(explorerPage, 'resolve_peek', () => explorerPage.getByTestId('resolve-peek-take').click());
   assert.equal(state.round.resolution, null);
   assert.equal(state.round.inventory.tokens[0].id, 'password_2');
   assert.equal(state.round.cornerState.find(corner => corner.id === 'dark_wardrobe').occupied, true,
@@ -744,7 +762,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.inventory.tokens[0].number, 2, 'Refreshing restores the private inventory');
   await explorerPage.screenshot({ path: 'test-results/exploration-mobile.png', fullPage: true });
 
-  await explorerPage.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
+  await openDetails(explorerPage, '展示、赠送与放置（自由行动）');
   await explorerPage.getByTestId('exchange-target').selectOption(recipient.playerId);
   await explorerPage.getByTestId('show-token-select').selectOption('password_2');
   state = await performAction(explorerPage, 'show_token', () => explorerPage.getByTestId('show-token').click());
@@ -760,7 +778,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assertNoPasswordTwo(await pages[index].evaluate(() => window.__hakoLastState));
   }
 
-  await explorerPage.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
+  await openDetails(explorerPage, '展示、赠送与放置（自由行动）');
   await explorerPage.getByTestId('exchange-target').selectOption(recipient.playerId);
   await explorerPage.locator('[data-testid="gift-item"][data-item-id="password_2"]').check();
   state = await performAction(explorerPage, 'offer_exchange', () => explorerPage.getByTestId('offer-gift').click());
@@ -856,7 +874,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   for (const [index, page] of pages.entries()) {
     await page.getByTestId('game-result').waitFor();
     assert.match(await page.getByTestId('game-result').innerText(), /箱娃胜利/);
-    assert.equal(await page.getByTestId('practice-panel').locator('button:not(:disabled):not([data-testid="restart-game"])').count(), 0,
+    assert.equal(await page.getByTestId('practice-panel').locator('button:not(:disabled):not([data-testid="restart-game"]):not([data-ui-control]):not([data-local-control])').count(), 0,
       'All round actions are locked after the result');
     assert.equal(await page.getByTestId('restart-game').count(), index === 0 ? 1 : 0,
       'Only the host can restart the finished game');
@@ -894,6 +912,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(await page.getByTestId('game-review').isVisible(), false);
     assert.equal(await page.locator('#event-history-list > li').count(), 0);
     assert.equal(await page.locator('#event-count').textContent(), '0');
+    assert.equal(await page.locator('#event-count').isVisible(), false);
     assert.equal(await page.evaluate(() => document.getElementById('event-dialog').open), false,
       'Restarting also closes an old event replay');
     assert.equal(await page.getByTestId('ready-button').isEnabled(), true);
@@ -913,7 +932,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
     'The next game can assign a different player as Hako');
   for (let choice = 0; choice < 3; choice++) {
     const page = pages[identities.findIndex(person => person.playerId === state.draft.turnPlayerId)];
-    state = await performAction(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
+    const choiceButton = await selectDraftItem(page);
+    state = await performAction(page, 'choose_item', () => choiceButton.click());
     assert.equal(state.initialItems.length, choice + 1);
   }
   assert.equal(state.phase, 'map_setup');
@@ -926,6 +946,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
       'The unfinished-game restart fits desktop and mobile viewports');
   }
   const activeRestart = pages[0].getByTestId('restart-current-game');
+  await roomMenu(pages[0]);
   assert.equal(await activeRestart.innerText(), '结束本局');
   assert.equal(await activeRestart.isEnabled(), true);
   const restartRequests = [];
@@ -984,6 +1005,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   const leavingIndex = 2;
   const leavingPage = pages[leavingIndex];
   const leaveButton = leavingPage.getByTestId('leave-current-room');
+  await roomMenu(leavingPage);
   assert.equal(await leaveButton.innerText(), '退出房间');
   assert.equal(await leaveButton.isEnabled(), true);
   const leaveRequests = [];
@@ -1080,6 +1102,7 @@ for (const mode of ['sse', 'poll']) test(`closed pages recover the original seat
     return page;
   }
   async function enter(page, create) {
+    await page.locator(create ? '#entry-create' : '#entry-join').click();
     await page.getByTestId('nickname').fill('同名玩家');
     const response = page.waitForResponse(response => response.request().method() === 'POST'
       && new URL(response.url()).pathname === (create ? '/api/rooms' : `/api/rooms/${new URL(page.url()).searchParams.get('room')}/join`));
@@ -1211,6 +1234,7 @@ test('four polling browsers retain identity, recover connections and complete fi
 
   async function joinPage(index, create = false) {
     const page = pages[index];
+    if (!create) await page.locator('#entry-join').click();
     await page.getByTestId('nickname').fill(`轮询玩家${index + 1}`);
     if (!create) await page.getByTestId('room-code').fill(identities[0].roomCode);
     const endpoint = create ? '/api/rooms' : `/api/rooms/${identities[0].roomCode}/join`;
@@ -1335,7 +1359,8 @@ test('four polling browsers retain identity, recover connections and complete fi
     const currentIndex = identities.findIndex(person => person.playerId === state.draft.turnPlayerId);
     assert.equal(currentIndex, (hakoIndex + choice + 1) % 4);
     const page = pages[currentIndex];
-    state = await performAction(page, 'choose_item', () => page.getByTestId('item-choice').first().click());
+    const choiceButton = await selectDraftItem(page);
+    state = await performAction(page, 'choose_item', () => choiceButton.click());
   }
   assert.equal(state.phase, 'map_setup', 'The first successful claim starts the draft without another ready step');
 

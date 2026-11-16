@@ -2,6 +2,7 @@ import { getLogicalRooms } from '/shared/maps.mjs';
 import { cornerName } from './tile.js';
 import { cardName } from './abilities.js';
 import { renderExploration, explorationDescription, explorationSeatStatus } from './exploration.js';
+import { draftScope } from './view-state.js';
 
 const rooms = getLogicalRooms();
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
@@ -16,6 +17,10 @@ let chosenPassword = [];
 let selectedWeakness = '';
 let selectedRoom = '';
 let selectedPower = '';
+let selectedDraftItem = '';
+let draftSelectionKey = '';
+let selectionScope = '';
+const choiceSelections = new Map();
 const itemNames = new Map();
 const preparationSteps = [
   ['secrets', '密码与弱点'], ['remains', '放置亡骸'], ['hiding_room', '选择怨房'],
@@ -27,6 +32,16 @@ const tokenNames = {
   extinguisher: '灭火器', remains: '亡骸', hako: '箱娃', box_person: '箱人', empty_box: '空箱', key: '钥匙',
 };
 const toolNames = { white_stick: '白木椿', gasoline: '汽油', rusty_chain: '锈锁链' };
+
+function resetSelectionScope(state) {
+  const scope = draftScope(state);
+  if (scope === selectionScope) return;
+  selectedCorner = selectedWeakness = selectedRoom = selectedPower = selectedDraftItem = draftSelectionKey = '';
+  chosenPassword = [];
+  choiceSelections.clear();
+  itemNames.clear();
+  selectionScope = scope;
+}
 
 function playerName(state, id) {
   return state.players.find(player => player.id === id)?.name || '访问者';
@@ -54,8 +69,16 @@ function button(label, testid, disabled, onClick, secondary = false) {
   result.type = 'button';
   result.dataset.testid = testid;
   result.disabled = disabled;
+  if (['item-choice', 'confirm-secrets', 'confirm-remains', 'inspect-initial-room', 'confirm-initial-hiding', 'confirm-initial-power', 'confirm-hiding', 'inspect-hiding-room', 'pass-noise-reaction', 'resolve-action'].includes(testid)) result.classList.add('step-submit');
   result.addEventListener('click', onClick);
   return result;
+}
+
+function requireSelections(element, locked, ...inputs) {
+  const update = () => { element.disabled = locked || inputs.some(input => !input.value); };
+  for (const input of inputs) input.addEventListener('change', update);
+  update();
+  return element;
 }
 
 function hidingControls(container, targets, initial, locked, action, inspectedRoom) {
@@ -72,11 +95,20 @@ function hidingControls(container, targets, initial, locked, action, inspectedRo
     option.value = id;
     select.append(option);
   }
-  if (!targets.includes(selectedCorner)) selectedCorner = targets[0] || '';
-  select.value = selectedCorner;
-  select.addEventListener('change', () => { selectedCorner = select.value; });
-  container.append(label, select, button(initial ? '确认初始潜伏' : '潜伏并结束阶段', initial ? 'confirm-initial-hiding' : 'confirm-hiding', locked || !targets.length,
-    () => action(initial ? 'choose_initial_hiding' : 'hako_hide', { cornerId: select.value })));
+  const remembered = choiceSelections.get(selectId);
+  const stale = remembered !== undefined && !targets.includes(remembered);
+  if (stale) {
+    const placeholder = node('option', '', '目标已变化，请重新选择');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    select.prepend(placeholder);
+  }
+  select.value = stale ? '' : remembered ?? targets[0] ?? '';
+  choiceSelections.set(selectId, select.value);
+  select.dataset.selectionInvalid = String(stale);
+  select.addEventListener('change', () => { selectedCorner = select.value; choiceSelections.set(selectId, select.value); select.dataset.selectionInvalid = 'false'; });
+  container.append(label, select, requireSelections(button(initial ? '确认初始潜伏' : '潜伏并结束阶段', initial ? 'confirm-initial-hiding' : 'confirm-hiding', locked,
+    () => action(initial ? 'choose_initial_hiding' : 'hako_hide', { cornerId: select.value })), locked, select));
 }
 
 function silentCards(state, locked, action) {
@@ -122,6 +154,7 @@ function silentCards(state, locked, action) {
 }
 
 export function renderPractice({ state, pending, online, action }) {
+  resetSelectionScope(state);
   const panel = document.getElementById('practice-panel');
   const round = state.round;
   panel.hidden = !round;
@@ -203,7 +236,7 @@ export function renderPractice({ state, pending, online, action }) {
           id: 'hiding-room-select', label: '选择潜伏房间，查看全部角落标志', options: round.hako.hidingRooms || [],
           selected: selectedRoom, locked, onChange: value => { selectedRoom = value; },
         });
-        controls.append(button('查看这间房间', 'inspect-hiding-room', locked || !select.value, () => action('inspect_hiding_room', { roomId: select.value })));
+        controls.append(requireSelections(button('查看这间房间', 'inspect-hiding-room', locked, () => action('inspect_hiding_room', { roomId: select.value })), locked, select));
       }
     }
   }
@@ -238,15 +271,22 @@ function itemChoiceName(choice) {
 }
 
 export function renderDraft({ state, pending, online, action }) {
+  resetSelectionScope(state);
   const panel = document.getElementById('draft-panel');
   const draft = state.draft;
   panel.hidden = !draft;
   if (!draft) { panel.replaceChildren(); return; }
   const mine = draft.turnPlayerId === state.you;
   const locked = pending || !online;
+  const selectionKey = `${state.code}:${state.you}:${draft.turnPlayerId}`;
+  if (draftSelectionKey !== selectionKey) selectedDraftItem = '';
+  draftSelectionKey = selectionKey;
+  const expiredChoice = Boolean(selectedDraftItem && !draft.availableItems.some(item => item.id === selectedDraftItem));
+  if (expiredChoice) selectedDraftItem = '';
   for (const item of draft.availableItems) itemNames.set(item.id, item.name);
   const fragment = document.createDocumentFragment();
-  fragment.append(node('h2', '', '领取初始道具'), node('p', 'draft-description', preparationDescription(state)));
+  fragment.append(node('h2', '', '领取初始道具'));
+  fragment.append(node('p', 'draft-description', mine ? '先选择道具，再确认领取。查看完整效果不会领取。' : `当前由${playerName(state, draft.turnPlayerId)}选择，已领取 ${draft.choices.length} 张。`));
   const choices = node('ol', 'draft-choices');
   for (const player of state.players.filter(player => player.role === 'visitor')) {
     const choice = draft.choices.find(item => item.playerId === player.id);
@@ -262,24 +302,49 @@ export function renderDraft({ state, pending, online, action }) {
     }
     choices.append(line);
   }
-  const items = node('ul', 'item-list');
+  const items = node('ul', 'item-list compact-item-list');
+  const claim = node('div', 'draft-claim current-step-action');
+  claim.dataset.testid = 'draft-claim';
+  const selectedName = node('p', 'draft-selected-name');
+  selectedName.setAttribute('aria-live', 'polite');
+  const submit = button('请先选择道具', 'item-choice', true, () => action('choose_item', { itemId: selectedDraftItem }));
+  const updateSelection = () => {
+    const chosen = draft.availableItems.find(item => item.id === selectedDraftItem);
+    selectedName.textContent = chosen ? `已选：${chosen.name}` : expiredChoice ? '原道具已不可领取，请重新选择。' : '尚未选择道具';
+    submit.textContent = chosen ? `领取${chosen.name}` : '请先选择道具';
+    submit.dataset.itemId = chosen?.id || '';
+    submit.disabled = locked || !chosen;
+    for (const card of items.children) {
+      const selected = card.dataset.itemId === selectedDraftItem;
+      card.classList.toggle('selected', selected);
+      card.querySelector('[data-testid="item-select"]')?.setAttribute('aria-pressed', String(selected));
+    }
+  };
+  claim.append(selectedName, submit);
   for (const item of draft.availableItems) {
-    const line = node('li');
+    const line = node('li', 'draft-item-card');
     line.dataset.itemId = item.id;
     const copy = node('div', 'item-copy');
+    const summary = item.description.split('；')[0];
+    const risk = item.description.includes('；') && item.description.includes('死亡') ? '；与箱娃同房有死亡风险' : '';
+    copy.append(node('h3', '', item.name), node('p', 'item-purpose small-note', `${summary}${risk}`));
+    const details = node('details', 'item-full-effect reference-details');
+    details.dataset.itemId = item.id;
     const description = node('p', 'item-description', `效果：${item.description}`);
     description.dataset.testid = 'item-choice-description';
-    copy.append(node('h3', '', item.name), description);
+    details.append(node('summary', '', '查看完整效果'), description);
+    copy.append(details);
     line.append(copy);
     if (mine) {
-      const choose = button('领取', 'item-choice', locked, () => action('choose_item', { itemId: item.id }), true);
+      const choose = button('选择这件', 'item-select', locked, () => { selectedDraftItem = item.id; updateSelection(); }, true);
       choose.dataset.itemId = item.id;
-      choose.setAttribute('aria-label', `领取${item.name}`);
+      choose.setAttribute('aria-label', `选择${item.name}`);
       line.append(choose);
     }
     items.append(line);
   }
-  if (mine) fragment.append(items, node('h3', '', '各位访问者的领取进度'), choices);
+  updateSelection();
+  if (mine) fragment.append(claim, items, node('h3', '', '各位访问者的领取进度'), choices);
   else fragment.append(choices, node('h3', '', '待选道具与效果'), items);
   fragment.append(node('p', 'small-note', `${state.players.filter(player => player.role === 'visitor').length === 4 ? '四名' : '三名'}访问者领完道具后，开始轮流抽板拼图。`));
   panel.replaceChildren(fragment);
@@ -298,9 +363,18 @@ function choiceSelect(container, { id, label, options, selected, locked, onChang
     option.disabled = choice.disabled === true;
     select.append(option);
   }
-  select.value = options.some(option => !option.disabled && String(option.id) === String(selected)) ? String(selected)
-    : String(options.find(option => !option.disabled)?.id ?? '');
-  select.addEventListener('change', () => onChange(select.value));
+  const remembered = choiceSelections.has(id) ? choiceSelections.get(id) : selected || undefined;
+  const stale = remembered !== undefined && !options.some(option => !option.disabled && String(option.id) === String(remembered));
+  if (stale) {
+    const placeholder = node('option', '', '目标已变化，请重新选择');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    select.prepend(placeholder);
+  }
+  select.value = stale ? '' : remembered ?? String(options.find(option => !option.disabled)?.id ?? '');
+  select.dataset.selectionInvalid = String(stale);
+  choiceSelections.set(id, select.value);
+  select.addEventListener('change', () => { onChange(select.value); choiceSelections.set(id, select.value); select.dataset.selectionInvalid = 'false'; });
   onChange(select.value);
   container.append(caption, select);
   return select;
@@ -316,6 +390,7 @@ function secretControls(container, opening, locked, action) {
     const label = node('label');
     const checkbox = node('input');
     checkbox.type = 'checkbox';
+    checkbox.id = `opening-password-${value}`;
     checkbox.value = value;
     checkbox.dataset.testid = 'password-choice';
     checkbox.checked = chosenPassword.includes(value);
@@ -341,6 +416,7 @@ function secretControls(container, opening, locked, action) {
     chosenPassword = checkboxes.filter(checkbox => checkbox.checked).map(checkbox => Number(checkbox.value));
     update();
   });
+  weakness.addEventListener('change', update);
   update();
   container.append(count, confirm);
 }
@@ -385,6 +461,7 @@ export function renderRoomMemory(container, memory) {
 }
 
 export function renderOpening({ state, pending, online, action }) {
+  resetSelectionScope(state);
   const panel = document.getElementById('opening-panel');
   const opening = state.opening;
   panel.hidden = !opening;
@@ -414,7 +491,7 @@ export function renderOpening({ state, pending, online, action }) {
           options: opening.remainsTargets.map(id => ({ id, name: cornerName(id) })),
           selected: selectedCorner, locked, onChange: value => { selectedCorner = value; },
         });
-        controls.append(button('确认放置亡骸', 'confirm-remains', locked || !select.value, () => action('place_remains', { cornerId: select.value })));
+        controls.append(requireSelections(button('确认放置亡骸', 'confirm-remains', locked, () => action('place_remains', { cornerId: select.value })), locked, select));
         break;
       }
       case 'hiding_room': {
@@ -422,7 +499,7 @@ export function renderOpening({ state, pending, online, action }) {
           id: 'initial-room-select', label: '选择初始潜伏的怨房', options: opening.hidingRooms,
           selected: selectedRoom, locked, onChange: value => { selectedRoom = value; },
         });
-        controls.append(button('选择这间怨房', 'inspect-initial-room', locked || !select.value, () => action('inspect_initial_room', { roomId: select.value })));
+        controls.append(requireSelections(button('选择这间怨房', 'inspect-initial-room', locked, () => action('inspect_initial_room', { roomId: select.value })), locked, select));
         break;
       }
       case 'hiding_corner': {
@@ -441,7 +518,7 @@ export function renderOpening({ state, pending, online, action }) {
         select.addEventListener('change', describe);
         describe();
         controls.append(description);
-        controls.append(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked || !select.value, () => action('choose_initial_power', { powerId: Number(select.value) })));
+        controls.append(requireSelections(button('确认初始能力，进入宅邸', 'confirm-initial-power', locked, () => action('choose_initial_power', { powerId: Number(select.value) })), locked, select));
         controls.append(node('p', 'small-note', '初始能力可绕过手记门槛，仍须在箱娃阶段设置后才能发动。'));
         renderRoomMemory(controls, opening.lastInspectedRoom);
         break;

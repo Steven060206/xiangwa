@@ -572,9 +572,8 @@ test('four and five player games allow only the overflow flipper to use or decli
         assert.equal(play.totalRounds, 1);
         assert.equal(play.round.hidingCornerId, 'children_bed');
       } else {
-        assert.equal(play.round.silent.phase, 'hako_reaction');
-        play = act(play, hakoId, { type: 'pass_noise_reaction' });
         assert.equal(play.round.silent.phase, 'hako_phase');
+        reject(play, hakoId, { type: 'pass_noise_reaction' });
         reject(play, triggerId, { type: 'extinguisher_response', use: true });
       }
       for (const id of visitorIds.filter(id => id !== triggerId)) {
@@ -592,8 +591,8 @@ test('another visitor holding an extinguisher cannot respond when the overflow f
     play = act(play, first, { type: 'silent_reveal', index: 5 });
     assert.equal(play.interruption, null);
     for (const id of visitorIds) reject(play, id, { type: 'extinguisher_response', use: true });
-    play = act(play, hakoId, { type: 'pass_noise_reaction' });
     assert.equal(play.round.silent.phase, 'hako_phase');
+    reject(play, hakoId, { type: 'pass_noise_reaction' });
   }
 });
 
@@ -633,7 +632,7 @@ test('NO.5 activation after declining an overflow response has no second extingu
   play.round.silent.total = 9;
   play = act(play, first, { type: 'silent_reveal', index: 5 });
   play = act(play, first, { type: 'extinguisher_response', use: false });
-  play = act(play, hakoId, { type: 'pass_noise_reaction' });
+  assert.equal(play.round.silent.phase, 'hako_phase');
   play = act(begin(play), hakoId, { type: 'activate_power', slot: 0 });
   assert.equal(play.interruption, null);
   assert.deepEqual(play.powers.pendingBehindYou, { cycle: 2 });
@@ -697,11 +696,12 @@ test('legacy overflow windows retain only a living unpassed flipper and GET neve
     assert.deepEqual(restored.interruption, kind === 'valid' ? { kind: 'noise', responders: [first], passed: [] } : null);
     normalizePlayForRules(restored);
     if (kind === 'valid') play = act(play, first, { type: 'extinguisher_response', use: false });
-    if (kind !== 'stage') {
+    if (!['stage', 'valid'].includes(kind)) {
       play = act(play, hakoId, { type: 'pass_noise_reaction' });
       assert.equal(play.interruption, null);
       assert.equal(play.round.silent.phase, 'hako_phase');
     }
+    if (kind === 'valid') assert.equal(play.round.silent.phase, 'hako_phase');
   }
 });
 

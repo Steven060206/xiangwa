@@ -77,6 +77,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
   }
   const roomFloor = (view, id) => view.setup.placements.find(placement => MAP_TILES.find(tile => tile.id === placement.tileId)
     .rooms.some(room => room.id === id))?.floor;
+  const navigate = (page, view) => page.locator(`#game-navigation [data-view="${view}"]`).click();
   async function verifyPage(page, person) {
     const view = await snapshot(person);
     const expected = view.round.visitors.filter(visitor => visitor.status === 'alive').map(visitor => ({
@@ -84,6 +85,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
     }));
     if (view.round.hako.playerId === view.you) expected.push({ id: view.you,
       roomId: view.round.hako.roomId, floor: roomFloor(view, view.round.hako.roomId) });
+    await navigate(page, 'map');
     for (const floor of [1, 2, -1]) {
       await page.getByTestId(floor === -1 ? 'floor-basement' : `floor-${floor}`).click();
       const markers = await page.locator('#tile-board .map-player-marker').evaluateAll(elements =>
@@ -96,18 +98,8 @@ test('compact desktop and mobile boards show public players and only the viewer 
     await page.locator(`#map-positions [data-player-id="${person.playerId}"]`).click();
     assert.equal(await page.locator(`#tile-board .map-player-marker[data-player-id="${person.playerId}"]`).count(), 1,
       'Selecting a player position switches to its floor and locates its marker');
-    const geometry = await page.evaluate(() => ({
-      fitsWidth: document.documentElement.scrollWidth <= innerWidth,
-      fitsHeight: document.documentElement.scrollHeight <= innerHeight + 1,
-      board: document.getElementById('board-section').getBoundingClientRect().toJSON(),
-      map: document.getElementById('board-viewport').getBoundingClientRect().toJSON(),
-      controls: document.querySelector('.setup-sidebar').getBoundingClientRect().toJSON(),
-    }));
-    assert.equal(geometry.fitsWidth, true);
-    assert.equal(geometry.fitsHeight, true, 'Regular play fits the viewport without scrolling the whole document');
-    assert.ok(geometry.board.height >= 180 && geometry.controls.height >= 160,
-      'The map and operation panel both have usable space on screen');
-    assert.ok(geometry.map.height >= 150, 'The actual map canvas keeps at least 150px of usable height');
+    const fullMapHeight = await page.locator('#board-viewport').evaluate(element => element.getBoundingClientRect().height);
+    assert.ok(fullMapHeight >= 280, 'The dedicated map view provides space to inspect a full board tile');
     const context = await page.locator(`#tile-board .map-player-marker[data-player-id="${person.playerId}"]`).evaluate(marker => {
       const view = document.getElementById('board-viewport').getBoundingClientRect();
       const tile = marker.closest('.placed-tile').getBoundingClientRect();
@@ -116,8 +108,19 @@ test('compact desktop and mobile boards show public players and only the viewer 
         tileHeight: tile.height, visibleHeight: Math.max(0, Math.min(view.bottom, tile.bottom) - Math.max(view.top, tile.top)) };
     });
     assert.equal(context.tokenVisible, true, 'Locating a player brings its full token into the map viewport');
-    assert.ok(context.visibleHeight >= Math.min(context.tileHeight, geometry.map.height) - 2,
+    assert.ok(context.visibleHeight >= Math.min(context.tileHeight, fullMapHeight) - 2,
       'Locating a player shows the surrounding board tile instead of a token at the viewport edge');
+    await navigate(page, 'action');
+    const geometry = await page.evaluate(() => ({
+      fitsWidth: document.documentElement.scrollWidth <= innerWidth,
+      fitsHeight: document.documentElement.scrollHeight <= innerHeight + 1,
+      mapHeight: document.getElementById('board-viewport').getBoundingClientRect().height,
+      controlsHeight: document.querySelector('.setup-sidebar').getBoundingClientRect().height,
+    }));
+    assert.equal(geometry.fitsWidth, true);
+    assert.equal(geometry.fitsHeight, true, 'Regular play fits the viewport without scrolling the whole document');
+    assert.ok(geometry.mapHeight >= 80, 'Action view retains a compact map with a dedicated expansion control');
+    assert.ok(geometry.controlsHeight >= 260, 'Action view leaves enough space for the current decision');
   }
   await verifyPage(pages[0], people[0]);
   await verifyPage(pages[1], people[1]);
@@ -130,8 +133,12 @@ test('compact desktop and mobile boards show public players and only the viewer 
   const controlsAfterGuide = await pages[1].locator('.setup-sidebar').boundingBox();
   assert.deepEqual(controlsAfterGuide, controlsBeforeGuide, 'Opening the guide overlays the map without pushing or shrinking the current operations');
   await pages[1].getByRole('button', { name: '收起角落位置对照', exact: true }).click();
-  const undoHint = pages[1].locator('#undo-panel .undo-hint').first();
-  assert.equal(await undoHint.getAttribute('title'), await undoHint.textContent(), 'The compact undo hint retains its complete meaning');
+  await pages[1].getByTestId('room-menu-toggle').click();
+  const undoHint = pages[1].locator('#room-menu-content .undo-hint').first();
+  assert.match(await undoHint.innerText(), /撤销|撤回|同意/);
+  assert.equal(await undoHint.evaluate(element => element.scrollWidth <= element.clientWidth
+    && getComputedStyle(element).whiteSpace !== 'nowrap'), true, 'The room menu shows the complete undo explanation without clipping');
+  await pages[1].locator('#room-menu [popovertargetaction="hide"]').click();
   await pages[1].getByRole('button', { name: '专看地图', exact: true }).click();
   assert.equal(await pages[1].locator('.setup-sidebar').isVisible(), false);
   await pages[1].getByRole('button', { name: '返回操作', exact: true }).click();
@@ -164,6 +171,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
   await pages[1].screenshot({ path: 'test-results/compact-map-mobile.png', fullPage: true });
 
   async function undoClick(page, type, testId) {
+    if (testId === 'undo-request' && !await page.getByTestId(testId).isVisible()) await page.getByTestId('room-menu-toggle').click();
     const responsePromise = page.waitForResponse(response => response.request().method() === 'POST'
       && new URL(response.url()).pathname.endsWith('/actions') && response.request().postDataJSON()?.type === type);
     await page.getByTestId(testId).click();
@@ -179,6 +187,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
   assert.equal(await pages[0].getByTestId('undo-accept').isVisible(), true);
   assert.equal(await pages[1].getByTestId('surrender').isDisabled(), true,
     'Ordinary game controls freeze while the table considers an undo');
+  await navigate(pages[1], 'map');
   await pages[1].getByTestId('floor-2').click();
   assert.equal(await pages[1].getByTestId('surrender').isDisabled(), true,
     'Changing floors must keep newly rendered game controls frozen');
@@ -187,6 +196,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
     'Locating a player must preserve the undo lock while allowing map navigation');
   assert.equal((await snapshot(people[1])).undo.pending.id, requested.undo.pending.id,
     'Local map navigation does not change the pending vote');
+  await navigate(pages[1], 'action');
   let continued = await undoClick(pages[0], 'undo_respond', 'undo-reject');
   assert.equal(continued.undo.pending, null);
   assert.equal(continued.round.visitors.find(visitor => visitor.id === people[1].playerId).roomId, destination);
@@ -213,6 +223,7 @@ test('compact desktop and mobile boards show public players and only the viewer 
 
   for (const viewport of [{ width: 667, height: 375 }, { width: 375, height: 667 }, { width: 844, height: 390 }]) {
     await pages[0].setViewportSize(viewport);
+    await navigate(pages[0], 'action');
     const geometry = await pages[0].evaluate(() => ({
       fitsWidth: document.documentElement.scrollWidth <= innerWidth,
       fitsHeight: document.documentElement.scrollHeight <= innerHeight + 1,
@@ -222,8 +233,8 @@ test('compact desktop and mobile boards show public players and only the viewer 
     }));
     const size = `${viewport.width}×${viewport.height}`;
     assert.equal(geometry.fitsWidth, true, `${size}: the layout does not overflow horizontally`);
-    assert.ok(geometry.boardHeight >= 150, `${size}: the actual map remains usable (${JSON.stringify(geometry)})`);
-    assert.ok(geometry.controlsHeight >= 160, `${size}: operations do not collapse to zero height`);
+    assert.ok(geometry.boardHeight >= 80, `${size}: a compact map remains available (${JSON.stringify(geometry)})`);
+    assert.ok(geometry.controlsHeight >= (viewport.height > 600 ? 260 : 160), `${size}: operations remain usable`);
     if (viewport.height > 600) assert.equal(geometry.fitsHeight, true, `${size}: portrait play keeps the compact layout`);
     await pages[0].getByTestId('resolve-action').click({ trial: true });
     if (viewport.width === 667) {

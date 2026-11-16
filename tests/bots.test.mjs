@@ -330,9 +330,8 @@ test('bots never use another turn extinguisher or reopen an extinguisher respons
   play = applyPlayAction(play, first, { type: 'silent_reveal', index: 5 });
   assert.equal(play.interruption, null);
   assert.equal(decide(snapshot(play, second)), null);
-  const passed = botAct(play, hakoId);
-  assert.deepEqual(passed.action, { type: 'pass_noise_reaction' });
-  play = passed.play;
+  assert.equal(play.round.silent.phase, 'hako_phase');
+  assert.notEqual(decide(snapshot(play, hakoId))?.type, 'pass_noise_reaction');
   slot(play, 5);
   play = applyPlayAction(play, hakoId, { type: 'begin_hako_action' });
   play = applyPlayAction(play, hakoId, { type: 'activate_power', slot: 0 });

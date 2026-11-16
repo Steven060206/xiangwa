@@ -9,7 +9,7 @@ const ROOM_NAMES = { hall_room: '一楼大厅', study_room: '书房／深色房�
   children_room: '儿童房', storage_room: '储藏室／厨房', living_room: '客厅' };
 const TOKEN_EFFECTS = {
   key: '携带钥匙窥探隐藏出口，即可逃脱。',
-  password: '这是一枚密码数字；保险箱的密码由三个数字组成，顺序无关。',
+  password: '密码标志表示保险箱未使用的数字，用于排除；保险箱的密码由另外三个数字组成，顺序无关。',
   doll: '携带玛丽小姐的人偶窥探亡骸，即可超度。',
   weapon: '消耗标准行动指定角落进行讨伐；使用后该道具移出游戏。先核对已知讨伐情报。',
   amulet: '消耗标准行动和护符，移除箱娃可用能力栏中的一张能力。',
@@ -35,8 +35,9 @@ function tokenName(token) {
   return `${TOKEN_NAMES[token.type] || '标志'}${token.number ?? ''}`;
 }
 function tokenDescription(token) {
+  if (token.type === 'password') return TOKEN_EFFECTS.password;
   if (token.description) return token.description;
-  if (token.power) return `${powerName(token.power)}：${token.power.description}`;
+  if (token.power) return `对应能力：${powerName(token.power)}：${token.power.description} 这是卡面说明，是否生效以当前状态为准。`;
   if (token.type === 'weakness_clue') return `讨伐情报：${TOOL_NAMES[token.tool] || '该讨伐道具'}对箱娃无效。`;
   return TOKEN_EFFECTS[token.type] || '可在当前操作中查看详情。';
 }
@@ -75,9 +76,9 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const before = previous;
       previous = structuredClone(next);
       const events = [];
-      const push = (title, body, tone = 'info', privateLabel = PUBLIC, highlight = false, symbol = 'event') => {
+      const push = (title, body, tone = 'info', privateLabel = PUBLIC, highlight = false, symbol = 'event', view = 'action', requiresResponse = false) => {
         events.push({ id: `${next.code}:${next.you}:${next.version}:${++sequence}`, version: next.version,
-          title, body, tone, privateLabel, highlight, symbol, dismissed: false });
+          title, body, tone, privateLabel, highlight, symbol, view, requiresResponse, dismissed: false });
       };
       const finish = () => {
         history = [...events].reverse().concat(history).slice(0, limit);
@@ -90,13 +91,18 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
         push('已撤销上一步', '盘面和随身物品已恢复到上一步；请按当前提示继续。', 'attention');
         return finish();
       }
+      const vote = next.undo?.pending;
+      if (vote && vote.id !== before.undo?.pending?.id && vote.requiredIds?.includes(next.you)
+          && !vote.approvedIds?.includes(next.you)) {
+        push('请回应撤销请求', '请查看当前撤销表决，选择同意或继续当前进度；关闭提示不会替你投票。', 'attention', PRIVATE, true, 'event', 'action', true);
+      }
 
       const ownChoice = next.initialItems?.find(choice => choice.playerId === next.you);
       if (ownChoice && !before.initialItems?.some(choice => choice.playerId === next.you && choice.itemId === ownChoice.itemId)) {
-        push(`获得了${ownChoice.itemName || ownChoice.name || '初始道具'}`, ownChoice.itemDescription || '道具已放入你的随身物品，可随时查看效果。', 'success', PRIVATE, true, 'item');
+        push(`获得了${ownChoice.itemName || ownChoice.name || '初始道具'}`, ownChoice.itemDescription || '道具已放入你的随身物品，可随时查看效果。', 'success', PRIVATE, false, 'item', 'inventory');
       }
       if (next.initialPower && changed(before.initialPower, next.initialPower)) {
-        push(`初始能力：${powerName(next.initialPower)}`, next.initialPower.description || '只有你能看到这张初始能力，仍需按时机设置和发动。', 'success', PRIVATE, true, 'power');
+        push(`初始能力：${powerName(next.initialPower)}`, `${next.initialPower.description || '只有你能看到这张初始能力。'} 仍需按时机设置和发动。`, 'success', PRIVATE, false, 'power', 'inventory');
       }
       const round = next.round;
       const oldRound = before.round;
@@ -104,10 +110,13 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const ownStatus = round.visitors?.find(player => player.id === next.you)?.status;
       const oldStatus = oldRound.visitors?.find(player => player.id === next.you)?.status;
       const died = oldStatus === 'alive' && ownStatus !== 'alive';
+      const resolution = round.result ? null : round.resolution;
+      const newFinding = resolution?.token && changed(oldRound.resolution, resolution)
+        && !(oldRound.resolution?.token?.id === resolution.token.id && oldRound.resolution?.cornerId === resolution.cornerId);
 
       for (const notebook of added(oldRound.notebooks, round.notebooks)) {
-        push(`手记${notebook.number ?? ''}已公开`, notebook.power
-          ? `${powerName(notebook.power)}：${notebook.power.description}` : '所有玩家都能在公开手记中查看这条信息。', 'info', PUBLIC, true, 'notebook');
+        if (newFinding && resolution.token.type === 'notebook' && resolution.token.id === notebook.id) continue;
+        push(`手记${notebook.number ?? ''}已公开`, tokenDescription(notebook), 'info', PUBLIC, true, 'notebook');
       }
       for (const discovery of (round.publicDiscoveries || []).slice(oldRound.publicDiscoveries?.length || 0)) {
         push(`${playerName(next, discovery.playerId)}公开了${tokenName(discovery.token)}`,
@@ -132,33 +141,44 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const incoming = added(oldRound.exchangeOffers, round.exchangeOffers).filter(offer => offer.targetId === next.you);
       for (const offer of incoming) {
         const pieces = [...(offer.giveTokens || []).map(tokenName), ...(offer.giveItems || []).map(item => item.name)];
-        push(`${playerName(next, offer.fromId)}向你提出交换`, pieces.length ? `对方提出交出：${pieces.join('、')}。接受前请检查需要付出的物品。` : '查看交换内容，再决定接受或拒绝。', 'attention', PRIVATE, true);
+        push(`${playerName(next, offer.fromId)}向你提出交换`, pieces.length ? `对方提出交出：${pieces.join('、')}。接受前请检查需要付出的物品。` : '查看交换内容，再决定接受或拒绝。', 'attention', PRIVATE, true, 'event', 'action', true);
       }
       if ((oldRound.exchangeOffers || []).some(offer => !round.exchangeOffers?.some(current => current.id === offer.id))) {
         push('交换请求已处理', '请查看当前随身物品，已完成的交换会立即更新库存。', 'info', PRIVATE);
       }
-      const canRespond = round.interruption?.canRespond;
-      if (canRespond && !oldRound.interruption?.canRespond) push('请回应灭火器窗口', '你可以使用灭火器打断，或选择放弃；其他玩家正在等待你的回应。', 'attention', PRIVATE, true);
-      if (round.silent?.turnPlayerId === next.you && round.phase === 'visitor_reveal'
+      const canRespond = !round.result && round.interruption?.canRespond;
+      if (canRespond && !oldRound.interruption?.canRespond) push('请回应灭火器窗口', '你可以使用灭火器打断，或选择放弃；其他玩家正在等待你的回应。', 'attention', PRIVATE, true, 'event', 'action', true);
+      if (!round.result && round.pendingAction && changed(oldRound.pendingAction, round.pendingAction) && round.hako?.playerId === next.you) {
+        push('请确认访问者行动', '访问者已声明行动。请前往当前步骤，按现有时机选择打断或确认。', 'attention', PRIVATE, true, 'event', 'action', true);
+      }
+      if (!round.result && round.silent?.turnPlayerId === next.you && round.phase === 'visitor_reveal'
           && (oldRound.silent?.turnPlayerId !== next.you || oldRound.phase !== 'visitor_reveal')) {
         push('轮到你了', '先翻开无声标志，或按规则持牌跳过。', 'attention', PRIVATE, false, 'turn');
       }
-      if (round.phase === 'hako_phase' && oldRound.phase !== 'hako_phase') {
+      if (round.phase === 'hako_phase' && oldRound.phase !== 'hako_phase' && !round.resolution && !round.result) {
         push(round.hako?.playerId === next.you ? '轮到箱娃行动' : '进入箱娃阶段',
           round.hako?.playerId === next.you ? '先决定是否哭喊，再设置或回收能力，最后移动潜伏。' : '等待箱娃完成哭喊、能力及潜伏；你可以查看地图和已知信息。', 'info', PUBLIC, false, 'turn');
       }
 
-      const resolution = round.resolution;
-      if (resolution?.token && changed(oldRound.resolution, resolution)
-          && !(oldRound.resolution?.token?.id === resolution.token.id && oldRound.resolution?.cornerId === resolution.cornerId)) {
-        push(`你发现了${tokenName(resolution.token)}`, `${tokenDescription(resolution.token)} 这是你的私密窥探结果；返回游戏后按提示决定如何处理。`, 'success', PRIVATE, true, tokenSymbol(resolution.token));
+      if (newFinding) {
+        const notebook = resolution.token.type === 'notebook';
+        push(notebook ? `发现${tokenName(resolution.token)} · 已自动公开` : `你发现了${tokenName(resolution.token)}`,
+          notebook ? `${tokenDescription(resolution.token)} 下一步：选择补位方式，并完成当前可用的道具选择。`
+            : `${tokenDescription(resolution.token)} 这是你的私密窥探结果；请前往当前步骤决定如何处理。`,
+          'success', notebook ? '手记内容全员可见；发现位置不公开' : PRIVATE, true, tokenSymbol(resolution.token), 'action', true);
       }
       if (resolution?.kind === 'forced_peek' && oldRound.resolution?.kind !== 'forced_peek') {
-        push('你的行动被改为强制窥探', '请选择当前房间内的一个角落，随后按窥探结果结算。', 'attention', PRIVATE, true);
+        push('你的行动被改为强制窥探', '请选择当前房间内的一个角落，随后按窥探结果结算。', 'attention', PRIVATE, true, 'event', 'action', true);
+      }
+      if (['item_answer', 'inheritance'].includes(resolution?.kind) && resolution.playerId === next.you
+          && (oldRound.resolution?.kind !== resolution.kind || oldRound.resolution?.playerId !== resolution.playerId)) {
+        push(resolution.kind === 'inheritance' ? '请选择遗物接收人' : '请回答道具询问',
+          resolution.kind === 'inheritance' ? '请将全部库存交给一名存活访问者，再继续箱人流程。' : '访问者正在等待回答，请前往当前步骤选择可用答案。',
+          'attention', PRIVATE, true, 'event', 'action', true);
       }
       if (round.items?.result && changed(oldRound.items?.result, round.items.result)) {
         const card = round.items.result.card;
-        push(card ? `手机查看：${powerName(card)}` : '道具结果已更新', card?.description || '查看你的道具结果，具体内容仅你可见。', 'info', PRIVATE, true, card ? 'power' : 'item');
+        push(card ? `手机查看：${powerName(card)}` : '道具结果已更新', card ? `${card.description} 这是所见卡面，不表示能力已设置或生效。` : '查看你的道具结果，具体内容仅你可见。', 'info', PRIVATE, true, card ? 'power' : 'item', 'inventory');
       }
       const sharedEntries = value => Array.isArray(value) ? value : value ? [value] : [];
       const oldShared = sharedEntries(oldRound.sharedTokens);
@@ -175,17 +195,18 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
       const lastDraw = round.powers?.lastDraw;
       if (lastDraw && changed(oldRound.powers?.lastDraw, lastDraw)) {
         const names = (lastDraw.cards || []).map(id => powerName(round.powers.hand?.find(card => card.id === id) || id)).join('、');
-        if (lastDraw.kind === 'returned') push('哭喊未获得新能力', `抽到${names}，对应手记尚未公开，已放回牌库底。`, 'attention', PRIVATE, true, 'power');
-        else if (lastDraw.kind === 'empty_deck') push('能力牌库已空', '这次哭喊没有抽到能力牌。', 'info', PRIVATE, true, 'power');
+        if (lastDraw.kind === 'returned') push('哭喊未获得新能力', `抽到${names}，对应手记尚未公开，已放回牌库底。`, 'attention', PRIVATE, false, 'power', 'inventory');
+        else if (lastDraw.kind === 'empty_deck') push('能力牌库已空', '这次哭喊没有抽到能力牌。', 'info', PRIVATE, false, 'power', 'inventory');
         else push(lastDraw.kind === 'despair' ? '绝望时刻：获得新能力' : `获得了${names}`, lastDraw.kind === 'despair'
-          ? `${names}已加入手牌，可绕过手记数量门槛。` : '能力已加入你的手牌，可在能力栏中查看和设置。', 'success', PRIVATE, true, 'power');
+          ? `${names}已加入手牌，可绕过手记数量门槛。` : '能力已加入你的手牌，可在能力栏中查看和设置。', 'success', PRIVATE, lastDraw.kind === 'despair', 'power', 'inventory');
       } else {
         const ownedPowers = [...(oldRound.powers?.hand || []), ...(oldRound.powers?.slots || []).flatMap(slot => slot.card ? [slot.card] : [])];
-        for (const card of added(ownedPowers, round.powers?.hand)) push(`获得了${powerName(card)}`, card.description || '能力已加入你的手牌。', 'success', PRIVATE, true, 'power');
+        for (const card of added(ownedPowers, round.powers?.hand)) push(`获得了${powerName(card)}`, card.description || '能力已加入你的手牌。', 'success', PRIVATE, false, 'power', 'inventory');
       }
       for (const key of ['tokens', 'items']) {
         for (const piece of added(oldRound.inventory?.[key], round.inventory?.[key])) {
-          push(`获得了${key === 'tokens' ? tokenName(piece) : piece.name || '道具'}`, `${key === 'tokens' ? tokenDescription(piece) : piece.description || '道具已加入你的随身物品。'} 可在“我的物品”中回看。`, 'success', PRIVATE, true, key === 'tokens' ? tokenSymbol(piece) : 'item');
+          const important = key === 'tokens' && ['key', 'password', 'weakness_clue'].includes(piece.type);
+          push(`获得了${key === 'tokens' ? tokenName(piece) : piece.name || '道具'}`, `${key === 'tokens' ? tokenDescription(piece) : piece.description || '道具已加入你的随身物品。'} 可在“我的物品”中回看。`, 'success', PRIVATE, important, key === 'tokens' ? tokenSymbol(piece) : 'item', 'inventory');
         }
         if (!died) for (const piece of added(round.inventory?.[key], oldRound.inventory?.[key])) {
           push(`随身物品移出：${key === 'tokens' ? tokenName(piece) : piece.name || '道具'}`,
@@ -198,10 +219,14 @@ export function createFeedbackTracker({ limit = 20 } = {}) {
         const me = visitor.id === next.you;
         const banished = visitor.status === 'banished';
         push(me ? banished ? '你已被讨伐' : '你已死亡，转为箱人' : `${playerName(next, visitor.id)}${banished ? '已被讨伐' : '已死亡，转为箱人'}`,
-          me ? banished ? '你已无法继续潜伏，仍可查看公开进度。' : '你仍可在箱娃阶段作为箱人移动和潜伏，请查看新的操作提示。' : '玩家状态已更新，具体潜伏位置继续保密。', 'danger', PUBLIC, true, 'death');
+          round.result ? '本局已结束，请查看最终结局与复盘。' : me ? banished ? '你已无法继续潜伏，仍可查看公开进度。'
+            : resolution?.kind === 'inheritance' && resolution.playerId === next.you
+              ? '请先选择一名存活访问者交付全部遗物，再按当前步骤继续。'
+              : '你仍可在箱娃阶段作为箱人移动和潜伏，请查看新的操作提示。'
+            : '玩家状态已更新，具体潜伏位置继续保密。', 'danger', PUBLIC, true, 'death');
       }
       if (round.result && changed(oldRound.result, round.result)) push(`${round.result.winner === 'visitors' ? '访问者' : '箱娃'}获胜`,
-        /[\u4e00-\u9fff]/.test(round.result.reason || '') ? round.result.reason : '本局已结束，可回看地图、物品和事件。', 'success', PUBLIC, true, 'victory');
+        /[\u4e00-\u9fff]/.test(round.result.reason || '') ? round.result.reason : '本局已结束，可回看地图、物品和事件。', 'success', PUBLIC, true, 'victory', 'review');
       return finish();
     },
   };

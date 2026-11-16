@@ -221,7 +221,7 @@ test('NO.7 filters theft options and stolen tokens across HTTP, SSE and polling,
   await finishMove(client, hako, third);
   const overflow = await ok(client, first, 'silent_reveal', { index: 2 });
   assert.equal(overflow.round.silent.total, 11);
-  await ok(client, hako, 'pass_noise_reaction');
+  assert.equal(overflow.round.phase, 'hako_phase');
   await finishHako(client, hako, { setPowerId: 7 });
   await ok(client, first, 'silent_reveal', { index: 0 });
   await finishMove(client, hako, first);

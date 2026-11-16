@@ -968,11 +968,11 @@ test('SSE synchronizes all players, preserves disconnected seats and completes n
   const interrupted = state.round.silent.turnPlayerId;
   const current = people.find(person => person.playerId === interrupted);
   state = (await action(request, current, 'silent_reveal', { index: 3 })).body;
-  assert.equal(state.round.phase, 'hako_reaction');
+  assert.equal(state.round.phase, 'hako_phase');
   assert.equal(state.round.silent.total, 12);
   assert.equal((await action(request, current, 'move', { roomId: 'hall_room' })).status, 409);
   assert.equal((await action(request, current, 'pass_noise_reaction')).status, 409);
-  state = (await action(request, hako, 'pass_noise_reaction')).body;
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
   assert.equal(state.round.phase, 'hako_phase');
   await assertPrivateViews();
   assert.equal(state.round.powers.step, 'preparation');
@@ -1626,7 +1626,7 @@ test('HTTP and SSE keep phone results private and announce truthful and false NO
   assert.equal(logs.includes('password_4'), false);
 
   assert.equal((await action(request, second, 'silent_reveal', { index: 3 })).status, 200);
-  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 200);
+  assert.equal((await snapshot(request, hako)).body.round.phase, 'hako_phase');
   assert.equal((await action(request, hako, 'set_power', { powerId: 4, slot: 0 })).status, 200);
   assert.equal((await action(request, hako, 'begin_hako_action')).status, 200);
   const beforeSilent = (await snapshot(request, first)).body;
@@ -1703,11 +1703,11 @@ test('only the overflow flipper can respond and NO.5 activation stays pending ac
   assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
   state = (await snapshot(request, first)).body;
   assert.equal(state.round.interruption, null);
-  assert.equal(state.round.phase, 'hako_reaction');
+  assert.equal(state.round.phase, 'hako_phase');
   assert.equal((await action(request, first, 'extinguisher_response', { use: true })).status, 409);
   await checkRestart(saved, people);
   assert.equal((await snapshot(request, first)).body.round.interruption, null);
-  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 200);
+  assert.equal((await action(request, hako, 'pass_noise_reaction')).status, 409);
   assert.equal((await action(request, hako, 'begin_hako_action')).status, 200);
   const restorePowers = JSON.parse(await readFile(saved.dataFile, 'utf8')).rooms[0].play.powers;
   const activation = await action(request, hako, 'activate_power', { slot: 0 });

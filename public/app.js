@@ -4,9 +4,12 @@ import { createChatUI } from './chat.js';
 import { applyUndoLock, renderUndo } from './undo.js';
 import { createTileSvg, cornerNumber, cornerName, mapPlayers } from './tile.js';
 import { renderPractice, roundDescription, roundSeatStatus, renderDraft, renderOpening, preparationDescription } from './practice.js';
+import { captureView, restoreView, stepKey, resetDrafts } from './view-state.js';
+import { createHelpUI } from './help.js';
 
 const $ = id => document.getElementById(id);
 const feedback = createFeedbackUI();
+const help = createHelpUI();
 const chat = createChatUI(async payload => {
   if (!identity || !online) throw new Error('请等待连接恢复。');
   const session = identity;
@@ -40,7 +43,17 @@ let previewSending = false;
 let lastPreviewSent = '';
 let selectedMapCorner = '';
 const compactScreen = matchMedia('(max-width:720px)');
-let guideExpanded = !compactScreen.matches;
+let guideExpanded = false;
+let currentView = 'action';
+const viewScroll = new Map();
+let renderedStep = '';
+let actionMessage = '';
+let actionTone = 'info';
+let submittedStep = '';
+let pendingLabel = '';
+let uncertainAction = false;
+let entryMode = 'create';
+let hadConnection = false;
 
 function node(tag, className, value) {
   const result = document.createElement(tag);
@@ -52,6 +65,16 @@ function node(tag, className, value) {
 function showError(error) {
   $('error-text').textContent = error instanceof Error ? error.message : String(error);
   $('error-banner').hidden = false;
+  actionMessage = $('error-text').textContent;
+  actionTone = 'error';
+  renderActionFeedback();
+}
+
+function renderActionFeedback() {
+  const panel = $('action-feedback');
+  panel.hidden = !actionMessage && !pendingLabel;
+  panel.dataset.tone = actionTone;
+  panel.textContent = pendingLabel || actionMessage;
 }
 
 function setConnection(connected) {
@@ -63,6 +86,12 @@ function setConnection(connected) {
   $('connection-banner').hidden = connected || !identity;
   $('connection-banner').textContent = '连接已中断，正在自动重连。恢复后即可继续操作。';
   if (state && changed) render();
+  if (connected && changed && hadConnection && !uncertainAction && state) {
+    actionMessage = '已连接，按当前任务继续。';
+    actionTone = 'info';
+    renderActionFeedback();
+  }
+  hadConnection ||= connected;
 }
 
 async function api(path, body, signal) {
@@ -70,9 +99,18 @@ async function api(path, body, signal) {
   try {
     response = await fetch(path, { signal, ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
   } catch {
-    throw new Error('暂时无法连接房间，请检查网络后重试。');
+    const error = new Error('暂时无法连接房间，请检查网络后重试。');
+    error.network = true;
+    throw error;
   }
-  const result = await response.json();
+  let result;
+  try { result = await response.json(); }
+  catch {
+    const error = new Error(response.ok ? '响应尚未完整收到，正在确认进度。' : `操作未被接受（${response.status}），请检查当前进度。`);
+    error.network = response.ok;
+    error.status = response.status;
+    throw error;
+  }
   if (!response.ok) {
     const error = new Error(result.error || '操作未能完成，请重试。');
     error.status = response.status;
@@ -170,7 +208,18 @@ function disconnect() {
 }
 
 async function returnToEntry(message = '') {
+  help.clear();
+  resetDrafts();
   feedback.clear();
+  $('room-menu').hidePopover();
+  chat.reset?.();
+  currentView = 'action';
+  viewScroll.clear();
+  renderedStep = '';
+  actionMessage = '';
+  pendingLabel = '';
+  uncertainAction = false;
+  hadConnection = false;
   disconnect();
   state = null;
   saveSession(null);
@@ -226,7 +275,7 @@ function connect() {
         const next = await api(path, undefined, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]));
         if (controller.signal.aborted) return;
         // Do not rebuild form controls when only an unchanged snapshot arrives.
-        if (!online || JSON.stringify(next) !== JSON.stringify(state)) receiveState(next);
+        if (!online || uncertainAction || JSON.stringify(next) !== JSON.stringify(state)) receiveState(next);
         setConnection(true);
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -268,6 +317,20 @@ function connect() {
 function receiveState(next) {
   // A POST response can arrive after a newer SSE event.
   if (state && next.version < state.version) return;
+  const restored = state && next.version > state.version && (next.undo?.steps < state.undo?.steps
+    || next.log?.at(-1) !== state.log?.at(-1) && /(?:撤销了上一步|已撤销上一步)/.test(next.log?.at(-1) || ''));
+  const switched = state && (state.code !== next.code || state.you !== next.you
+    || state.phase !== 'lobby' && next.phase === 'lobby');
+  if (restored || switched) {
+    resetDrafts();
+    renderedStep = '';
+    viewScroll.clear();
+  }
+  if (uncertainAction) {
+    uncertainAction = false;
+    actionMessage = '已取得最新进度，请检查当前任务和物品后继续。';
+    actionTone = 'info';
+  }
   if (state && state.phase !== 'lobby' && next.phase === 'lobby') {
     feedback.clear();
     activeFloor = 1;
@@ -283,7 +346,20 @@ function receiveState(next) {
       next.setup.preview = state.setup.preview;
     }
   }
+  const enteredRound = !state?.round && next.round;
+  const changedStep = state && stepKey(state) !== stepKey(next);
   state = next;
+  if (enteredRound) {
+    const self = mapPlayers(next).find(player => player.id === next.you);
+    const placement = self && placementForRoom(self.roomId);
+    if (placement) activeFloor = placement.floor;
+  }
+  if (changedStep && submittedStep && submittedStep !== stepKey(next)) {
+    currentView = 'action';
+    submittedStep = '';
+    requestAnimationFrame(() => navigateGame('action'));
+  }
+  if (next.phase === 'lobby' || next.phase === 'hako_selection' || enteredRound) currentView = 'action';
   const key = next.setup ? `${next.setup.turnPlayerId}:${next.setup.drawnTileId}` : '';
   if (key !== tileTurnKey) {
     tileTurnKey = key;
@@ -297,7 +373,12 @@ function receiveState(next) {
     }
   }
   render();
+  help.receive(next);
   feedback.receive(next);
+  if (enteredRound) requestAnimationFrame(() => {
+    const marker = [...$('tile-board').querySelectorAll('.map-player-marker')].find(marker => marker.dataset.playerId === state.you);
+    centerMapTarget(compactScreen.matches && currentView !== 'map' ? marker : marker?.closest('.placed-tile'));
+  });
 }
 
 async function enterRoom(join) {
@@ -336,26 +417,45 @@ async function enterRoom(join) {
 }
 
 async function action(type, payload = {}) {
-  if (pending || !online || !identity) return;
+  if (pending || !online || !identity || uncertainAction) return;
   const session = identity;
+  const request = structuredClone({ playerId: session.playerId, token: session.token,
+    type, ...payload, expectedVersion: state.version });
+  $('room-menu').hidePopover();
   if (type === 'leave') leavingIdentity = session;
   pending = true;
+  submittedStep = stepKey(state);
+  pendingLabel = `${document.activeElement?.textContent?.trim().slice(0, 35) || '操作'}：正在提交…`;
+  actionMessage = '';
+  uncertainAction = false;
   $('error-banner').hidden = true;
   render();
   try {
-    const next = await api(`/api/rooms/${identity.roomCode}/actions`, {
-      playerId: identity.playerId, token: identity.token, type, expectedVersion: state.version, ...payload,
-    });
+    const next = await api(`/api/rooms/${session.roomCode}/actions`, request);
     if (identity !== session) return;
     if (type === 'leave') await returnToEntry();
     else receiveState(next.state || next);
   } catch (error) {
     if (identity !== session) return;
     if ((type === 'leave' || error.status === 403 || error.status === 404) && await verifyIdentity(session)) return;
-    if (identity === session) showError(error);
+    if (identity === session && error.network) {
+      uncertainAction = true;
+      actionMessage = '正在确认最新进度，请勿重复提交刚才的操作。';
+      actionTone = 'attention';
+      setConnection(false);
+      try {
+        const latest = await api(`/api/rooms/${session.roomCode}?${sessionQuery()}`);
+        if (identity === session) {
+          receiveState(latest.state || latest);
+          uncertainAction = false;
+          actionMessage = '已取得最新进度，请检查当前任务和物品后继续。';
+          setConnection(true);
+        }
+      } catch { /* The normal stream/poll recovery will retrieve the latest state. */ }
+    } else if (identity === session) showError(error);
   } finally {
     if (leavingIdentity === session) leavingIdentity = null;
-    if (identity === session) { pending = false; if (state) render(); }
+    if (identity === session) { pending = false; pendingLabel = ''; submittedStep = ''; if (state) render(); }
   }
 }
 
@@ -525,7 +625,44 @@ function updateCornerGuide() {
   $('corner-guide-body').hidden = !guideExpanded;
 }
 
-compactScreen.addEventListener('change', () => { guideExpanded = !compactScreen.matches; updateCornerGuide(); });
+compactScreen.addEventListener('change', () => { guideExpanded = false; updateCornerGuide(); });
+
+function placementForRoom(roomId) {
+  return state?.setup?.placements.find(placement => getTile(placement.tileId).rooms
+    .some(room => getLogicalRoomId(room.id) === getLogicalRoomId(roomId)) || roomId === 'entrance' && placement.tileId === 'hall');
+}
+
+function centerMapTarget(target) {
+  if (!target) return;
+  const viewport = $('board-viewport');
+  const view = viewport.getBoundingClientRect();
+  const rect = target.getBoundingClientRect();
+  viewport.scrollTo({ left: viewport.scrollLeft + rect.left - view.left - (viewport.clientWidth - rect.width) / 2,
+    top: viewport.scrollTop + rect.top - view.top - (viewport.clientHeight - rect.height) / 2 });
+}
+
+function locateSelf() {
+  const player = mapPlayers(state).find(player => player.id === state.you);
+  const placement = player && placementForRoom(player.roomId);
+  if (!placement) return;
+  activeFloor = placement.floor;
+  $('tile-board').style.removeProperty('--tile-size');
+  renderSetup();
+  const marker = [...$('tile-board').querySelectorAll('.map-player-marker')].find(marker => marker.dataset.playerId === state.you);
+  centerMapTarget(compactScreen.matches && currentView !== 'map' ? marker : marker?.closest('.placed-tile'));
+}
+
+function fitMap() {
+  const cells = [...$('tile-board').querySelectorAll('.board-cell')];
+  if (!cells.length) return;
+  const positions = cells.map(cell => ({ x: Number(cell.dataset.x), y: Number(cell.dataset.y) }));
+  const cols = Math.max(...positions.map(p => p.x)) - Math.min(...positions.map(p => p.x)) + 1;
+  const rows = Math.max(...positions.map(p => p.y)) - Math.min(...positions.map(p => p.y)) + 1;
+  const viewport = $('board-viewport');
+  const size = Math.max(64, Math.min(180, (viewport.clientWidth - 32) / cols, (viewport.clientHeight - 32) / rows));
+  $('tile-board').style.setProperty('--tile-size', `${size}px`);
+  centerMapTarget($('tile-board'));
+}
 
 function renderBoard() {
   const setup = state.setup;
@@ -622,6 +759,9 @@ function selectMapCorner(event) {
     $('board-help').parentElement.append(name);
   }
   name.textContent = cornerName(selectedMapCorner);
+  for (const target of document.querySelectorAll('[data-corner-id]')) {
+    if (!target.closest('#tile-board')) target.classList.toggle('map-target-selected', target.dataset.cornerId === selectedMapCorner);
+  }
 }
 $('tile-board').addEventListener('click', selectMapCorner);
 $('tile-board').addEventListener('keydown', selectMapCorner);
@@ -641,6 +781,7 @@ function renderMapPositions(players) {
     entry.setAttribute('aria-label', `查看${player.name}${player.self ? '（你）' : ''}所在位置：${room?.name || '正门'}${player.cornerId ? `，角落${cornerNumber(player.cornerId)}，仅自己可见` : ''}`);
     entry.append(node('span', 'player-number', String(player.seat + 1)),
       node('span', '', `${player.name}${player.self ? '（你）' : ''} · ${room?.name || '正门'}${player.cornerId ? ` ${cornerNumber(player.cornerId)}（仅自己可见）` : ''}`));
+    entry.dataset.uiControl = '';
     entry.addEventListener('click', () => {
       if (floor === undefined) return;
       activeFloor = floor;
@@ -757,10 +898,12 @@ function currentTask() {
     if (['visitor_reaction', 'hako_reaction'].includes(round.phase)) return task(round.hako.playerId === state.you ? round.phase === 'visitor_reaction' ? '请确认访问者行动' : '请结束反应窗口' : '等待箱娃确认', description, round.hako.playerId, '.practice-controls');
     if (round.phase === 'hako_phase') {
       const actor = round.hako.playerId === state.you ? round.hako : round.ghost;
+      if (round.hako.playerId === state.you && round.powers?.rearrangement) return task('请完成房间标志重排', description, state.you, '[data-testid="power-rearrangement"]');
+      if (round.hako.playerId === state.you && round.powers?.pathRooms?.length) return task('请选择NO.2移动路线', description, state.you, '.hako-sequence');
       const ghostWaiting = round.ghost && actor === round.ghost && actor.status !== 'banished' && !actor.finished && !actor.inspectedRoom && !actor.hidingRooms?.length;
       if (ghostWaiting && round.hako.playerId !== state.you) return task('等待箱娃开始潜伏', '箱娃完成阶段能力并选择潜伏房间后，才轮到你选择潜伏位置。', round.hako.playerId, '.practice-controls');
       const mine = actor && actor.status !== 'banished' && !actor.finished && (round.powers?.step !== 'preparation' || round.hako.playerId === state.you);
-      return task(mine ? round.powers?.step === 'preparation' ? '轮到你准备能力' : '轮到你行动与潜伏' : '等待箱娃与箱人行动', description, mine ? state.you : round.hako.finished ? null : round.hako.playerId, '.hako-sequence');
+      return task(mine ? round.powers?.step === 'preparation' ? '轮到你准备能力' : actor.inspectedRoom ? '请选择潜伏角落' : '轮到你行动与潜伏' : '等待箱娃与箱人行动', description, mine ? state.you : round.hako.finished ? null : round.hako.playerId, '.hako-sequence');
     }
     const actor = round.silent?.turnPlayerId;
     return task(actor === state.you ? round.phase === 'visitor_reveal' ? '轮到你翻牌' : '轮到你行动' : `等待${name(actor)}${round.phase === 'visitor_reveal' ? '翻牌' : '行动'}`, description, actor, round.phase === 'visitor_reveal' ? '.silent-section' : '.standard-actions, .practice-controls');
@@ -780,7 +923,7 @@ function renderGameStatus() {
   $('turn-owner').textContent = task.actor === state.you ? '现在轮到你' : task.actor ? `当前：${state.players.find(player => player.id === task.actor)?.name || '玩家'}` : state.round?.result ? '本局结束' : '请稍候';
   $('game-status').classList.toggle('needs-attention', Boolean(task.mine && online));
   $('focus-current-action').hidden = !task.target;
-  $('focus-current-action').textContent = task.mine ? '前往操作' : '查看进度';
+  $('focus-current-action').textContent = state.round?.result ? '查看复盘' : task.mine ? '前往操作' : '查看进度';
   const round = state.round;
   $('personal-status').hidden = !round;
   if (!round) return;
@@ -807,8 +950,48 @@ function focusGameSection(selector) {
   target.scrollIntoView({ block: 'start', inline: 'nearest' });
 }
 
+function navigateGame(view, target) {
+  if (!state) return;
+  const sidebar = document.querySelector('.setup-sidebar');
+  viewScroll.set(currentView, sidebar.scrollTop);
+  const previousView = currentView;
+  currentView = view === 'review' ? 'action' : view;
+  $('setup-view').dataset.panel = currentView;
+  const focused = currentView === 'map';
+  $('setup-view').classList.toggle('map-focused', focused);
+  $('map-focus').textContent = focused ? '返回操作' : '专看地图';
+  $('map-focus').setAttribute('aria-pressed', String(focused));
+  for (const button of $('game-navigation').querySelectorAll('[data-view]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.view === currentView));
+  }
+  document.dispatchEvent(new CustomEvent('game-view-change', { detail: { view: currentView } }));
+  if (view === 'map') return;
+  if (view === 'chat') chat.markRead?.();
+  const selector = target || (view === 'review' ? '.game-review' : view === 'inventory'
+    ? '#personal-inventory, [data-testid="power-preparation"], .power-overview'
+    : view === 'public' ? '.public-progress' : view === 'chat' ? '#chat-panel' : currentTask().target || '#practice-panel');
+  focusGameSection(selector);
+  if (view === 'action' && !target && ['inventory', 'chat', 'public'].includes(previousView) && viewScroll.has('action')) {
+    sidebar.scrollTop = viewScroll.get('action');
+  }
+}
+
+function setEntryMode(mode) {
+  entryMode = mode;
+  $('entry-form').dataset.mode = mode;
+  $('entry-create').setAttribute('aria-pressed', String(mode === 'create'));
+  $('entry-join').setAttribute('aria-pressed', String(mode === 'join'));
+  $('entry-form-title').textContent = mode === 'join' ? '加入朋友的房间' : '创建一间旧宅';
+  $('entry-form-description').textContent = mode === 'join'
+    ? requestedRoom ? `朋友邀请你加入房间 ${requestedRoom.toUpperCase()}。请填写昵称入席。` : '填写昵称和朋友发来的房间码，即可入席。'
+    : '选择四人或五人，邀请朋友，也可补齐人机试玩。';
+}
+
 function render() {
   if (!state) return;
+  const sidebar = document.querySelector('.setup-sidebar');
+  const saved = captureView(sidebar);
+  const nextStep = stepKey(state);
   $('entry-view').hidden = true;
   $('room-view').hidden = false;
   $('room-code-display').textContent = state.code;
@@ -825,18 +1008,73 @@ function render() {
   renderUndo({ state, pending, online, action });
   if (!lobby) renderGameStatus();
   chat.render(state, online);
+  $('game-navigation').querySelector('[data-view="inventory"]').textContent = state.round?.hako?.playerId === state.you ? '能力' : '物品';
+  $('game-navigation').hidden = lobby || Boolean(state.draft);
+  $('setup-view').dataset.panel = currentView;
+  restoreView(sidebar, saved, renderedStep === nextStep);
+  applyUndoLock(state);
+  help.addMenuButton($('room-menu-content'));
+  renderedStep = nextStep;
+  renderActionFeedback();
+  if (state.undo?.pending) $('room-menu').hidePopover();
 }
 
-$('focus-current-action').addEventListener('click', () => focusGameSection(currentTask().target || '#practice-panel'));
-$('focus-inventory').addEventListener('click', () => focusGameSection('#personal-inventory, [data-testid="power-preparation"], .hako-sequence, .power-overview'));
-$('entry-form').addEventListener('submit', event => { event.preventDefault(); enterRoom(false); });
+$('focus-current-action').addEventListener('click', () => navigateGame(state.round?.result ? 'review' : 'action'));
+$('focus-inventory').addEventListener('click', () => navigateGame('inventory'));
+$('entry-form').addEventListener('submit', event => { event.preventDefault(); enterRoom(entryMode === 'join'); });
 $('access-form').addEventListener('submit', event => { event.preventDefault(); redeemAccess(); });
 $('entry-retry').addEventListener('click', () => { if (entryRetry) entryRetry(); });
 $('map-focus').addEventListener('click', () => {
-  const focused = $('setup-view').classList.toggle('map-focused');
-  $('map-focus').textContent = focused ? '返回操作' : '专看地图';
-  $('map-focus').setAttribute('aria-pressed', String(focused));
+  navigateGame(currentView === 'map' ? 'action' : 'map');
 });
+$('game-navigation').addEventListener('click', event => {
+  const button = event.target.closest('[data-view]');
+  if (button) navigateGame(button.dataset.view);
+});
+document.addEventListener('game-navigate', event => navigateGame(event.detail.view, event.detail.target));
+document.addEventListener('game-selection-expired', () => {
+  actionMessage = '可选目标已变化，请重新选择后再提交。';
+  actionTone = 'attention';
+  renderActionFeedback();
+});
+document.addEventListener('map-target', event => {
+  const { cornerId, roomId } = event.detail;
+  const room = roomId || getLogicalRooms().find(room => room.corners.some(corner => corner.id === cornerId))?.id
+    || (cornerId?.startsWith('suitcase:') ? cornerId.slice(9) : null);
+  const placement = room && placementForRoom(room);
+  if (!placement) return;
+  if (state.round?.result && compactScreen.matches) navigateGame('map');
+  activeFloor = placement.floor;
+  renderSetup();
+  const target = cornerId ? $('tile-board').querySelector(`.corner-location[data-corner-id="${CSS.escape(cornerId)}"]`)
+    : [...$('tile-board').querySelectorAll('.placed-tile')].find(tile => tile.dataset.tileId === placement.tileId);
+  if (cornerId && target) selectMapCorner({ type: 'click', target, preventDefault() {}, stopPropagation() {} });
+  centerMapTarget(target?.closest('.placed-tile') || target);
+});
+function previewActionTarget(event) {
+  const control = event.target;
+  if (!control.closest?.('#practice-panel, #opening-panel') || control.closest('#chat-panel')) return;
+  const cornerId = control.dataset.cornerId || (control.tagName === 'SELECT' && cornerName(control.value) !== '尚未选择' ? control.value : null);
+  const roomId = control.dataset.roomId || (control.tagName === 'SELECT' && getLogicalRooms().some(room => room.id === control.value) ? control.value : null);
+  if (!cornerId && !roomId) return;
+  const room = roomId || getLogicalRooms().find(room => room.corners.some(corner => corner.id === cornerId))?.id
+    || (cornerId?.startsWith('suitcase:') ? cornerId.slice(9) : null);
+  const placement = room && placementForRoom(room);
+  if (!placement) return;
+  activeFloor = placement.floor;
+  renderBoard();
+  for (const tab of $('floor-tabs').querySelectorAll('button')) {
+    tab.setAttribute('aria-selected', String(Number(tab.dataset.floor) === activeFloor));
+    tab.tabIndex = Number(tab.dataset.floor) === activeFloor ? 0 : -1;
+  }
+  const mark = cornerId && $('tile-board').querySelector(`.corner-location[data-corner-id="${CSS.escape(cornerId)}"]`);
+  if (mark) selectMapCorner({ type: 'click', target: mark, preventDefault() {}, stopPropagation() {} });
+  centerMapTarget(mark || [...$('tile-board').querySelectorAll('.placed-tile')].find(tile => tile.dataset.tileId === placement.tileId));
+}
+document.addEventListener('focusin', previewActionTarget);
+document.addEventListener('change', previewActionTarget);
+$('entry-create').addEventListener('click', () => setEntryMode('create'));
+$('entry-join').addEventListener('click', () => setEntryMode('join'));
 $('join-room').addEventListener('click', () => enterRoom(true));
 $('room-code').addEventListener('input', event => { event.target.value = event.target.value.toUpperCase(); });
 $('room-code').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); enterRoom(true); } });
@@ -899,6 +1137,37 @@ $('copy-invite').addEventListener('click', async () => {
 for (const tab of $('floor-tabs').querySelectorAll('button')) tab.dataset.testid = Number(tab.dataset.floor) === -1 ? 'floor-basement' : `floor-${tab.dataset.floor}`;
 const requestedRoom = new URL(location.href).searchParams.get('room');
 if (requestedRoom) $('room-code').value = requestedRoom.toUpperCase();
+setEntryMode(requestedRoom ? 'join' : 'create');
+
+const menuButton = node('button', 'event-history-toggle', '房间操作');
+menuButton.type = 'button';
+menuButton.id = 'room-menu-toggle';
+menuButton.dataset.testid = 'room-menu-toggle';
+menuButton.setAttribute('popovertarget', 'room-menu');
+document.querySelector('.room-tools').append(menuButton);
+for (const [id, label, handler] of [['locate-self', '定位自己', locateSelf], ['fit-map', '查看全图', fitMap]]) {
+  const button = node('button', 'text-button', label);
+  button.type = 'button';
+  button.id = id;
+  button.dataset.uiControl = '';
+  button.addEventListener('click', handler);
+  document.querySelector('.map-toolbar-actions').prepend(button);
+}
+for (const element of document.querySelectorAll('#floor-tabs button, #focus-current-action, #focus-inventory, #map-focus')) element.dataset.uiControl = '';
+$('event-history-toggle').firstChild.textContent = '事件 ';
+
+function updateKeyboardViewport() {
+  const viewport = window.visualViewport;
+  const keyboard = viewport && document.activeElement?.matches('input, textarea') && innerHeight - viewport.height > 150;
+  document.documentElement.classList.toggle('keyboard-open', Boolean(keyboard));
+  document.documentElement.style.setProperty('--visible-height', `${viewport?.height || innerHeight}px`);
+  if (keyboard && document.activeElement?.matches('input, textarea')) {
+    document.activeElement.scrollIntoView({ block: 'nearest' });
+  }
+}
+window.visualViewport?.addEventListener('resize', updateKeyboardViewport);
+window.addEventListener('resize', updateKeyboardViewport);
+updateKeyboardViewport();
 
 async function resume(stored = storedSession(requestedRoom?.toUpperCase())) {
   if (!stored?.roomCode || !stored.playerId || !stored.token) { await checkEntryAccess(); return; }
