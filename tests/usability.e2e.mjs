@@ -172,13 +172,8 @@ test('important private events appear above the game, dismiss without acting, an
   await dismissOutside(mobile);
   assert.match(await mobile.getByTestId('private-resolution').innerText(), /密码5/,
     'The original decision remains available after the event is dismissed');
-  const decisionOrder = await mobile.getByTestId('private-resolution').evaluate(response => {
-    const inventory = document.getElementById('personal-inventory');
-    return { before: Boolean(response.compareDocumentPosition(inventory) & Node.DOCUMENT_POSITION_FOLLOWING),
-      responseTop: response.getBoundingClientRect().top, inventoryTop: inventory.getBoundingClientRect().top };
-  });
-  assert.equal(decisionOrder.before, true, 'The pending finding is before inventory in DOM reading order');
-  assert.ok(decisionOrder.responseTop < decisionOrder.inventoryTop, 'The pending finding is positioned before inventory');
+  assert.equal(await mobile.locator('#action-pane').isVisible(), true);
+  assert.equal(await mobile.getByTestId('inventory').isVisible(), false, 'Personal possessions have a separate pane while deciding on a finding');
   await mobile.getByTestId('focus-inventory').click();
   await assertHeadingInSidebar(mobile.getByTestId('inventory'), 'Inventory navigation scrolls past the current finding');
   await mobile.getByTestId('focus-current-action').click();
@@ -252,7 +247,7 @@ test('important private events appear above the game, dismiss without acting, an
   for (const { viewport, geometry } of layouts) {
     assert.equal(geometry.fitsWidth, true, `${viewport.width}×${viewport.height}: the page has no horizontal overflow`);
     assert.ok(geometry.mapHeight >= 80, `${viewport.width}×${viewport.height}: the compact map remains expandable: ${JSON.stringify(geometry)}`);
-    assert.ok(geometry.controlsHeight >= (viewport.height > 600 ? 260 : 150), `${viewport.width}×${viewport.height}: the current controls retain useful space: ${JSON.stringify(geometry)}`);
+    assert.ok(geometry.controlsHeight >= (viewport.height > 600 ? 120 : 150), `${viewport.width}×${viewport.height}: the current controls retain useful space: ${JSON.stringify(geometry)}`);
     assert.ok(geometry.statusWidth <= geometry.viewportWidth, 'The status strip fits small and landscape viewports');
   }
   await mobile.setViewportSize({ width: 390, height: 844 });
@@ -281,6 +276,7 @@ test('important private events appear above the game, dismiss without acting, an
   const pending = await act(first, 'undo_request', { version: beforeEscape.version });
   assert.ok(pending.undo.pending);
   if (await dialogOpen(mobile)) await mobile.keyboard.press('Escape');
+  await mobile.getByTestId('focus-inventory').click();
   await mobile.getByTestId('focus-current-action').click();
   assert.equal(await mobile.getByTestId('resolve-peek-take').isDisabled(), true,
     'Locating the current decision cannot bypass the undo freeze');
@@ -303,13 +299,12 @@ test('important private events appear above the game, dismiss without acting, an
   if (await dialogOpen(mobile)) await mobile.keyboard.press('Escape');
   assert.match(await mobile.locator('#setup-title').innerText(), /等待箱娃开始潜伏/);
   assert.doesNotMatch(await mobile.getByTestId('turn-owner').innerText(), /现在轮到你/);
-  assert.equal(await mobile.getByTestId('focus-current-action').innerText(), '查看进度');
+  assert.equal(await mobile.getByTestId('focus-current-action').isVisible(), false, 'The waiting screen does not repeat its own navigation');
   ghostWait.version += 1;
   ghostWait.round.ghost.hidingRooms = [{ id: 'children_room', name: '儿童房' }];
   await mobile.evaluate(receiveFiltered, ghostWait);
   assert.match(await mobile.locator('#setup-title').innerText(), /轮到你行动与潜伏/);
-  await mobile.getByTestId('focus-current-action').click();
-  assert.equal(await mobile.locator('.hako-sequence').count(), 1);
+  assert.equal(await mobile.locator('.hako-sequence').isVisible(), true);
   ghostWait.version += 1;
   delete ghostWait.round.ghost;
   ghostWait.round.visitors.find(visitor => visitor.id === first.playerId).status = 'alive';

@@ -1,3 +1,4 @@
+import { openGamePane } from './game-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -182,6 +183,7 @@ test('NO7 browser choices protect random-token privacy, preserve free/standard t
   const g = await game(t, { slots: [7], possessions: [[0, 'password_4'], [1, 'password_5'], [2, 'password_6']] });
   const [hako, first] = g.people;
   const [hp, fp, secondPage] = g.pages;
+  await openGamePane(fp, 'inventory');
   await fp.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
   await g.click(fp, 'show_token', () => fp.getByTestId('show-token').click());
   assert.match(await hp.locator('.pending-move').innerText(), /声明展示标志/);
@@ -190,6 +192,7 @@ test('NO7 browser choices protect random-token privacy, preserve free/standard t
   await g.click(hp, 'resolve_visitor_action', () => hp.getByTestId('resolve-action').click());
   assert.match(await secondPage.getByTestId('shared-token').innerText(), /密码4/);
   assert.equal((await g.snapshot(first)).round.silent.turnPlayerId, first.playerId);
+  await openGamePane(fp, 'inventory');
   await fp.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
   await g.click(fp, 'show_token', () => fp.getByTestId('show-token').click());
   const steal = hp.getByTestId('power-steal-0');
@@ -249,13 +252,15 @@ test('NO8 browser waits until next turn, restores a pending second reveal and ke
   await g.moveTurn();
   view = await g.snapshot(first);
   assert.equal(view.round.silent.turnPlayerId, first.playerId);
+  await openGamePane(fp, 'inventory');
   await fp.getByText('展示、赠送与放置（自由行动）', { exact: true }).click();
   assert.equal(await fp.locator('[data-testid="gift-item"][data-item-id="doll"]').count(), 0);
   assert.equal(await fp.getByTestId('drop-token-select').locator('option[value="doll"]').count(), 0);
   assert.ok(await fp.getByTestId('drop-token-select').count(), 'A different carried token can still be dropped');
+  await openGamePane(fp, 'action');
   await g.click(fp, 'silent_reveal', () => fp.getByTestId('silent-card-3').click());
   assert.equal((await g.snapshot(first)).round.silent.revealsRemaining, 1);
-  assert.match(await fp.locator('.practice-status').innerText(), /继续翻开/);
+  assert.match(await fp.locator('#turn-description').innerText(), /继续翻开/);
   for (const skip of await fp.locator('.silent-skip').all()) assert.equal(await skip.isDisabled(), true);
   await g.restart();
   assert.equal((await g.snapshot(first)).round.silent.revealsRemaining, 1);
@@ -292,7 +297,9 @@ test('bell browser rings once, blocks B/C setup while allowing A/ungraded cards 
   assert.equal((await g.snapshot(first)).round.noiseEffects.bellUserId, first.playerId);
   while ((await g.snapshot()).round.phase !== 'hako_phase') await g.moveTurn();
   assert.equal((await g.snapshot(hako)).round.noiseEffects.bellUserId, first.playerId);
-  assert.match(await hp.locator('.silent-section').innerText(), /本次箱娃阶段禁止设置危险度B或C/);
+  await openGamePane(hp, 'public');
+  await hp.getByTestId('current-effects').locator('summary').click();
+  assert.match(await hp.getByTestId('current-effects').innerText(), /本次箱娃阶段不能设置危险度B、C/);
   let hand = (await g.snapshot(hako)).round.powers.hand;
   const forbidden = [3, 4, 7, 8, 9, 10];
   const allowed = [1, 2, 5, 6, 11];
@@ -306,6 +313,7 @@ test('bell browser rings once, blocks B/C setup while allowing A/ungraded cards 
     assert.equal(hand.find(card => card.id === id).settable, true, `Bell must permit setting NO.${id}`);
     assert.equal(await hp.getByTestId('set-power-select').locator(`option[value="${id}"]`).count(), 1);
   }
+  await openGamePane(hp, 'inventory');
   await hp.getByText(`查看手牌（${hand.length}张）`, { exact: true }).click();
   for (const id of forbidden) assert.match(await hp.locator(`[data-testid="power-hand-card"][data-power-id="${id}"]`).innerText(), /铃|危险度/);
   await g.restart();

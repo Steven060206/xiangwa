@@ -62,7 +62,7 @@ function mockDocument(t) {
   doc.dispatchEvent = event => { emitted.push(event.type); return dispatch(event); };
   for (const id of ['event-dialog', 'event-count', 'event-history-toggle', 'event-history-empty', 'event-history-list',
     'event-history', 'event-position', 'event-next', 'event-primary-action', 'event-title', 'event-body',
-    'event-visibility', 'event-symbol', 'event-companions', 'event-locate', 'event-toast', 'event-close', 'focus-current-action',
+    'event-visibility', 'event-symbol', 'event-companions', 'event-locate', 'event-toast', 'discovery-banner', 'event-close', 'focus-current-action',
     'room-menu-toggle', 'room-menu', 'room-menu-content']) {
     const element = new Element();
     element.id = id;

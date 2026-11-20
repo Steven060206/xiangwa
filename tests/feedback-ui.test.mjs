@@ -442,11 +442,13 @@ test('exchange requests, private display and extinguisher responses clearly iden
     value.round.interruption = { canRespond: true };
   });
   const events = tracker.receive(next);
-  assert.match(events[0].title, /访问者乙向你提出交换/);
+  assert.match(events[0].title, /访问者乙向你提出赠送/);
   assert.match(events[0].body, /密码6/);
   assert.match(events[1].body, /其他玩家正在等待/);
   assert.equal(events[2].symbol, 'key');
-  assert.ok(events.every(event => event.highlight && event.privateLabel === '仅你可见'));
+  assert.ok(events.every(event => event.privateLabel === '仅你可见'));
+  assert.equal(events[0].highlight, false, 'An optional gift keeps the reader in their current pane');
+  assert.ok(events.slice(1).every(event => event.highlight));
 });
 
 test('public notebooks and published finds carry concrete effects and the public visibility label', () => {
@@ -464,6 +466,24 @@ test('public notebooks and published finds carry concrete effects and the public
   assert.equal(find.title, '访问者乙公开了汽油');
   assert.match(find.body, /讨伐/);
   assert.ok([notebook, find].every(event => event.privateLabel === '全员可见'));
+});
+
+test('a published peek keeps its actor, token, location and cycle in its event record', () => {
+  const initial = state();
+  const tracker = trackerWith(initial);
+  const shared = nextState(initial, value => {
+    for (const playerId of ['visitor-b', value.you]) value.round.publicDiscoveries.push({
+      playerId, token: { id: 'password_6', type: 'password', number: 6 }, cornerId: 'hall_clock', cycle: 4,
+    });
+  });
+  const [peer, own] = tracker.receive(shared);
+  assert.equal(peer.banner, true);
+  assert.equal(peer.highlight, false);
+  assert.equal(peer.cornerId, 'hall_clock');
+  assert.equal(peer.record, '访问者乙曾在此发现密码6（第4轮公开）');
+  assert.equal(own.banner, false);
+  assert.equal(own.highlight, true);
+  assert.match(own.record, /曾在此发现密码6/);
 });
 
 test('each completed safe attempt reports its result even if two attempts have the same outcome', () => {
@@ -649,6 +669,43 @@ test('important events queue without rewriting a card, mark reads, and retain un
   ui.receive(response);
   assert.equal(node('event-dialog').open, false);
   assert.equal(node('event-count').hidden, true);
+});
+
+test('peer publication banners preserve focus and offer a map only for a published corner', t => {
+  const { ui, node, locations } = feedbackDocument(t);
+  const initial = state();
+  ui.receive(initial);
+  const field = node('unfinished-response');
+  field.focus();
+  const published = nextState(initial, value => value.round.publicDiscoveries.push({ playerId: 'visitor-b',
+    token: { id: 'password_6', type: 'password', number: 6 }, cornerId: 'hall_clock', cycle: 2 }));
+  ui.receive(published);
+  const banner = node('discovery-banner');
+  assert.equal(banner.hidden, false);
+  assert.equal(banner.children[0].children[0].textContent, '访问者乙公开了密码6');
+  assert.match(banner.children[0].children[1].textContent, /01 · 1楼大厅 · 老旧的大钟后/);
+  assert.equal(document.activeElement, field);
+  assert.equal(node('event-dialog').open, false);
+  assert.equal(node('event-history-list').children[0].children.length, 2);
+  banner.children[1].emit('click');
+  assert.deepEqual(locations, ['hall_clock']);
+  const firstLocation = banner.children[1];
+  firstLocation.focus();
+  const held = nextState(published, value => value.round.publicDiscoveries.push({ playerId: 'visitor-b',
+    token: { id: 'key', type: 'key' }, cycle: 3 }));
+  ui.receive(held);
+  assert.equal(document.activeElement, firstLocation);
+  assert.equal(banner.children[1], firstLocation);
+  assert.equal(banner.children[2].textContent, '下一条（1）');
+  banner.children[2].emit('click');
+  assert.equal(banner.children[0].children[0].textContent, '访问者乙公开了钥匙');
+  assert.equal(banner.children[0].children.length, 1);
+  assert.equal(banner.children.length, 2);
+  assert.equal(node('event-history-list').children[0].children.length, 1);
+  assert.equal(node('event-dialog').open, false);
+  banner.children[1].emit('click');
+  assert.equal(banner.hidden, true);
+  assert.equal(node('event-history-list').children.length, 2);
 });
 
 test('ordinary gains use a toast, and escape or outside close restores focus without a game action', t => {

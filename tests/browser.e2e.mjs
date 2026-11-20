@@ -1,3 +1,4 @@
+import { openGamePane, locateSeat } from './game-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -147,7 +148,8 @@ test('four browser sessions complete private opening, powers, exploration, item 
       assert.equal(await pages[i].getByTestId('hiding-room-memory').count(), 0);
       if (openingPhase) {
         assert.equal(snapshot.opening.phase, openingPhase);
-        await pages[i].locator(`#opening-panel[data-phase="${openingPhase}"]`).waitFor();
+        await pages[i].locator(`#opening-panel[data-phase="${openingPhase}"]`).waitFor({ state: 'attached' });
+        assert.equal(await pages[i].getByTestId('opening-panel').isVisible(), false);
         const panelText = await pages[i].getByTestId('opening-panel').innerText();
         for (const secretText of ['手记 ·', '密码 ·', '讨伐道具 ·', '玛丽小姐的人偶',
           '隐藏出口', '古怪护符', '灭火器', '白木棒', '汽油', '锈锁链']) {
@@ -496,6 +498,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.deepEqual(state.opening.lastInspectedRoom, { id: initialRoomContents.id, cycle: 0,
     corners: [{ id: initialHiding, token: state.opening.hidingUnderToken }] });
   const roomMemory = hakoPage.getByTestId('hiding-room-memory');
+  await openGamePane(hakoPage, 'inventory');
   assert.equal(await roomMemory.isVisible(), true);
   const initialRoomText = await roomMemory.locator('dd').allTextContents();
   assert.equal(initialRoomText.length, 1, 'Only the replaced piece is remembered');
@@ -524,13 +527,15 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.silent.total, 0);
   assert.ok(state.round.visitors.every(visitor => visitor.roomId === 'hall_room'));
   for (const page of pages) {
-    await page.getByTestId('practice-panel').waitFor();
+    await page.getByTestId('practice-panel').waitFor({ state: 'attached' });
     assert.equal(await page.getByTestId('restart-current-game').count(), page === pages[0] ? 1 : 0,
       'Only the host can end an active exploration game');
     if (page === hakoPage) assert.match(await page.getByTestId('initial-power').textContent(), new RegExp(chosenInitial.name));
     else assert.equal(await page.getByTestId('initial-power').count(), 0, 'The selected initial power stays private');
   }
+  await openGamePane(hakoPage, 'inventory');
   await hakoPage.getByTestId('hako-location').waitFor();
+  await openGamePane(hakoPage, 'action');
   await assertVisitorPrivacy();
 
   for (let turn = 0; turn < 3; turn++) {
@@ -541,6 +546,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(state.round.phase, 'visitor_action');
     assert.equal(state.round.silent.total, [5, 9, 10][turn], 'A total of exactly 10 still permits movement');
     const previousRoom = state.round.visitors.find(visitor => visitor.id === visitorId).roomId;
+    await page.getByTestId('action-categories').getByRole('link', { name: /^移动/ }).click();
     const move = page.getByTestId('move-target').first();
     await move.waitFor();
     const targetRoom = await move.getAttribute('data-room-id');
@@ -585,8 +591,12 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.deepEqual(state.round.powers.announcement, { roomId: 'children_room', cycle: 1 });
   assert.deepEqual(state.round.powers.lastDraw, { kind: 'returned', cards: [10] });
   assert.equal(state.round.powers.handCount, 2, 'The unqualified draw returns to the deck; the selected card and innate NO.11 remain in hand');
-  for (const page of pages) assert.match(await page.getByTestId('cry-announcement').innerText(), /儿童房/);
+  for (const page of pages) {
+    await openGamePane(page, 'public');
+    assert.match(await page.getByTestId('cry-announcement').innerText(), /儿童房/);
+  }
   await assertVisitorPrivacy();
+  await openGamePane(hakoPage, 'action');
   await hakoPage.getByTestId('set-power-select').selectOption('1');
   await hakoPage.getByTestId('set-power-slot').selectOption('0');
   state = await performAction(hakoPage, 'set_power', () => hakoPage.getByTestId('set-power').click());
@@ -609,7 +619,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.powers.handCount, 2, 'A used ordinary ability returns beside the innate NO.11 in hako hand');
   assert.deepEqual(state.round.powers.lastActivation, { powerId: 1, name: '就在你身旁', cycle: 1 });
   for (const page of pages) {
-    if (page === hakoPage) assert.match(await page.getByTestId('power-last-activation').innerText(), /发动了NO\.1 就在你身旁/);
+    if (page === hakoPage) {
+      await openGamePane(page, 'inventory');
+      assert.match(await page.getByTestId('power-private-activation').innerText(), /发动了NO\.1 就在你身旁/);
+    }
     else {
       assert.equal(await page.getByTestId('power-last-activation').count(), 0);
       assert.match(await page.locator('[data-testid="power-slot"][data-slot="0"]').innerText(), /空栏/);
@@ -619,6 +632,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   }
   await hakoPage.screenshot({ path: 'test-results/powers-desktop.png', fullPage: true });
   await pages[1].screenshot({ path: 'test-results/powers-mobile.png', fullPage: true });
+  await openGamePane(hakoPage, 'action');
   assert.deepEqual(state.round.hako.hidingTargets, [], 'Hako must inspect a room before selecting its corner');
   const hidingRoom = 'children_room';
   assert.ok(state.round.hako.hidingRooms.some(room => room.id === hidingRoom));
@@ -641,7 +655,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.ok(state.round.hako.inspectedRoom.corners.every(corner => !Object.hasOwn(corner, 'token')
     || corner.id === 'children_toys' && corner.token.type === 'empty_box' && corner.token.faceUp === true),
   'The already public face-up X is visible; covered pieces remain unknown');
-  await hakoPage.locator(`#map-positions [data-player-id="${identities[0].playerId}"]`).click();
+  await locateSeat(hakoPage, identities[0].playerId);
   await hakoPage.locator(`.corner-location[data-corner-id="${nextHiding}"]`).click();
   assert.equal(await hakoPage.locator('#map-context input[type="checkbox"]').isChecked(), true, 'Nearby hiding confirmation preserves the existing cover-X choice');
   state = await performAction(hakoPage, 'hako_hide', () => hakoPage.getByTestId('map-confirm-action').filter({ hasText: '确认潜伏于此' }).click());
@@ -651,6 +665,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.hako.lastInspectedRoom.cycle, 1);
   assert.equal(state.round.hako.lastInspectedRoom.corners.length, 1);
   assert.equal(state.round.hako.lastInspectedRoom.corners[0].id, nextHiding);
+  await openGamePane(hakoPage, 'inventory');
   assert.equal(await roomMemory.isVisible(), true);
   const laterRoomText = await roomMemory.locator('dd').allTextContents();
   assert.equal(laterRoomText.length, 1);
@@ -658,8 +673,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
   await hakoPage.setViewportSize({ width: 390, height: 844 });
   await roomMemory.screenshot({ path: 'test-results/hiding-memory-mobile.png' });
   await hakoPage.reload();
+  await openGamePane(hakoPage, 'inventory');
   await roomMemory.waitFor();
   assert.deepEqual(await roomMemory.locator('dd').allTextContents(), laterRoomText, 'Confirmed hiding memory survives refresh');
+  await openGamePane(hakoPage, 'action');
   await hakoPage.setViewportSize({ width: 1440, height: 1000 });
   assert.equal(state.round.powers.step, null, 'Ending the hako stage clears its action step');
   assert.equal(state.round.silent.total, 0);
@@ -677,8 +694,15 @@ test('four browser sessions complete private opening, powers, exploration, item 
       'Opening and round controls must fit desktop and mobile viewports');
   }
   await hakoPage.screenshot({ path: 'test-results/round-desktop.png', fullPage: true });
-  assert.ok(await hakoPage.locator('#board-section').evaluate(element => element.getBoundingClientRect().height < 800),
-    'Lengthy ability controls must not stretch the map into a column of empty space');
+  const boardBounds = await hakoPage.locator('#board-section').boundingBox();
+  assert.ok(boardBounds.height > 0 && boardBounds.y + boardBounds.height <= hakoPage.viewportSize().height + 1,
+    'The desktop map fits the space below the status bar');
+  await openGamePane(hakoPage, 'inventory');
+  const beforeHand = await hakoPage.locator('#board-section').boundingBox();
+  await hakoPage.locator('#personal-power-hand > summary').click();
+  const withHand = await hakoPage.locator('#board-section').boundingBox();
+  assert.equal(withHand.height, beforeHand.height, 'Expanding the private hand leaves the map height independent of its controls');
+  await openGamePane(hakoPage, 'action');
   await pages[1].screenshot({ path: 'test-results/round-mobile.png', fullPage: true });
 
   const explorerPage = pages[interruptedIndex];
@@ -687,8 +711,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
   const recipientPage = pages[recipientIndex];
   const bystanderIndices = [0, identities.findIndex((person, index) => index > 0 && index !== interruptedIndex && index !== recipientIndex)];
   assert.ok(state.round.visitors.every(visitor => visitor.roomId === 'study_room'), 'The three visitors share the logical study board for free actions');
+  await openGamePane(explorerPage, 'action');
   state = await performAction(explorerPage, 'silent_reveal', () => explorerPage.getByTestId('silent-card-0').click());
   assert.equal(state.round.phase, 'visitor_action');
+  await explorerPage.getByTestId('action-categories').getByRole('link', { name: /^窥探/ }).click();
   const peek = explorerPage.locator('[data-testid="peek-target"][data-corner-id="dark_wardrobe"]');
   state = await performAction(explorerPage, 'peek', () => peek.click());
   assert.deepEqual(state.round.pendingAction, { type: 'peek', playerId: interruptedVisitorId, cornerId: 'dark_wardrobe' });
@@ -721,7 +747,9 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(afterRestart[index].code, identities[index].roomCode);
   }
   await explorerPage.reload();
-  await explorerPage.getByTestId('practice-panel').waitFor();
+  await explorerPage.getByTestId('current-task').waitFor();
+  assert.equal(await explorerPage.locator('#setup-view').getAttribute('data-panel'), 'action');
+  assert.match(await explorerPage.getByTestId('current-task').innerText(), /等待箱娃/);
   const resumedIdentity = await explorerPage.evaluate(() => JSON.parse(sessionStorage.getItem('hako.room.session.v1')));
   assert.equal(resumedIdentity.playerId, interruptedVisitorId);
   assert.equal(resumedIdentity.token, identities[interruptedIndex].token);
@@ -749,6 +777,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.cornerState.find(corner => corner.id === 'dark_wardrobe').token, undefined,
     'The replacement remains covered');
   await explorerPage.reload();
+  await openGamePane(explorerPage, 'inventory');
   await explorerPage.locator('[data-testid="inventory-token"][data-token-id="password_2"]').waitFor();
   state = await getState(identities[interruptedIndex]);
   await waitForSSE(state.version);
@@ -762,6 +791,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   state = await performAction(explorerPage, 'show_token', () => explorerPage.getByTestId('show-token').click());
   snapshots = await Promise.all(identities.map(getState));
   assert.equal(snapshots[recipientIndex].round.sharedTokens.token.id, 'password_2');
+  await openGamePane(recipientPage, 'inventory');
   assert.match(await recipientPage.getByTestId('shared-token').innerText(), /密码.*2/);
   for (const index of [interruptedIndex, ...bystanderIndices]) {
     assert.equal(snapshots[index].round.sharedTokens, null, 'Only the invited recipient receives the private display');
@@ -777,6 +807,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   await explorerPage.locator('[data-testid="gift-item"][data-item-id="password_2"]').check();
   state = await performAction(explorerPage, 'offer_exchange', () => explorerPage.getByTestId('offer-gift').click());
   assert.equal(state.round.exchangeOffers[0].giveTokens[0].id, 'password_2');
+  await openGamePane(recipientPage, 'action');
   assert.match(await recipientPage.getByTestId('exchange-offer').innerText(), /密码.*2/,
     'The recipient sees the offered piece before deciding');
   for (const index of bystanderIndices) {
@@ -789,6 +820,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(snapshots[interruptedIndex].round.inventory.tokens.length, 0);
   assert.equal(snapshots[recipientIndex].round.inventory.tokens[0].id, 'password_2');
   assert.equal(await explorerPage.getByTestId('inventory-token').count(), 0);
+  await openGamePane(recipientPage, 'inventory');
   assert.equal(await recipientPage.locator('[data-testid="inventory-token"][data-token-id="password_2"]').count(), 1);
   for (const index of bystanderIndices) {
     assertNoPasswordTwo(snapshots[index]);
@@ -806,8 +838,10 @@ test('four browser sessions complete private opening, powers, exploration, item 
     'The visitor after the completed peek owns the spirit pen in the real draft order');
   const penCard = state.round.silent.cards.find(card => card.status === 'down');
   assert.ok(penCard);
+  await openGamePane(penPage, 'action');
   state = await performAction(penPage, 'silent_reveal', () => penPage.getByTestId(`silent-card-${penCard.index}`).click());
   assert.equal(state.round.phase, 'visitor_action');
+  await penPage.getByTestId('action-categories').getByRole('link', { name: /^道具/ }).click();
   await penPage.getByTestId('active-item-select').selectOption('spirit_pen');
   await penPage.getByTestId('active-item-room').selectOption('children_room');
   state = await performAction(penPage, 'use_item', () => penPage.getByTestId('use-item').click());
@@ -849,6 +883,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
       'The public reply identifies a room and never a hiding corner');
     assert.equal(JSON.stringify(snapshots[index].round.items.events).includes(nextHiding), false);
     assert.equal(await pages[index].getByTestId('item-answer').count(), 0);
+    await openGamePane(pages[index], 'public');
     const events = pages[index].getByTestId('item-events');
     await events.locator('summary').click();
     assert.match(await events.innerText(), /小满使用笔仙.*箱娃回答：是/);
@@ -860,6 +895,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
 
   for (let index = 1; index < pages.length; index++) {
     const page = pages[index];
+    await openGamePane(page, 'inventory');
     await page.getByText('访问者投降', { exact: true }).click();
     state = await performAction(page, 'surrender', () => page.getByTestId('surrender').click());
     assert.equal(state.round.surrenderVotes.length, index);
@@ -870,7 +906,12 @@ test('four browser sessions complete private opening, powers, exploration, item 
   assert.equal(state.round.result.reason, '访问者全体投降');
   for (const [index, page] of pages.entries()) {
     await page.getByTestId('game-result').waitFor();
-    assert.match(await page.getByTestId('game-result').innerText(), /箱娃胜利/);
+    const summary = await page.getByTestId('game-result').innerText();
+    assert.match(summary, /箱娃胜利[\s\S]*访问者全体投降/);
+    for (const winner of state.round.result.winners) assert.ok(summary.includes(state.players.find(player => player.id === winner).name));
+    const review = page.getByTestId('game-review');
+    assert.equal(await review.getByRole('tab', { selected: true }).innerText(), '盘面');
+    assert.equal(await review.getByRole('tabpanel').count(), 1);
     assert.equal(await page.getByTestId('practice-panel').locator('button:not(:disabled):not([data-testid="restart-game"]):not([data-ui-control]):not([data-local-control])').count(), 0,
       'All round actions are locked after the result');
     assert.equal(await page.getByTestId('restart-game').count(), index === 0 ? 1 : 0,
@@ -907,6 +948,7 @@ test('four browser sessions complete private opening, powers, exploration, item 
     assert.equal(snapshot.log.length, 1, 'Only the new-game announcement remains');
     assert.equal(await page.getByTestId('game-result').isVisible(), false);
     assert.equal(await page.getByTestId('game-review').isVisible(), false);
+    assert.equal(await page.getByRole('tab', { name: '箱娃能力' }).count(), 0);
     assert.equal(await page.locator('#event-history-list > li').count(), 0);
     assert.equal(await page.locator('#event-count').textContent(), '0');
     assert.equal(await page.locator('#event-count').isVisible(), false);

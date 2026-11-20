@@ -145,7 +145,8 @@ export function createChatUI(send) {
     markRead,
     reset,
     render(state, online) {
-      if (!panel.isConnected) document.querySelector('.setup-sidebar').append(panel);
+      if (!panel.isConnected) document.getElementById('messages-pane').append(panel);
+      document.getElementById('chat-before-round').hidden = Boolean(state.round);
       const nextIdentity = `${state.code}:${state.you}`;
       if (identityKey !== nextIdentity) { reset(); identityKey = nextIdentity; }
       const chat = state.chat;

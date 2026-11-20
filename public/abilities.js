@@ -183,13 +183,15 @@ function itemEvents(container, state, events) {
   container.append(details);
 }
 
-export function renderActiveItems({ container, resultContainer = container, referenceContainer = container, state, locked, action }) {
+export function renderActiveItems({ container, responses, personal, shared, state, locked, action }) {
   resetSelectionScope(state);
   const round = state.round;
   if (!round) return;
   locked ||= Boolean(round.result);
-  forcedPeek(container, state, locked, action);
-  answerItem(container, state, locked, action);
+  if (!round.result) {
+    forcedPeek(responses, state, locked, action);
+    answerItem(responses, state, locked, action);
+  }
   const items = round.items;
   if (!items) return;
   if (items.usableItems?.length && !round.result && !round.resolution && !round.pendingAction && !round.interruption) {
@@ -240,29 +242,37 @@ export function renderActiveItems({ container, resultContainer = container, refe
     controls.append(targets, use);
     container.append(controls);
   }
-  itemResult(resultContainer, items, state);
-  itemEvents(referenceContainer, state, items.events);
+  itemResult(personal, items, state);
+  itemEvents(shared, state, items.events);
 }
 
-export function renderCurrentEffects(container, state) {
+export function renderCurrentEffects(shared, personal, state) {
   const round = state.round;
   const powers = round.powers || {};
   const noise = round.noiseEffects || {};
   const effects = [];
-  if (round.blockedDoors?.length) effects.push(['封门', `不能通过${round.blockedDoors.map(door => `${roomName(door.from)}与${roomName(door.to)}`).join('、')}之间的门；下一箱娃阶段开始时解封。`]);
   if (powers.ghostCall?.active) effects.push(['移动限制', '不能持牌跳过，只能沿最短路线前往客厅；第一名访问者到达客厅后全体解除。无路可走时翻牌后自动结束行动。']);
   if (noise.maryPlayerId) effects.push(['人偶限制', `${playerName(state, noise.maryPlayerId)}行动前须连续翻两张无声标志，并保留最后一枚盖牌；累计超过10立即停止。不能转交、交换、丢弃或补位人偶，失去人偶或死亡时解除。`]);
   if (noise.bellUserId) effects.push(['铃的限制', `${playerName(state, noise.bellUserId)}已摇铃，${round.phase === 'hako_phase' ? '本次' : '下一次'}箱娃阶段不能设置危险度B、C能力；已设置能力仍可发动或回收。`]);
-  if (round.hako.playerId === state.you && powers.pendingBehindYou) effects.push(['等待死亡结算', 'NO.5 我在你身后将在下一箱娃阶段开始、移动前结算：与箱娃同房的访问者死亡；届时公开八片手记也结算与箱人同房的访问者。']);
-  if (round.hako.playerId === state.you && powers.slots?.some(slot => slot.card?.id === 9)) effects.push(['虚假的回应 · 仅你可见', 'NO.9已设置，回答道具问题时可选择假答案；回收或移出该能力后失效。']);
+  effectList(shared, effects, '当前影响', 'current-effects');
+
+  if (round.hako.playerId !== state.you) return;
+  const own = [];
+  if (round.blockedDoors?.length) own.push(['封门', `不能通过${round.blockedDoors.map(door => `${roomName(door.from)}与${roomName(door.to)}`).join('、')}之间的门。下一箱娃阶段开始时解封。`, 'blocked-doors']);
+  if (powers.pendingBehindYou) own.push(['等待死亡结算', 'NO.5 我在你身后已发动。下一箱娃阶段开始时、移动前，与箱娃同房的访问者死亡。届时公开八片手记也结算与箱人同房的访问者。', 'power-delayed-death']);
+  if (powers.slots?.some(slot => slot.card?.id === 9)) own.push(['虚假的回应', 'NO.9已设置，回答道具问题时可选择假答案。回收或移出该能力后失效。']);
+  effectList(personal, own, '我的持续效果', 'private-effects');
+}
+
+function effectList(container, effects, title, testid) {
   if (!effects.length) return;
   const section = node('details', 'current-effects');
-  section.dataset.testid = 'current-effects';
-  const summaries = { '封门': '封门：通路受限', '移动限制': '须前往客厅', '人偶限制': '双翻与人偶限制', '铃的限制': '铃：禁设B、C能力', '等待死亡结算': 'NO.5：下阶段开始结算死亡', '虚假的回应 · 仅你可见': 'NO.9：可以假回答（仅你可见）' };
-  section.append(node('summary', '', `当前影响 · ${effects.map(([name]) => summaries[name] || name).join('；')}`));
+  section.dataset.testid = testid;
+  section.append(node('summary', '', `${title} · ${effects.map(([name]) => name).join('、')}`));
   const list = node('dl', 'current-effects-list');
-  for (const [name, description] of effects) {
+  for (const [name, description, id] of effects) {
     const row = node('div');
+    if (id) row.dataset.testid = id;
     row.append(node('dt', '', name), node('dd', '', description));
     list.append(row);
   }
@@ -270,46 +280,72 @@ export function renderCurrentEffects(container, state) {
   container.append(section);
 }
 
-function publicPowers(container, state, powers) {
+function publicPowers(container, powers) {
   const section = node('section', 'exploration-section power-overview');
   section.dataset.testid = 'power-slots';
-  section.append(node('h3', '', '能力与持续效果'));
+  section.append(node('h3', '', '箱娃能力栏'));
   const slots = node('dl', 'round-positions');
-  const isHako = state.round.hako.playerId === state.you;
   for (const slot of powers.slots || []) {
     const row = node('div');
     row.dataset.testid = 'power-slot';
     row.dataset.slot = slot.slot;
-    row.append(node('dt', '', slot.slot === 0 ? '左侧能力栏' : '右侧能力栏'), node('dd', '', !slot.occupied ? '空栏' : isHako && slot.card ? cardName(slot.card) : '背面能力'));
+    row.append(node('dt', '', slot.slot === 0 ? '左侧能力栏' : '右侧能力栏'), node('dd', '', slot.occupied ? '背面能力' : '空栏'));
     slots.append(row);
   }
   section.append(slots, node('p', 'small-note', `箱娃手牌 ${powers.handCount ?? 0} 张 · 牌库 ${powers.deckCount ?? 0} 张`));
   const cryCount = node('p', 'small-note', `累计哭喊 ${powers.cryCount ?? 0} 次 · 前9次不能获得「绝望时刻」；第10次起按牌序抽取，噩梦的来信可以延后。`);
   cryCount.dataset.testid = 'power-cry-count';
   section.append(cryCount);
-  if (isHako && powers.pendingBehindYou) {
-    const effect = node('p', 'small-note', 'NO.5 我在你身后已发动：下一箱娃阶段开始时、移动前，结算与箱娃同房的访问者死亡；届时公开八片手记也结算与箱人同房的访问者。');
-    effect.dataset.testid = 'power-delayed-death';
-    section.append(effect);
-  }
   if (powers.announcement) {
     const cry = node('p', 'small-note', `哭喊指向：${roomName(powers.announcement.roomId)}`);
     cry.dataset.testid = 'cry-announcement';
     section.append(cry);
   }
-  const ownActivation = isHako && powers.lastActivation;
-  if (ownActivation || powers.activationNotice) {
-    const activation = node('p', 'small-note', ownActivation ? `箱娃发动了${cardName(ownActivation)}。` : '箱娃发动了能力。');
+  if (powers.activationNotice) {
+    const activation = node('p', 'small-note', '箱娃发动了能力。');
     activation.dataset.testid = 'power-last-activation';
     section.append(activation);
   }
-  if (state.round.blockedDoors?.length) {
-    const doors = node('p', 'small-note', `封锁的门：${state.round.blockedDoors.map(door => `${roomName(door.from)} — ${roomName(door.to)}`).join('；')}。`);
-    doors.dataset.testid = 'blocked-doors';
-    section.append(doors);
+  container.append(section);
+}
+
+function privatePowers(container, powers) {
+  const section = node('section', 'exploration-section personal-powers');
+  section.id = 'personal-powers';
+  section.append(node('h3', '', '我的箱娃之力'));
+  const slots = node('dl', 'inspected-tokens');
+  for (const slot of powers.slots || []) {
+    const row = node('div');
+    row.dataset.testid = 'private-power-slot';
+    row.dataset.slot = slot.slot;
+    const card = node('dd', '', slot.card ? cardName(slot.card) : '空栏');
+    if (slot.card?.description) card.append(node('p', 'small-note', slot.card.description));
+    const timing = powers.activationOptions?.find(option => option.slot === slot.slot)?.reason;
+    if (timing) card.append(node('p', 'small-note', timing));
+    row.append(node('dt', '', slot.slot === 0 ? '左侧能力栏' : '右侧能力栏'), card);
+    slots.append(row);
   }
-  if (powers.ghostCall?.active) section.append(node('p', 'small-note', '移动受限：访问者只能沿最短路径前往客厅，首位到达后全体解除。'));
-  if (isHako && powers.stolen) {
+  section.append(slots);
+  const hand = node('details', 'reference-details');
+  hand.id = 'personal-power-hand';
+  hand.append(node('summary', '', `查看手牌（${powers.hand?.length || 0}张）`));
+  const list = node('dl', 'inspected-tokens');
+  for (const card of powers.hand || []) {
+    const row = node('div');
+    row.dataset.testid = 'power-hand-card';
+    row.dataset.powerId = card.id;
+    const description = [card.description, card.ignoreThreshold ? '此牌可绕过手记数量门槛。' : card.threshold ? `公开手记门槛：${card.threshold}片。` : '', card.supported === false ? card.reason || '规则待确认，暂不可设置或发动。' : '', card.setReason].filter(Boolean).join(' ');
+    row.append(node('dt', '', cardName(card)), node('dd', '', description));
+    list.append(row);
+  }
+  hand.append(list.children.length ? list : node('p', 'small-note', '当前没有手牌。'));
+  section.append(hand);
+  if (powers.lastActivation) {
+    const activation = node('p', 'small-note', `箱娃发动了${cardName(powers.lastActivation)}。`);
+    activation.dataset.testid = 'power-private-activation';
+    section.append(activation);
+  }
+  if (powers.stolen) {
     const stolen = node('div');
     stolen.dataset.testid = 'power-stolen';
     const { kind, piece } = powers.stolen;
@@ -321,11 +357,11 @@ function publicPowers(container, state, powers) {
 }
 
 function managePowers(container, state, powers, locked, action) {
+  if (!powers.canCry && !powers.canManage && !powers.canBegin) return;
   const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.dataset.testid = 'power-preparation';
-  controls.id = 'personal-powers';
   controls.dataset.hakoStep = powers.step || 'waiting';
-  controls.append(node('h3', '', powers.step === 'preparation' ? '箱娃阶段 · 准备' : '你的能力手牌'));
+  controls.append(node('h3', '', '箱娃阶段 · 准备'));
   if (state.round.phase === 'hako_phase') {
     const steps = node('ol', 'hako-progress');
     const stepNames = ['准备 · 可选事项', '能力 · 按需发动', '潜伏 · 选择房间与角落'];
@@ -336,23 +372,6 @@ function managePowers(container, state, powers, locked, action) {
       steps.append(step);
     });
     controls.append(steps);
-  }
-  const slots = node('p', 'small-note hako-slot-summary', (powers.slots || []).map(slot => `${slot.slot === 0 ? '左栏' : '右栏'}：${slot.card ? cardName(slot.card) : '空栏'}`).join('；'));
-  controls.append(slots);
-  let hand;
-  if (powers.hand?.length) {
-    hand = node('details', 'free-actions reference-details');
-    hand.append(node('summary', '', `查看手牌（${powers.hand.length}张）`));
-    const list = node('dl', 'inspected-tokens');
-    for (const card of powers.hand) {
-      const row = node('div');
-      row.dataset.testid = 'power-hand-card';
-      row.dataset.powerId = card.id;
-      const description = [card.description, card.ignoreThreshold ? '此牌可绕过手记数量门槛。' : card.threshold ? `公开手记门槛：${card.threshold}片。` : '', card.supported === false ? card.reason || '规则待确认，暂不可设置或发动。' : '', card.setReason].filter(Boolean).join(' ');
-      row.append(node('dt', '', cardName(card)), node('dd', '', description));
-      list.append(row);
-    }
-    hand.append(list);
   }
   if (powers.canCry) {
     controls.append(node('h4', '', '哭喊抽牌（可选）'));
@@ -377,56 +396,50 @@ function managePowers(container, state, powers, locked, action) {
     }
   }
   if (powers.canBegin) controls.append(node('p', 'small-note', '可以不哭喊、不设置或回收，直接开始行动。如需哭喊，先于设置或回收；进入行动后可按需发动能力，再潜伏。'), button('准备完毕，开始箱娃行动', 'begin-hako-action', locked, () => action('begin_hako_action')));
-  if (hand) controls.append(hand);
-  if (controls.children.length > 1) container.append(controls);
+  container.append(controls);
 }
 
 function activatePowers(container, state, powers, locked, action) {
-  if (!powers.activationOptions?.length || powers.rearrangement || state.round.resolution || state.round.interruption) return;
+  const available = powers.activationOptions?.filter(option => option.canActivate) || [];
+  if (!available.length || powers.rearrangement || state.round.resolution || state.round.interruption) return;
   const controls = node('section', 'exploration-section practice-controls hako-sequence');
   controls.dataset.testid = 'power-activation';
   controls.dataset.hakoStep = 'abilities';
   controls.append(node('h3', '', '发动已设置的能力'));
-  for (const option of powers.activationOptions) {
+  for (const option of available) {
     const card = option.card;
     const group = node('div', 'action-group');
     group.append(node('h4', '', cardName(card)));
     if (card.description) group.append(node('p', 'small-note', card.description));
-    if ([9, 11].includes(card.id)) {
-      group.append(node('p', 'small-note', card.id === 9 ? '设置后持续生效，回答道具问题时可选择虚假答案。' : '在哭喊时选择宣告房间，无需单独发动。'));
-    } else {
-      if (option.reason) group.append(node('p', 'small-note', option.reason));
-      let room;
-      let door;
-      let steal;
-      if (option.rooms?.length) room = select(group, `power-room-${option.slot}`, '选择作用房间', option.rooms, locked || !option.canActivate);
-      if (option.doors?.length) door = select(group, `power-door-${option.slot}`, '选择要封锁的门', option.doors.map((value, index) => ({ id: index, name: value.name || `${roomName(value.fromRoomId)} — ${roomName(value.toRoomId)}` })), locked || !option.canActivate);
-      if (card.id === 7) {
-        const choices = (option.stealOptions?.items || []).map(item => ({ id: `item:${item.index}`, name: `抢走${item.name || `技能牌背 ${item.index + 1}`}` }));
-        if (option.stealOptions?.canStealToken) choices.push({ id: 'token', name: '随机抢走1枚盖放标志' });
-        steal = select(group, `power-steal-${option.slot}`, '选择抢夺方式', choices, locked || !option.canActivate);
-        group.append(node('p', 'small-note', '抢夺后，访问者可重新选择行动，不消耗标准行动。'));
-      }
-      if (card.id === 8) group.append(node('p', 'small-note', '诅咒从人偶持有者的下次翻牌回合起生效，本次不补翻。'));
-      const activate = button(`发动${cardName(card)}`, 'activate-power', locked || !option.canActivate || Boolean(steal && !steal.value), () => {
-        const payload = { slot: option.slot };
-        if (room) payload.roomId = room.value;
-        if (door) {
-          const target = option.doors[Number(door.value)];
-          payload.fromRoomId = target.fromRoomId;
-          payload.toRoomId = target.toRoomId;
-        }
-        if (steal) {
-          payload.stealKind = steal.value === 'token' ? 'token' : 'item';
-          if (payload.stealKind === 'item') payload.itemIndex = Number(steal.value.slice(5));
-        }
-        action('activate_power', payload);
-      });
-      activate.dataset.slot = option.slot;
-      activate.dataset.powerId = card.id;
-      requireSelections(activate, locked || !option.canActivate, room, door, steal);
-      group.append(activate);
+    let room;
+    let door;
+    let steal;
+    if (option.rooms?.length) room = select(group, `power-room-${option.slot}`, '选择作用房间', option.rooms, locked);
+    if (option.doors?.length) door = select(group, `power-door-${option.slot}`, '选择要封锁的门', option.doors.map((value, index) => ({ id: index, name: value.name || `${roomName(value.fromRoomId)} — ${roomName(value.toRoomId)}` })), locked);
+    if (card.id === 7) {
+      const choices = (option.stealOptions?.items || []).map(item => ({ id: `item:${item.index}`, name: `抢走${item.name || `技能牌背 ${item.index + 1}`}` }));
+      if (option.stealOptions?.canStealToken) choices.push({ id: 'token', name: '随机抢走1枚盖放标志' });
+      steal = select(group, `power-steal-${option.slot}`, '选择抢夺方式', choices, locked);
+      group.append(node('p', 'small-note', '抢夺后，访问者可重新选择行动，不消耗标准行动。'));
     }
+    if (card.id === 8) group.append(node('p', 'small-note', '诅咒从人偶持有者的下次翻牌回合起生效，本次不补翻。'));
+    const activate = button(`发动${cardName(card)}`, 'activate-power', locked, () => {
+      const payload = { slot: option.slot };
+      if (room) payload.roomId = room.value;
+      if (door) {
+        const target = option.doors[Number(door.value)];
+        payload.fromRoomId = target.fromRoomId;
+        payload.toRoomId = target.toRoomId;
+      }
+      if (steal) {
+        payload.stealKind = steal.value === 'token' ? 'token' : 'item';
+        if (payload.stealKind === 'item') payload.itemIndex = Number(steal.value.slice(5));
+      }
+      action('activate_power', payload);
+    });
+    activate.dataset.slot = option.slot;
+    activate.dataset.powerId = card.id;
+    group.append(requireSelections(activate, locked, room, door, steal));
     controls.append(group);
   }
   container.append(controls);
@@ -498,20 +511,23 @@ function extinguisherControls(container, state, locked, action) {
   container.append(controls);
 }
 
-export function renderAbilities({ container, referenceContainer = container, state, locked, action }) {
+export function renderAbilities({ container, responses, personal, shared, state, locked, action }) {
   resetSelectionScope(state);
   const round = state.round;
   if (!round) return;
   locked ||= Boolean(round.result);
-  extinguisherControls(container, state, locked, action);
+  extinguisherControls(responses, state, locked, action);
   const powers = round.powers;
   if (powers) {
-    if (round.hako.playerId === state.you && !round.result) {
-      if (!round.resolution && !round.interruption) managePowers(container, state, powers, locked, action);
-      activatePowers(container, state, powers, locked, action);
-      rearrangePowers(container, state, powers, locked, action);
-      if (!round.resolution && !round.interruption) inspectPath(container, state, powers, locked, action);
+    if (round.hako.playerId === state.you) {
+      privatePowers(personal, powers);
+      if (!round.result && !round.resolution && !round.interruption) {
+        managePowers(container, state, powers, locked, action);
+        activatePowers(container, state, powers, locked, action);
+        rearrangePowers(container, state, powers, locked, action);
+        inspectPath(container, state, powers, locked, action);
+      }
     }
-    publicPowers(referenceContainer, state, powers);
+    publicPowers(shared, powers);
   }
 }

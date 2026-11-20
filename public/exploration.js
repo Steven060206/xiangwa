@@ -4,6 +4,7 @@ import { cardName, renderAbilities, renderActiveItems, renderCurrentEffects } fr
 import { draftScope } from './view-state.js';
 import { renderClueSummary } from './help.js';
 import { renderWalkieControls } from './walkie.js';
+import { gameReview } from './review.js';
 
 const rooms = getLogicalRooms();
 const roomName = id => rooms.find(room => room.id === id)?.name || '正门';
@@ -193,11 +194,17 @@ function publicProgress(container, state) {
     const discoveries = node('div');
     discoveries.dataset.testid = 'public-discoveries';
     discoveries.append(node('h4', '', '玩家公开的发现'));
-    for (const entry of round.publicDiscoveries) {
-      const record = node('p', 'small-note', `${playerName(state, entry.playerId)}：${tokenName(entry.token)}`);
+    for (const [index, entry] of round.publicDiscoveries.entries()) {
+      const author = playerName(state, entry.playerId);
+      const label = entry.token.name || tokenName(entry.token);
+      const record = node('p', 'small-note', `${author}：${label}`);
       if (entry.cornerId) {
         const locate = button(`发现时的位置 · ${cornerName(entry.cornerId)}`, 'discovery-map-target', false,
-          () => document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: { cornerId: entry.cornerId } })), true);
+          () => document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: {
+            cornerId: entry.cornerId, source: locate, returnLabel: '返回公开记录',
+            record: `${author}曾在此发现${label}（第${entry.cycle}轮公开）`,
+          } })), true);
+        locate.id = `public-discovery-location-${index}`;
         locate.dataset.localControl = 'true';
         record.append(' ', locate);
       }
@@ -222,142 +229,20 @@ function publicProgress(container, state) {
 
 function gameResult(container, state, locked, action) {
   const result = state.round.result;
+  const reason = ({ 逃脱: 'escape', 超度: 'exorcism', 讨伐: 'defeat' })[result.reason] || result.reason;
   const section = node('section', `game-result ${result.winner === 'visitors' ? 'visitors-win' : 'hako-win'}`);
   section.dataset.testid = 'game-result';
-  section.setAttribute('role', 'status');
-  section.append(node('h2', '', `${result.winner === 'visitors' ? '访问者' : '箱娃'}胜利`));
-  section.append(node('p', '', resultReasons[result.reason] || result.reason || '本局已结束。'));
-  if (result.winners?.length) section.append(node('p', 'small-note', `获胜玩家：${result.winners.map(id => playerName(state, id)).join('、')}`));
-  if (state.round.review) {
-    const links = node('nav', 'review-navigation');
-    links.setAttribute('aria-label', '本局复盘');
-    links.append(navigate('查看完整盘面', '#review-board', 'review'), navigate('查看玩家物品', '#review-items', 'review'), navigate('查看行动记录', '#review-log', 'review'));
-    section.append(links);
-  }
+  const heading = node('h2', '', `${result.winner === 'visitors' ? '访问者' : '箱娃'}胜利`);
+  heading.id = 'result-title';
+  section.setAttribute('aria-labelledby', heading.id);
+  section.append(heading, node('p', 'result-reason', resultReasons[reason] || reason || '本局已结束。'));
+  if (result.winners?.length) section.append(node('p', 'result-winners', `获胜玩家 · ${result.winners.map(id => playerName(state, id)).join('、')}`));
+  const restart = node('div', 'result-restart');
   if (state.hostId === state.you) {
-    section.append(button('再开一局', 'restart-game', locked, () => action('restart_game')));
-    section.append(node('p', 'small-note', '保留房间和座位，清空本局复盘，返回大厅重新准备、抢选角色。'));
-  } else section.append(node('p', 'small-note', '等待房主点击「再开一局」，返回大厅重新准备。'));
-  container.append(section);
-}
-
-function gameReview(container, state) {
-  const review = state.round.review;
-  if (!review) return;
-  const section = node('section', 'exploration-section game-review');
-  section.dataset.testid = 'game-review';
-  section.id = 'game-review';
-  section.dataset.gameView = 'review';
-  section.append(node('h3', '', '本局复盘 · 全部公开'), node('p', 'section-meta', '查看终局盘面、每位玩家的物品，以及箱娃的全部能力。'));
-  const corners = node('details', 'reference-details review-corners');
-  corners.id = 'review-board';
-  corners.open = true;
-  corners.append(node('summary', '', '全部角落与潜伏棋子'));
-  const cornerList = node('dl', 'inspected-tokens');
-  for (const corner of review.corners || []) {
-    const row = node('div');
-    row.dataset.testid = 'review-corner';
-    row.dataset.cornerId = corner.id;
-    const contents = node('dd');
-    contents.append(node('span', '', tokenName(corner.token)));
-    for (const actor of corner.actors || []) {
-      contents.append(node('p', 'small-note', `${playerName(state, actor.playerId)}（${actor.type === 'hako' ? '箱娃' : '箱人'}）`));
-      if (actor.carriedTokens?.length) contents.append(node('p', 'small-note', `暂存：${actor.carriedTokens.map(tokenName).join('、')}`));
-    }
-    if (corner.underToken) contents.append(node('p', 'small-note', `被替换棋子：${tokenName(corner.underToken)}`));
-    const location = node('dt');
-    const locate = button(cornerName(corner.id), 'review-map-target', false, () => document.dispatchEvent(new CustomEvent('map-target', { detail: { cornerId: corner.id } })), true);
-    locate.dataset.cornerId = corner.id;
-    locate.dataset.localControl = 'true';
-    location.append(locate);
-    row.append(location, contents);
-    cornerList.append(row);
-  }
-  corners.append(cornerList);
-  section.append(corners);
-  const inventories = node('details', 'reference-details review-inventories');
-  inventories.id = 'review-items';
-  inventories.open = true;
-  inventories.append(node('summary', '', '所有玩家的物品'));
-  for (const inventory of review.inventories || []) {
-    const player = node('section', 'review-player');
-    player.dataset.testid = 'review-inventory';
-    player.dataset.playerId = inventory.playerId;
-    player.append(node('h4', '', playerName(state, inventory.playerId)));
-    const pieces = [...(inventory.tokens || []).map(tokenName), ...(inventory.items || []).map(item => item.name)];
-    player.append(node('p', 'small-note', pieces.length ? pieces.join('、') : '没有随身物品。'));
-    inventories.append(player);
-  }
-  for (const stored of review.storedTokens || []) inventories.append(node('p', 'small-note',
-    `${playerName(state, stored.playerId)}暂存于${cornerName(stored.cornerId)}：${stored.tokens.map(tokenName).join('、')}`));
-  for (const entry of review.discarded || []) inventories.append(node('p', 'small-note',
-    `${playerName(state, entry.playerId)}公开弃置：${[...entry.tokens.map(tokenName), ...entry.items.map(item => item.name)].join('、')}`));
-  if (review.removedTokens?.length) inventories.append(node('p', 'small-note',
-    `已消耗或移出的标志：${review.removedTokens.map(tokenName).join('、')}`));
-  if (review.removedItems?.length) inventories.append(node('p', 'small-note',
-    `死亡后移出的技能牌：${review.removedItems.map(item => item.name).join('、')}`));
-  const powers = node('details', 'reference-details review-powers');
-  powers.id = 'review-powers';
-  powers.open = true;
-  powers.dataset.testid = 'review-powers';
-  powers.append(node('summary', '', '箱娃全部能力与秘密'));
-  const powerList = node('dl', 'inspected-tokens');
-  for (const [label, cards] of [
-    ['手牌', review.powers?.hand || []],
-    ['牌库（按终局顺序）', review.powers?.deck || []],
-    ['能力栏', (review.powers?.slots || []).map(slot => slot?.card || slot).filter(Boolean)],
-    ['已移出游戏', review.powers?.removed || []],
-    ['已使用的能力记录', review.powers?.used || []],
-  ]) {
-    const row = node('div');
-    row.append(node('dt', '', label), node('dd', '', cards.length ? cards.map(cardName).join('、') : '无'));
-    powerList.append(row);
-  }
-  const stolen = review.powers?.stolen;
-  if (stolen?.piece) {
-    const row = node('div');
-    row.append(node('dt', '', '抢来的物品'), node('dd', '', stolen.kind === 'item' ? stolen.piece.name : tokenName(stolen.piece)));
-    powerList.append(row);
-  }
-  if (review.opening?.password) {
-    const row = node('div');
-    row.append(node('dt', '', '保险箱密码'), node('dd', '', review.opening.password.join('、')));
-    powerList.append(row);
-  }
-  if (review.opening?.weakness) {
-    const row = node('div');
-    row.append(node('dt', '', '箱娃弱点'), node('dd', '', toolNames[review.opening.weakness] || review.opening.weakness));
-    powerList.append(row);
-  }
-  if (review.opening?.initialPower) {
-    const row = node('div');
-    row.append(node('dt', '', '初始能力'), node('dd', '', cardName(review.opening.initialPower)));
-    powerList.append(row);
-  }
-  if (review.opening?.safeBoard) {
-    const row = node('div');
-    row.append(node('dt', '', '保险箱内'), node('dd', '', review.opening.safeBoard.key ? tokenName(review.opening.safeBoard.key) : '钥匙已被取出'));
-    powerList.append(row);
-  }
-  powers.append(powerList);
-  const log = node('details', 'reference-details review-log');
-  log.id = 'review-log';
-  log.open = true;
-  log.append(node('summary', '', '本局行动记录'));
-  const entries = node('ol', 'review-log-list');
-  for (const entry of state.log || []) {
-    const row = node('li', '', typeof entry === 'string' ? entry : entry.message || entry.text || '房间状态已更新');
-    if (typeof entry === 'object' && (entry.cornerId || entry.roomId)) {
-      const detail = entry.cornerId ? { cornerId: entry.cornerId } : { roomId: entry.roomId };
-      const locate = button('在地图上查看', 'review-log-target', false, () => document.dispatchEvent(new CustomEvent('map-target', { detail })), true);
-      locate.dataset.localControl = 'true';
-      row.append(locate);
-    }
-    entries.append(row);
-  }
-  if (!entries.children.length) entries.append(node('li', 'small-note', '暂无可回看的行动记录。'));
-  log.append(entries);
-  section.append(inventories, powers, log);
+    restart.append(button('再开一局', 'restart-game', locked, () => action('restart_game'), true),
+      node('p', 'small-note', '开新局会清空复盘，所有人保留座位，返回大厅重新准备。'));
+  } else restart.append(node('p', 'small-note', '等待房主开新局后返回大厅。'));
+  section.append(restart);
   container.append(section);
 }
 
@@ -374,7 +259,7 @@ function visitorControls(container, state, locked, action) {
   if (round.peekTargets?.length) categories.append(navigate(`窥探 · ${round.peekTargets.length}`, '#action-peek'));
   if (round.items?.usableItems?.length) categories.append(navigate(`道具 · ${round.items.usableItems.length}`, '#action-item'));
   if (round.weapons?.length) categories.append(navigate('讨伐', '#action-weapon'));
-  section.append(categories, node('p', 'section-meta', '选择一种标准行动；展示、赠送和放置见「我的物品」中的自由行动。'));
+  section.append(categories);
   const moves = node('div', 'action-group');
   moves.id = 'action-move';
   moves.dataset.actionCategory = 'move';
@@ -417,7 +302,7 @@ function visitorControls(container, state, locked, action) {
 function pendingControls(container, state, locked, action) {
   const round = state.round;
   const pending = round.pendingAction;
-  if (!pending) return;
+  if (!pending || round.hako.playerId !== state.you) return;
   const kind = pending.kind || pending.type;
   const freeActionNames = { show_token: '展示标志', offer_exchange: '提出交换或赠送', respond_exchange: '接受交换或赠送', drop_token: '丢弃标志' };
   const text = kind === 'move' || pending.toRoomId
@@ -426,8 +311,7 @@ function pendingControls(container, state, locked, action) {
       : kind === 'free' ? `${playerName(state, pending.playerId)}声明${freeActionNames[pending.actionType] || '自由行动'}。`
       : `${playerName(state, pending.playerId)}声明${kind === 'weapon' || kind === 'use_weapon' ? '使用讨伐道具' : '窥探'}${pending.cornerId ? `：${cornerName(pending.cornerId)}` : '：目标角落仅本人可见'}`;
   const section = node('section', 'current-response');
-  section.append(node('h3', '', round.hako.playerId === state.you ? '请确认访问者的行动' : '等待箱娃确认行动'), node('p', 'pending-move', text));
-  if (round.hako.playerId === state.you) section.append(button('确认行动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
+  section.append(node('h3', '', '请确认访问者的行动'), node('p', 'pending-move', text), button('确认行动结算', 'resolve-action', locked, () => action('resolve_visitor_action')));
   container.append(section);
 }
 
@@ -547,12 +431,7 @@ function hidingControls(container, state, locked, action, inspectedRoomTokens) {
   if (round.phase !== 'hako_phase' || round.powers?.step !== 'action' || round.powers?.rearrangement || round.interruption || round.resolution) return;
   const isHako = round.hako.playerId === state.you;
   const actor = isHako ? round.hako : round.ghost;
-  if (!actor || actor.status === 'banished') return;
-  if (actor.finished) { container.append(node('p', 'small-note box-person-guidance', `你已完成本次${isHako ? '箱娃' : '箱人'}潜伏，等待其余箱娃或箱人完成；全部完成后继续访问者回合。`)); return; }
-  if (!isHako && !actor.inspectedRoom && !actor.hidingRooms?.length) {
-    container.append(node('p', 'small-note', '等待箱娃完成阶段能力并开始潜伏。'));
-    return;
-  }
+  if (!actor || actor.status === 'banished' || actor.finished || !actor.inspectedRoom && !actor.hidingRooms?.length) return;
   const section = node('section', 'hako-sequence practice-controls');
   section.dataset.hakoStep = 'hiding';
   section.append(node('h3', '', isHako ? '箱娃行动 · 选择潜伏位置' : '箱人行动 · 选择潜伏位置'));
@@ -582,6 +461,11 @@ function hidingControls(container, state, locked, action, inspectedRoomTokens) {
   }
 }
 
+export function freeActionWindow(round) {
+  return ['visitor_reveal', 'visitor_action'].includes(round.phase) && !(round.silent?.revealsRemaining > 0)
+    && !round.result && !round.resolution && !round.pendingAction && !round.interruption;
+}
+
 function inventory(container, state, locked, action) {
   const round = state.round;
   const belongings = round.inventory;
@@ -591,6 +475,7 @@ function inventory(container, state, locked, action) {
   section.id = 'personal-inventory';
   section.append(node('h3', '', '你的随身物品'), node('p', 'section-meta', `${belongings.items?.length || 0} 张道具 · ${belongings.tokens?.length || 0} 枚标志`));
   section.append(renderClueSummary(state));
+  let freeTarget;
   const tokens = node('ul', 'inventory-list');
   for (const token of belongings.tokens || []) {
     const line = node('li');
@@ -603,6 +488,7 @@ function inventory(container, state, locked, action) {
         () => action('publish_token', { tokenId: token.id }), true);
       publish.dataset.tokenId = token.id;
       line.append(publish);
+      freeTarget = '#personal-inventory';
     }
     tokens.append(line);
   }
@@ -610,15 +496,17 @@ function inventory(container, state, locked, action) {
   section.append(tokens);
   for (const item of belongings.items || []) {
     const details = node('details', 'inventory-item reference-details');
+    details.id = `inventory-item-${item.id}`;
     details.dataset.testid = 'inventory-item';
     details.dataset.itemId = item.id;
     details.append(node('summary', '', `${item.name} · 查看效果`), node('p', 'item-description small-note', item.description));
     section.append(details);
   }
   const alive = round.visitors.find(visitor => visitor.id === state.you)?.status === 'alive';
-  if (alive && !round.result && round.sharePartners?.length) {
+  if (alive && !round.result && round.sharePartners?.length && (belongings.items?.length || belongings.tokens?.length)) {
     const share = node('details', 'possession-sharing free-actions');
     share.dataset.testid = 'possession-sharing';
+    share.id = 'possession-sharing';
     share.append(node('summary', '', '向同房访问者展示物品'));
     const controls = node('div', 'practice-controls free-action-controls');
     const target = select(controls, 'show-possession-target', '仅向这位访问者展示', round.sharePartners.map(partner => ({ id: partner.id, name: playerName(state, partner.id) })), locked);
@@ -633,10 +521,12 @@ function inventory(container, state, locked, action) {
     }, true), locked, possession, target), node('p', 'small-note', '仅接收人可见；不转移物品，也不消耗行动。'));
     share.append(controls);
     section.append(share);
+    freeTarget = '#possession-sharing > summary';
   }
   const transferableTokens = (belongings.tokens || []).filter(token => token.type !== 'doll' || round.noiseEffects?.maryPlayerId !== state.you);
-  if (alive && ['visitor_reveal', 'visitor_action'].includes(round.phase) && !round.result && !round.resolution && !round.pendingAction && !round.interruption) {
+  if (alive && freeActionWindow(round)) {
     const free = node('details', 'free-actions');
+    free.id = 'inventory-free-actions';
     free.append(node('summary', '', '展示、赠送与放置（自由行动）'));
     const controls = node('div', 'practice-controls free-action-controls');
     const partners = (round.exchangePartners || []).map(partner => ({ id: partner.id, name: playerName(state, partner.id) }));
@@ -646,7 +536,9 @@ function inventory(container, state, locked, action) {
         const tokenChoice = select(controls, 'show-token-select', '选择只向对方展示的标志', belongings.tokens.map(token => ({ id: token.id, name: tokenName(token) })), locked);
         controls.append(requireSelections(button('向对方展示标志', 'show-token', locked, () => action('show_token', { tokenId: tokenChoice.value, targetId: target.value }), true), locked, tokenChoice, target));
       }
-      const giftItems = [...transferableTokens.map(token => ({ ...token, giftKind: 'token', label: tokenName(token) })), ...(belongings.items || []).map(item => ({ ...item, giftKind: 'item', label: item.name }))];
+      const giftItems = [...transferableTokens.map(token => ({ ...token, giftKind: 'token', label: tokenName(token) })),
+        ...(belongings.items || []).filter(item => !round.walkie?.partnerId || !['walkie_talkie', 'walkie_companion'].includes(item.id))
+          .map(item => ({ ...item, giftKind: 'item', label: item.name }))];
       const availableGifts = new Set(giftItems.map(item => `${item.giftKind}:${item.id}`));
       for (const remembered of selectedGifts) if (!availableGifts.has(remembered)) selectedGifts.delete(remembered);
       if (giftItems.length) {
@@ -674,19 +566,23 @@ function inventory(container, state, locked, action) {
         update();
         controls.append(fieldset, gift, node('p', 'small-note', '赠送需对方接受。对方的其他物品保持私密；可再由对方另行回赠。'));
       }
-    } else controls.append(node('p', 'small-note', '当前没有同房访问者可以展示或赠送。'));
+    }
     if (transferableTokens.length && round.dropTargets?.length) {
       const token = select(controls, 'drop-token-select', '选择要放置的随身标志', transferableTokens.map(value => ({ id: value.id, name: tokenName(value) })), locked);
       const corner = select(controls, 'drop-corner-select', '当前房间的空角落', round.dropTargets.map(id => ({ id, name: cornerName(id) })), locked);
       controls.append(requireSelections(button('盖放到空角落', 'drop-token', locked, () => action('drop_token', { tokenId: token.value, cornerId: corner.value }), true), locked, token, corner));
     }
-    free.append(controls);
-    section.append(free);
+    if (controls.querySelector('button')) {
+      free.append(controls);
+      section.append(free);
+      freeTarget = '#inventory-free-actions > summary';
+    }
   }
   container.append(section);
+  return freeTarget;
 }
 
-function exchanges(container, state, locked, action, messageContainer = container) {
+function exchanges(responses, personal, state, locked, action) {
   const round = state.round;
   const sharedTokens = Array.isArray(round.sharedTokens) ? round.sharedTokens : round.sharedTokens ? [round.sharedTokens] : [];
   if (sharedTokens.length) {
@@ -703,15 +599,16 @@ function exchanges(container, state, locked, action, messageContainer = containe
       list.append(item);
     }
     section.append(list);
-    messageContainer.append(section);
+    personal.append(section);
   }
   for (const offer of round.exchangeOffers || []) {
-    const section = node('section', 'exchange-offer exploration-section current-response');
+    const section = node('section', 'exchange-offer exploration-section');
     section.dataset.testid = 'exchange-offer';
     section.dataset.offerId = offer.id;
     const fromId = offer.fromId || offer.playerId;
     const mine = fromId === state.you;
-    section.append(node('h3', '', mine ? '等待对方确认赠送' : `${playerName(state, fromId)}提出交换`));
+    const kind = offer.requestTokenIds?.length || offer.requestItemIds?.length ? '交换' : '赠送';
+    section.append(node('h3', '', mine ? `等待对方确认${kind}` : `${playerName(state, fromId)}提出${kind}`));
     const offered = offer.giveTokens || offer.tokens || [];
     const items = offer.giveItems || offer.items || [];
     const names = [...offered.map(tokenName), ...items.map(item => item.name)];
@@ -721,13 +618,14 @@ function exchanges(container, state, locked, action, messageContainer = containe
       ...(offer.requestItemIds || []).map(id => !mine ? round.inventory?.items?.find(item => item.id === id)?.name || '请求的道具' : `道具 ${id}`),
     ];
     if (requestedNames.length) section.append(node('p', 'small-note', `${mine ? '希望对方交出' : '需要交出'}：${requestedNames.join('、')}`));
-    if (!mine && !round.result) {
+    if (!mine && freeActionWindow(round)) {
+      section.classList.add('current-response');
       const actions = node('div', 'decision-actions');
-      const blocked = locked || Boolean(round.resolution || round.pendingAction || round.interruption) || !['visitor_reveal', 'visitor_action'].includes(round.phase);
-      actions.append(button('接受', 'exchange-accept', blocked, () => action('respond_exchange', { offerId: offer.id, accept: true })), button('拒绝', 'exchange-reject', blocked, () => action('respond_exchange', { offerId: offer.id, accept: false }), true));
+      const sameRoom = round.exchangePartners?.some(partner => partner.id === fromId);
+      actions.append(button('接受', 'exchange-accept', locked || !sameRoom, () => action('respond_exchange', { offerId: offer.id, accept: true })), button('拒绝', 'exchange-reject', locked, () => action('respond_exchange', { offerId: offer.id, accept: false }), true));
       section.append(actions);
-    }
-    container.append(section);
+      responses.append(section);
+    } else personal.append(section);
   }
 }
 
@@ -767,13 +665,11 @@ function noiseControls(container, state, locked, action, silentCards) {
       skip.title = '连续翻牌尚未完成，不能持牌跳过。';
     }
   }
-  if (effects.maryPlayerId) section.append(node('p', 'small-note', `${playerName(state, effects.maryPlayerId)}行动前需翻两张无声标志（保留最后一张盖牌），不能交换或丢弃人偶。`));
-  if (effects.canUseBell) section.append(node('p', 'small-note', '额外翻牌已完成，可以消耗标准行动摇铃，也可选择其他行动。'));
-  if (effects.bellUserId) section.append(node('p', 'small-note', `${playerName(state, effects.bellUserId)}已摇铃：${round.phase === 'hako_phase' ? '本次' : '下一次'}箱娃阶段禁止设置危险度B或C的能力。`));
+  if (mine && effects.maryPlayerId === state.you) section.append(node('p', 'small-note', '你的行动前需翻两张无声标志，保留最后一枚盖牌。'));
   container.append(section);
 }
 
-export function renderExploration({ panel, state, pending, online, action, silentCards, inspectedRoomTokens, renderRoomMemory }) {
+export function renderExploration({ panel, personal, shared, state, pending, online, action, silentCards, inspectedRoomTokens, renderRoomMemory }) {
   const scope = draftScope(state);
   if (scope !== selectionScope) {
     selections.clear();
@@ -785,90 +681,56 @@ export function renderExploration({ panel, state, pending, online, action, silen
   }
   const round = state.round;
   const locked = pending || !online || Boolean(round.result);
+  const isHako = round.hako.playerId === state.you;
+  const actor = isHako ? round.hako : round.ghost;
   panel.dataset.phase = round.phase;
   panel.setAttribute('aria-label', '探索回合操作');
-  const fragment = document.createDocumentFragment();
-  if (round.result) gameResult(fragment, state, pending || !online, action);
-  const status = node('p', 'practice-status', explorationDescription(state));
-  status.setAttribute('role', 'status');
-  fragment.append(status);
-  if (!round.result) renderCurrentEffects(fragment, state);
-  const rounds = node('p', 'small-note', `总回合数：${round.totalRounds ?? 0}（每次箱娃阶段计1回合）`);
-  rounds.dataset.testid = 'total-rounds';
-  fragment.append(rounds);
-  if (round.hako.playerId === state.you && round.hako.cornerId) {
-    const location = node('p', 'hako-location self-position', `你的潜伏位置：${cornerName(round.hako.cornerId)}`);
-    location.dataset.testid = 'hako-location';
-    fragment.append(location);
-  }
-  if (round.ghost?.cornerId && round.ghost.status !== 'banished') {
-    const location = node('p', 'hako-location self-position', `你的箱人潜伏位置：${cornerName(round.ghost.cornerId)}`);
-    location.dataset.testid = 'ghost-location';
-    fragment.append(location);
-  }
-  const actor = round.hako.playerId === state.you ? round.hako : round.ghost;
-  if (actor?.lastInspectedRoom) renderRoomMemory(fragment, actor.lastInspectedRoom);
+
+  const actionPage = document.createDocumentFragment();
+  const responses = document.createDocumentFragment();
   const controls = node('div', 'practice-controls');
   controls.dataset.testid = 'practice-controls';
-  const personalInfo = document.createDocumentFragment();
-  const references = document.createDocumentFragment();
+  const info = document.createDocumentFragment();
+  const freeTarget = inventory(personal, state, locked, action);
+  publicProgress(shared, state);
   if (!round.result) {
-    resolutionControls(controls, state, locked, action);
-    const walkie = renderWalkieControls(state, action, { locked });
-    if (walkie) controls.append(walkie);
-    pendingControls(controls, state, locked, action);
-    if (round.phase === 'hako_reaction' && round.hako.playerId === state.you) controls.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked || Boolean(round.interruption), () => action('pass_noise_reaction')));
-    renderAbilities({ container: controls, referenceContainer: references, state, locked, action });
-    visitorControls(controls, state, locked, action);
-    renderActiveItems({ container: controls, resultContainer: personalInfo, referenceContainer: references, state, locked, action });
-    hidingControls(controls, state, locked, action, inspectedRoomTokens);
-    exchanges(controls, state, locked, action, personalInfo);
-  } else exchanges(controls, state, locked, action, personalInfo);
-  if (round.silent && round.phase === 'visitor_reveal') noiseControls(fragment, state, locked, action, silentCards);
-  fragment.append(controls);
-  if (round.result) gameReview(fragment, state);
-  inventory(fragment, state, locked, action);
-  fragment.append(personalInfo);
-  publicProgress(fragment, state);
-  if (round.silent && round.phase !== 'visitor_reveal') noiseControls(fragment, state, locked, action, silentCards);
-  fragment.append(references);
-  if (state.initialPower) {
-    const power = node('p', 'initial-power-public', `初始箱娃之力：${cardName(state.initialPower)}`);
-    power.dataset.testid = 'initial-power';
-    fragment.append(power);
+    resolutionControls(responses, state, locked, action);
+    pendingControls(responses, state, locked, action);
+    if (round.phase === 'hako_reaction' && isHako && !round.interruption) responses.append(button('结束反应，进入箱娃阶段', 'pass-noise-reaction', locked, () => action('pass_noise_reaction')));
   }
-  if (state.initialItems?.length) {
-    const initial = node('details', 'initial-items reference-details');
-    initial.append(node('summary', '', '开局随机分发的技能'));
-    const list = node('dl', 'round-positions');
-    for (const item of state.initialItems) {
-      const row = node('div');
-      row.dataset.testid = 'initial-item';
-      row.dataset.playerId = item.playerId;
-      row.dataset.itemId = item.itemId;
-      const description = node('dd');
-      if (item.itemDescription) {
-        const detail = node('details');
-        detail.append(node('summary', '', `${item.itemName} · 查看效果`), node('p', 'item-description small-note', item.itemDescription));
-        description.append(detail);
-      } else description.textContent = item.itemName;
-      row.append(node('dt', '', playerName(state, item.playerId)), description);
-      list.append(row);
+  const panes = { container: controls, responses, personal: info, shared, state, locked, action };
+  renderAbilities(panes);
+  if (!round.result) visitorControls(controls, state, locked, action);
+  renderActiveItems(panes);
+  const walkie = renderWalkieControls(state, action, { locked, responses });
+  exchanges(responses, personal, state, locked, action);
+  if (round.result) {
+    gameResult(actionPage, state, pending || !online, action);
+    gameReview(actionPage, state);
+  } else {
+    if (responses.childElementCount) controls.prepend(responses);
+    if (round.silent) {
+      const myReveal = round.phase === 'visitor_reveal' && round.silent.turnPlayerId === state.you;
+      noiseControls(myReveal ? controls : shared, state, locked, action, silentCards);
     }
-    initial.append(list, node('p', 'small-note', '这是开局发牌记录，不代表实时持有情况；自己的当前卡牌见「你的随身物品」。'));
-    fragment.append(initial);
+    hidingControls(controls, state, locked, action, inspectedRoomTokens);
+    const freeWalkie = round.walkie?.canShow || round.walkie?.canPair && round.walkie.pairTargets?.length;
+    if ((freeTarget || freeWalkie) && !round.resolution && !round.interruption && !round.pendingAction && !controls.querySelector('.current-response')) {
+      controls.append(navigate('使用物品自由行动', freeTarget || '#personal-walkie', 'inventory'));
+    }
+    if (controls.childElementCount) actionPage.append(controls);
   }
-  const positions = node('dl', 'round-positions');
-  for (const visitor of round.visitors) {
-    const line = node('div');
-    line.dataset.testid = 'visitor-location';
-    line.dataset.playerId = visitor.id;
-    if (visitor.status === 'alive' && visitor.roomId) line.dataset.roomId = visitor.roomId;
-    line.append(node('dt', '', `${playerName(state, visitor.id)}${visitor.id === state.you ? '（你）' : ''}`), node('dd', '', visitor.status === 'box_person' ? '箱人' : visitor.status === 'banished' ? '已被消灭' : roomName(visitor.roomId)));
-    if (Number.isInteger(visitor.itemCount) && Number.isInteger(visitor.tokenCount)) line.append(node('dd', 'small-note', `${visitor.itemCount}张技能牌 · ${visitor.tokenCount}枚标志`));
-    positions.append(line);
+
+  if (actor?.cornerId && actor.status !== 'banished') {
+    const location = node('p', 'hako-location self-position', `${isHako ? '你的潜伏位置' : '你的箱人潜伏位置'}：${cornerName(actor.cornerId)}`);
+    location.dataset.testid = isHako ? 'hako-location' : 'ghost-location';
+    personal.append(location);
   }
-  fragment.append(positions);
-  surrenderControls(fragment, state, locked, action);
-  panel.replaceChildren(fragment);
+  personal.append(info);
+  if (walkie) personal.append(walkie);
+  if (actor?.lastInspectedRoom) renderRoomMemory(personal, actor.lastInspectedRoom);
+  if (!round.result) renderCurrentEffects(shared, personal, state);
+  surrenderControls(personal, state, locked, action);
+  panel.replaceChildren(actionPage);
+  panel.hidden = !panel.childElementCount;
 }

@@ -14,14 +14,13 @@ const tokenName = token => token.name || (token.type === 'weapon' ? tools[token.
 let selectionKey = '', selectedIds = new Set();
 
 /** Render only the requesting player's server-filtered walkie state. */
-export function renderWalkieControls(state, sendAction, { locked = false } = {}) {
+export function renderWalkieControls(state, sendAction, { locked, responses }) {
   const view = state.round?.walkie;
   if (!view) return null;
   locked ||= Boolean(state.undo?.pending || state.round.result);
   const name = id => state.players.find(player => player.id === id)?.name || '玩家';
-  const section = make('section', undefined,
-    `exploration-section walkie-controls${view.pairRequest || view.showRequest ? ' current-response' : ''}`);
-  section.dataset.testid = 'walkie-controls';
+  const section = make('section', undefined, 'exploration-section walkie-controls');
+  section.id = 'personal-walkie';
   section.append(make('h3', '对讲机 · 固定同伴'));
   const controls = make('div', undefined, 'practice-controls');
   const error = make('p', '', 'small-note');
@@ -121,6 +120,14 @@ export function renderWalkieControls(state, sendAction, { locked = false } = {})
     result.append(list, make('p', view.lastShow.tokens.length ? '这是互看完成时的记录，不跟随后续库存变化。' : '同伴本次没有选择展示标志。', 'small-note'));
     section.append(result);
   }
-  section.append(controls, error);
+  if (!state.round.result && (view.pairRequest || view.showRequest)) {
+    const prompt = make('section', undefined, 'exploration-section walkie-controls current-response');
+    prompt.dataset.testid = 'walkie-controls';
+    prompt.append(make('h3', view.pairRequest ? '对讲机配对' : '对讲机标志展示'), controls, error);
+    responses.append(prompt);
+  } else {
+    section.dataset.testid = 'walkie-controls';
+    if (!state.round.result) section.append(controls, error);
+  }
   return section;
 }

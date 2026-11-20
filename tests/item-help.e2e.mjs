@@ -59,6 +59,16 @@ test('mobile random deal records show effects and update active and night-vision
   await page.goto(`${base}/?room=${hako.roomCode}`);
   await page.getByTestId('initial-dealt-item').first().waitFor({ state: 'attached' });
   assert.equal(await page.getByTestId('item-choice').count(), 0);
+  const nav = view => page.locator(`#game-navigation [data-view="${view}"]`).click();
+  await nav('inventory');
+  const ownSkill = page.locator('#inventory-content').getByTestId('inventory-item');
+  assert.equal(await ownSkill.count(), 1);
+  await ownSkill.locator('summary').click();
+  assert.equal(await ownSkill.locator('.item-description').innerText(), INITIAL_ITEMS.find(item => item.id === 'night_vision').description);
+  assert.equal(await page.locator('#inventory-content').getByTestId('initial-dealt-item').count(), 0);
+  assert.equal(await page.locator('#public-pane').isVisible(), false);
+  await nav('public');
+  assert.equal(await page.locator('#public-content').getByTestId('initial-dealt-item').count(), 3);
   await page.locator('.initial-deal-panel > details > summary').click();
   await page.locator('.draft-chosen-item summary').first().waitFor();
   await page.locator('.draft-chosen-item summary').first().click();
@@ -75,19 +85,23 @@ test('mobile random deal records show effects and update active and night-vision
   state = await act(hako, 'choose_initial_hiding', { cornerId: 'children_bed' });
   state = await act(hako, 'choose_initial_power', { powerId: state.opening.initialPowerOptions.find(card => card.canChoose !== false).id });
   await act(first, 'silent_reveal', { index: 0 });
+  await nav('action');
   await page.getByTestId('active-item-select').waitFor();
+  assert.equal(await page.locator('#action-pane').getByTestId('inventory-item').count(), 0);
+  assert.equal(await page.locator('#action-pane').getByTestId('initial-item').count(), 0);
   for (const itemId of ['dowsing_rod', 'suitcase']) {
     await page.getByTestId('active-item-select').selectOption(itemId);
     assert.equal(await page.getByTestId('active-item-description').textContent(), INITIAL_ITEMS.find(item => item.id === itemId).description);
     assert.equal(await page.getByTestId('active-item-description').isVisible(), true);
   }
   const owned = page.locator('[data-testid="inventory-item"][data-item-id="suitcase"]');
-  await page.getByTestId('focus-inventory').click();
+  await nav('inventory');
+  assert.equal(await page.getByTestId('active-item-select').isVisible(), false);
   await owned.locator('summary').click();
   assert.match(await owned.locator('.item-description').textContent(), /消耗标准行动/);
   await act(first, 'peek', { cornerId: 'hall_clock', useNightVision: true });
   await act(hako, 'resolve_visitor_action');
-  await page.getByTestId('focus-current-action').click();
+  await nav('action');
   await page.getByTestId('night-vision-item').waitFor();
   for (const itemId of ['spirit_pen', 'nightmare_letter']) {
     await page.getByTestId('night-vision-item').selectOption(itemId);

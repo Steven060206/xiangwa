@@ -40,15 +40,37 @@ export function createFeedbackUI() {
   let historical = false;
   let position = 0;
   let returnFocus = null;
+  let returnToHistory = null;
   let latestVersion = 0;
   let canReview = false;
   let hasCurrentResponse = false;
   let helpOpen = false;
   let identity = '';
   let toastTimer;
+  let bannerId = '';
+  let bannerClose = null;
+
+  function locate(event, source, returnLabel, restore) {
+    document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: {
+      cornerId: event.cornerId, record: event.record || event.title,
+      description: event.record ? '' : event.body, source, returnLabel, restore,
+    } }));
+  }
+
+  function rememberHistory(source) {
+    const panel = $('event-history');
+    const scroll = panel.scrollTop;
+    return () => {
+      panel.showPopover();
+      ($(source.id) || $('event-history-toggle')).focus({ preventScroll: true });
+      panel.scrollTop = scroll;
+    };
+  }
 
   function history() {
     const items = tracker.items();
+    const active = document.activeElement;
+    const focusId = active?.dataset.eventId && active.id;
     const unread = items.filter(item => !item.dismissed).length;
     $('event-count').textContent = String(unread);
     $('event-count').hidden = unread === 0;
@@ -60,6 +82,8 @@ export function createFeedbackUI() {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'event-history-entry';
+      button.id = `history-card-${event.id}`;
+      button.dataset.eventId = event.id;
       const title = document.createElement('strong');
       title.textContent = event.title;
       const detail = document.createElement('span');
@@ -67,12 +91,33 @@ export function createFeedbackUI() {
       button.append(title, detail);
       button.addEventListener('click', () => {
         queue = [];
+        returnToHistory = rememberHistory(button);
         $('event-history').hidePopover();
         show(event, true);
       });
       row.append(button);
+      if (event.cornerId) {
+        const position = document.createElement('button');
+        position.type = 'button';
+        position.className = 'text-button event-history-locate';
+        position.textContent = '查看位置';
+        position.id = `history-location-${event.id}`;
+        position.dataset.eventId = event.id;
+        position.dataset.testid = 'history-locate';
+        position.setAttribute('aria-label', `${event.title}，查看当时的位置`);
+        position.addEventListener('click', () => {
+          const restore = rememberHistory(position);
+          $('event-history').hidePopover();
+          tracker.dismiss(event.id);
+          history();
+          locate(event, position, '返回事件记录', restore);
+        });
+        row.append(position);
+      }
       return row;
     }));
+    if (focusId) $(focusId)?.focus({ preventScroll: true });
+    if (bannerClose) updateBannerClose(items);
   }
 
   function queueControls() {
@@ -107,8 +152,22 @@ export function createFeedbackUI() {
     $('event-symbol').replaceChildren(symbol(event.symbol));
     $('event-locate').hidden = !event.cornerId;
     $('event-locate').onclick = () => {
-      close();
-      document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: { cornerId: event.cornerId } }));
+      if (!event.cornerId) return;
+      const restoreHistory = returnToHistory;
+      const previousFocus = returnFocus;
+      const remaining = [...queue];
+      const index = position;
+      close(false);
+      locate(event, $('event-locate'), '返回事件详情', () => {
+        if (dialog.open) return;
+        queue = remaining;
+        show(event, fromHistory);
+        position = index;
+        returnFocus = previousFocus;
+        returnToHistory = restoreHistory;
+        queueControls();
+        $('event-locate').focus({ preventScroll: true });
+      });
     };
     $('event-companions').hidden = true;
     $('event-companions').replaceChildren();
@@ -125,12 +184,87 @@ export function createFeedbackUI() {
     position = 0;
     if (dialog.open) dialog.close();
     history();
-    if (restoreFocus) {
+    if (restoreFocus && historical && returnToHistory) returnToHistory();
+    else if (restoreFocus) {
       const target = returnFocus?.isConnected && !returnFocus.disabled && returnFocus.getClientRects().length ? returnFocus
         : $('focus-current-action') || $('event-history-toggle');
       target?.focus({ preventScroll: true });
     }
     returnFocus = null;
+    returnToHistory = null;
+    historical = false;
+  }
+
+  function newerDiscoveries(items = tracker.items()) {
+    const index = items.findIndex(item => item.id === bannerId);
+    return (index < 0 ? items : items.slice(0, index)).filter(item => item.banner && !item.dismissed).reverse();
+  }
+
+  function updateBannerClose(items) {
+    const count = newerDiscoveries(items).length;
+    bannerClose.textContent = count ? `下一条（${count}）` : '收起';
+    bannerClose.setAttribute('aria-label', count ? `查看下一条公开发现，还有${count}条` : '收起公开发现提示');
+  }
+
+  function hideDiscovery() {
+    bannerId = '';
+    bannerClose = null;
+    $('discovery-banner').hidden = true;
+    $('discovery-banner').replaceChildren();
+  }
+
+  function showDiscovery(event) {
+    bannerId = event.id;
+    const banner = $('discovery-banner');
+    const copy = document.createElement('div');
+    copy.setAttribute('role', 'status');
+    const title = document.createElement('strong');
+    title.textContent = event.title;
+    copy.append(title);
+    if (event.cornerId) {
+      const location = document.createElement('span');
+      location.textContent = `发现时的位置 · ${cornerName(event.cornerId)}`;
+      copy.append(location);
+    }
+    banner.replaceChildren(copy);
+    if (event.cornerId) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'text-button';
+      button.textContent = '地图定位';
+      button.id = `discovery-location-${event.id}`;
+      button.dataset.testid = 'discovery-banner-locate';
+      button.dataset.uiControl = '';
+      button.addEventListener('click', () => {
+        tracker.dismiss(event.id);
+        history();
+        locate(event, button, '返回公开提示', () => {
+          if (!banner.hidden && $(button.id)) button.focus({ preventScroll: true });
+          else $('event-history-toggle').focus({ preventScroll: true });
+        });
+      });
+      banner.append(button);
+    }
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'text-button';
+    dismiss.dataset.uiControl = '';
+    dismiss.addEventListener('click', () => {
+      tracker.dismiss(event.id);
+      history();
+      const next = newerDiscoveries()[0];
+      if (next) {
+        showDiscovery(next);
+        bannerClose.focus({ preventScroll: true });
+      } else {
+        hideDiscovery();
+        $('event-history-toggle').focus({ preventScroll: true });
+      }
+    });
+    banner.append(dismiss);
+    bannerClose = dismiss;
+    updateBannerClose();
+    banner.hidden = false;
   }
 
   function toast(events) {
@@ -171,6 +305,7 @@ export function createFeedbackUI() {
         close(false);
         clearTimeout(toastTimer);
         $('event-toast').hidden = true;
+        hideDiscovery();
         $('event-history').hidePopover();
         latestVersion = 0;
       }
@@ -188,10 +323,15 @@ export function createFeedbackUI() {
           || vote?.requiredIds?.includes(state.you) && !vote.approvedIds?.includes(state.you));
       }
       const events = tracker.receive(state);
-      if (events.some(event => event.title === '已撤销上一步')) queue = [];
+      if (events.some(event => event.title === '已撤销上一步')) {
+        queue = [];
+        hideDiscovery();
+      }
       const recentIds = new Set(tracker.items().map(event => event.id));
       queue = queue.filter(event => recentIds.has(event.id));
       history();
+      const discovery = events.find(event => event.banner);
+      if (discovery && !bannerId) showDiscovery(discovery);
       const highlights = events.filter(event => event.highlight);
       queue.push(...highlights);
       // Keep the event being read stable; major changes and responses come next.
@@ -202,7 +342,7 @@ export function createFeedbackUI() {
       }
       if (highlights.length && !helpOpen && !dialog.open) show(queue.shift());
       else queueControls();
-      const ordinary = events.filter(event => !event.highlight);
+      const ordinary = events.filter(event => !event.highlight && !event.banner);
       if (ordinary.length) toast(ordinary);
     },
     clear() {
@@ -215,6 +355,7 @@ export function createFeedbackUI() {
       clearTimeout(toastTimer);
       $('event-toast').hidden = true;
       $('event-toast').textContent = '';
+      hideDiscovery();
       $('event-history').hidePopover();
       history();
     },

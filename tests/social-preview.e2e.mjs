@@ -1,3 +1,4 @@
+import { openGamePane } from './game-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -262,6 +263,7 @@ test('fixed walkie partners accept, privately chat and confirm selected-token ex
   const owner = await open(people[2]);
   const partner = await open(people[1], true);
   const outsider = await open(people[3]);
+  await openGamePane(owner, 'inventory');
   await owner.getByTestId('walkie-partner').selectOption(people[1].playerId);
   await click(owner, 'walkie_propose', () => owner.getByTestId('walkie-propose').click());
   await partner.getByTestId('walkie-accept').waitFor();
@@ -275,7 +277,7 @@ test('fixed walkie partners accept, privately chat and confirm selected-token ex
   await partner.getByTestId('chat-messages').getByText('固定同伴的私密线索', { exact: true }).waitFor();
   assert.doesNotMatch(await outsider.getByTestId('chat-messages').innerText(), /固定同伴的私密线索/);
   assert.equal((await snapshot(people[0])).chat.messages.length, 0);
-  await owner.locator('#game-navigation [data-view="action"]').click();
+  await openGamePane(owner, 'inventory');
   await partner.locator('#game-navigation [data-view="action"]').click();
   await click(owner, 'walkie_show_propose', () => owner.getByTestId('walkie-show-propose').click());
   assert.equal(await owner.getByTestId('walkie-last-show').count(), 0);
@@ -350,6 +352,7 @@ test('ventriloquist inspection preserves the named Hako actor without revealing 
   }
   await click(hako, 'answer_item', () => hako.getByTestId('answer-item').click());
   await hako.reload();
+  await openGamePane(hako, 'inventory');
   await inspection.waitFor();
   assert.match(await actorRow.locator('dd').innerText(), /箱娃守夜人 · 箱娃/);
   assert.deepEqual((await snapshot(people[0])).round.items.inspection, memory, 'Answering and refreshing retain the actual private inspection snapshot');

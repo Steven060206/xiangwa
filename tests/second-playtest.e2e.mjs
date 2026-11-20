@@ -1,3 +1,4 @@
+import { openGamePane, locateSeat } from './game-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -11,7 +12,7 @@ import { powerCard } from '../src/powers.mjs';
 const deck = ['study', 'bathroom', 'dining', 'upstairs', 'basement', 'children', 'storage', 'living'];
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 
-async function game(t, { death = false, fixture, draftItems = ['smartphone', 'walkie_talkie', 'deduction'] } = {}) {
+async function game(t, { death = false, fixture, playerCount = 4, draftItems = ['smartphone', 'walkie_talkie', 'deduction'] } = {}) {
   const server = createGameServer({ deck, initialItemOrder: draftItems, silentNumbers: [0, 1, 2, 3, 4, 5],
     createPlayState(setup, opening, options) {
       const play = createPlay(setup, opening, options);
@@ -63,8 +64,9 @@ async function game(t, { death = false, fixture, draftItems = ['smartphone', 'wa
     assert.ok(response.ok, `${path}: ${JSON.stringify(state)}`);
     return state;
   };
-  const people = [await request('/api/rooms', { name: '箱娃守夜人' })];
-  for (const name of ['访问者小满', '访问者青禾', '访问者阿照']) people.push(await request(`/api/rooms/${people[0].roomCode}/join`, { name }));
+  const people = [await request('/api/rooms', { name: '箱娃守夜人', playerCount })];
+  const visitors = ['访问者小满', '访问者青禾', '访问者阿照', '访问者远山'].slice(0, playerCount - 1);
+  for (const name of visitors) people.push(await request(`/api/rooms/${people[0].roomCode}/join`, { name }));
   const sync = version => Promise.all(pages.map(page => page.waitForFunction(expected => window.__secondPlaytest?.version >= expected, version)));
   const act = async (person, type, values = {}) => {
     const state = await request(`/api/rooms/${person.roomCode}/actions`, { playerId: person.playerId, token: person.token, type, ...values });
@@ -145,9 +147,9 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   assert.equal(await fp.getByTestId('public-empty-box').getAttribute('data-corner-id'), 'study_desk');
   assert.equal(await fp.locator('.corner-location[data-token-type]').count(), 0, 'Hidden corner tokens are not rendered before the terminal review');
   assert.match(await fp.getByTestId('safe-public-status').innerText(), /已打开/);
-  const memoryBeforeControls = await hp.evaluate(() => Boolean(document.querySelector('[data-testid="hiding-room-memory"]')
-    .compareDocumentPosition(document.querySelector('[data-testid="practice-controls"]')) & Node.DOCUMENT_POSITION_FOLLOWING));
-  assert.equal(memoryBeforeControls, true, 'Private replaced-piece record sits next to the current position, before action controls');
+  await openGamePane(hp, 'inventory');
+  assert.equal(await hp.locator('#inventory-pane [data-testid="hiding-room-memory"]').isVisible(), true, 'Only the owner can read the remembered piece in their own pane');
+  await openGamePane(fp, 'inventory');
   const cornerSize = await fp.locator('.corner-mark').first().getAttribute('width');
   assert.equal(cornerSize, '14');
   assert.ok(Number(await fp.locator('.corner-hit-area').first().getAttribute('width')) >= 36,
@@ -167,6 +169,7 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   await act(people[1], 'silent_reveal', { index: 0 });
   await act(people[1], 'peek', { cornerId: 'hall_clock' });
   await act(people[0], 'resolve_visitor_action');
+  await openGamePane(fp, 'action');
   await fp.locator('.corner-location[data-corner-id="hall_clock"]').click();
   assert.equal(await fp.locator('#map-context .map-context-content').innerText(), '手记2', 'The private map result does not append its number twice');
   await fp.keyboard.press('Escape');
@@ -179,8 +182,47 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   assert.equal(await fp.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   for (const person of people.slice(1)) await act(person, 'surrender', { agree: true });
   await fp.getByTestId('game-review').waitFor();
-  assert.equal(await fp.getByTestId('review-corner').count(), 24);
-  assert.equal(await fp.getByTestId('review-inventory').count(), 4);
+  const ended = await snapshot(people[1]);
+  const review = ended.round.review;
+  const tabs = fp.getByTestId('game-review').getByRole('tablist');
+  assert.deepEqual(await tabs.getByRole('tab').allTextContents(), ['盘面', '玩家物品', '箱娃能力', '行动记录']);
+  assert.equal(await tabs.getByRole('tab', { name: '盘面', selected: true }).count(), 1);
+  assert.equal(await fp.getByRole('tabpanel').count(), 1);
+  assert.equal(await fp.getByTestId('review-inventory').count(), 0);
+  const requests = [];
+  fp.on('request', request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/actions')) requests.push(request.postDataJSON().type);
+  });
+  const listed = [];
+  for (const floor of ['1', '2', '-1']) {
+    await fp.getByTestId('review-floor').selectOption(floor);
+    const roomIds = await fp.getByTestId('review-room').locator('option').evaluateAll(options => options.map(option => option.value));
+    for (const roomId of roomIds) {
+      await fp.getByTestId('review-room').selectOption(roomId);
+      const rows = await fp.getByTestId('review-corner').evaluateAll(rows => rows.map(row => ({
+        id: row.dataset.cornerId, name: row.querySelector('dd').firstChild.textContent,
+      })));
+      assert.deepEqual(rows, review.corners.filter(corner => corner.roomId === roomId)
+        .map(corner => ({ id: corner.id, name: corner.token?.name || '空角落' })));
+      listed.push(...rows.map(row => row.id));
+    }
+  }
+  assert.deepEqual(listed.sort(), review.corners.map(corner => corner.id).sort());
+  await tabs.getByRole('tab', { name: '盘面' }).focus();
+  await fp.keyboard.press('ArrowRight');
+  assert.equal(await tabs.getByRole('tab', { name: '玩家物品', selected: true }).count(), 1);
+  const picker = fp.getByTestId('review-player');
+  assert.deepEqual(await picker.locator('option').evaluateAll(options => options.map(option => option.value)),
+    [...ended.players].sort((left, right) => left.seat - right.seat).map(player => player.id));
+  for (const inventory of review.inventories) {
+    await picker.selectOption(inventory.playerId);
+    const player = fp.getByTestId('review-inventory');
+    assert.equal(await player.getAttribute('data-player-id'), inventory.playerId);
+    const text = await player.innerText();
+    for (const possession of [...inventory.tokens, ...inventory.items]) assert.ok(text.includes(possession.name));
+  }
+  assert.match(await fp.getByTestId('review-items').innerText(), /已消耗或移出的标志\s+转轮式保险箱/);
+  await tabs.getByRole('tab', { name: '箱娃能力' }).click();
   const powers = await fp.getByTestId('review-powers').innerText();
   assert.match(powers, /NO\.1 /);
   assert.match(powers, /NO\.11 /);
@@ -188,8 +230,24 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   assert.match(powers, /已使用的能力记录\s+NO\.11 虚假的哭喊/);
   assert.match(powers, /保险箱密码/);
   assert.match(powers, /汽油/);
+  assert.deepEqual(await fp.locator('#review-powers .review-deck li').allTextContents(),
+    review.powers.deck.map(card => card.id === 'despair' ? card.name : `NO.${card.id} ${card.name}`));
+  await tabs.getByRole('tab', { name: '行动记录' }).click();
+  assert.deepEqual(await fp.locator('#review-log .review-log-list li').allTextContents(), ended.log);
+  await fp.keyboard.press('Home');
+  assert.equal(await tabs.getByRole('tab', { name: '盘面', selected: true }).count(), 1);
+  await fp.getByTestId('review-floor').selectOption('1');
+  await fp.getByTestId('review-room').selectOption('study_room');
+  await fp.getByTestId('review-map-target').filter({ hasText: '写字台下' }).click();
+  assert.equal(await fp.locator('#setup-view').getAttribute('data-panel'), 'map');
+  assert.match(await fp.getByTestId('map-context').innerText(), /写字台下[\s\S]*空箱/);
+  assert.equal(await fp.getByTestId('map-confirm-action').count(), 0);
+  await fp.getByRole('button', { name: '返回终局盘面', exact: true }).click();
+  assert.equal(await fp.getByTestId('review-room').inputValue(), 'study_room');
+  assert.equal(await fp.evaluate(() => document.activeElement.id), 'review-corner-study_desk');
+  assert.equal(await fp.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.equal(await fp.locator(`.map-position[data-player-id="${people[0].playerId}"]`).count(), 1, 'Terminal review exposes the Hako position to visitors');
-  const review = (await snapshot(people[1])).round.review;
+  await fp.locator('#game-navigation [data-view="map"]').click();
   const mapped = [];
   for (const floor of ['floor-1', 'floor-2', 'floor-basement']) {
     await fp.getByTestId(floor).click();
@@ -213,36 +271,178 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   await fp.getByTestId(passwordFloor === -1 ? 'floor-basement' : `floor-${passwordFloor}`).click();
   await fp.locator(`.corner-location[data-corner-id="${password.id}"]`).click();
   assert.equal(await fp.locator('#map-context .map-context-content').innerText(), `密码${password.token.number}`, 'The terminal map result displays the actual single password digit');
+  assert.deepEqual(requests, [], 'Reading the entire terminal review sends no game action');
+});
+
+test('a five-seat terminal review keeps the fifth inventory, ghost storage, removed skills and death history navigable', { timeout: 90000 }, async t => {
+  const { people, pages, act, snapshot } = await game(t, { playerCount: 5,
+    draftItems: ['smartphone', 'walkie_talkie', 'deduction', 'night_vision'],
+    fixture(play) { play.round.visitors[0].roomId = 'children_room'; },
+  });
+  const [hako, first] = people;
+  const phone = pages[1];
+  await act(first, 'silent_reveal', { index: 0 });
+  await act(first, 'peek', { cornerId: 'children_cabinet' });
+  await act(hako, 'resolve_visitor_action');
+  for (const survivor of people.slice(2)) await act(survivor, 'surrender', { agree: true });
+  const ended = await snapshot(first);
+  const review = ended.round.review;
+  const summary = await phone.getByTestId('game-result').innerText();
+  assert.ok(ended.round.result.winners.every(id => summary.includes(ended.players.find(player => player.id === id).name)));
+  assert.match(summary, /访问者全体投降/);
+  const tabs = phone.getByTestId('game-review').getByRole('tablist');
+  await tabs.getByRole('tab', { name: '玩家物品' }).click();
+  const player = phone.getByTestId('review-player');
+  assert.equal(await player.locator('option').count(), 5);
+  assert.match(await player.locator('option').last().textContent(), /5号座.*远山/);
+  await player.selectOption(people[4].playerId);
+  assert.match(await phone.getByTestId('review-inventory').innerText(), /远山.*访问者[\s\S]*夜视仪/);
+  await player.selectOption(first.playerId);
+  assert.match(await phone.getByTestId('review-inventory').innerText(), /小满.*箱人[\s\S]*暂存于/);
+  assert.match(await phone.getByTestId('review-items').innerText(), /死亡后移出的技能牌\s+智能手机/);
+  await tabs.getByRole('tab', { name: '盘面' }).click();
+  const placement = ended.setup.placements.find(placement => placement.tileId === 'children');
+  await phone.getByTestId('review-floor').selectOption(String(placement.floor));
+  await phone.getByTestId('review-room').selectOption('children_room');
+  const corner = phone.getByTestId('review-corner').filter({ has: phone.locator('[data-corner-id="children_cabinet"]') });
+  assert.match(await corner.innerText(), /箱娃守夜人（箱娃）[\s\S]*访问者小满（箱人）/);
+  const actual = review.corners.find(corner => corner.id === 'children_cabinet');
+  if (actual.underToken) assert.ok((await corner.innerText()).includes(actual.underToken.name));
+  await tabs.getByRole('tab', { name: '行动记录' }).click();
+  await phone.getByTestId('review-log-target').click();
+  assert.match(await phone.getByTestId('map-context').innerText(), /小满.*在此死亡/);
+  assert.equal(await phone.getByTestId('map-confirm-action').count(), 0);
+  await phone.getByRole('button', { name: '返回行动记录', exact: true }).click();
+  assert.equal(await tabs.getByRole('tab', { name: '行动记录', selected: true }).count(), 1);
+  assert.equal(await phone.evaluate(() => document.activeElement.id), 'review-location-death-0');
+  assert.equal((await snapshot(first)).version, ended.version);
 });
 
 test('publishing a peek shows the numbered discovery location in the event, history and map', { timeout: 90000 }, async t => {
-  const { people, pages, act, click } = await game(t, { fixture(play) {
+  const { people, pages, act, click, snapshot } = await game(t, { fixture(play) {
     const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'password');
-    [play.tokens.hall_clock, play.tokens[source]] = [play.tokens[source], play.tokens.hall_clock];
+    [play.tokens.study_books, play.tokens[source]] = [play.tokens[source], play.tokens.study_books];
+    const [first, second] = play.round.visitors;
+    first.roomId = second.roomId = 'study_room';
+    for (const [corner, token] of Object.entries(play.tokens).filter(([, value]) => value?.type === 'weapon').slice(0, 2)) {
+      play.inventories[second.id].tokens.push(token);
+      play.tokens[corner] = null;
+    }
   } });
-  const [hako, visitor] = people;
+  const [hako, visitor, second] = people;
   const [, phone, observer] = pages;
-  const location = '01 · 1楼大厅 · 老旧的大钟后';
+  const location = '02 · 书房 · 装满书的架子旁';
+  const nav = (page, view) => page.locator(`#game-navigation [data-view="${view}"]`).click();
+  const checkHistoryMap = async page => {
+    assert.equal(await page.locator('#setup-view').getAttribute('data-panel'), 'map');
+    assert.equal(await page.locator('#board-section').isVisible(), true);
+    assert.equal(await page.locator('#tile-board .selected-corner').getAttribute('data-corner-id'), 'study_books');
+    assert.equal(await page.locator('#map-context-title').innerText(), location);
+    assert.match(await page.getByTestId('map-context').innerText(), /访问者小满曾在此发现密码/);
+    assert.equal(await page.getByTestId('map-confirm-action').count(), 0);
+  };
   await act(visitor, 'silent_reveal', { index: 0 });
-  await act(visitor, 'peek', { cornerId: 'hall_clock' });
+  await act(visitor, 'peek', { cornerId: 'study_books' });
   await act(hako, 'resolve_visitor_action');
   assert.equal(await observer.getByTestId('public-discoveries').count(), 0);
+  await nav(observer, 'chat');
+  await observer.getByTestId('chat-text').fill('消息草稿');
   const publish = phone.getByTestId('publish-peek-token');
-  assert.match(await publish.innerText(), /01号位置/);
+  assert.match(await publish.innerText(), /02号位置/);
   await click(phone, 'publish_token', () => publish.click());
-  assert.match(await observer.locator('#event-dialog[open] #event-body').innerText(), /01 · 1楼大厅 · 老旧的大钟后/);
-  assert.equal(await observer.getByTestId('event-locate').isVisible(), true);
+  assert.equal(await observer.locator('#event-dialog[open]').count(), 0);
+  assert.equal(await observer.evaluate(() => document.activeElement.id), 'chat-text');
+  assert.equal(await observer.getByTestId('chat-text').inputValue(), '消息草稿');
+  assert.ok((await observer.getByTestId('discovery-banner').innerText()).includes(location));
+  assert.match(await phone.locator('#event-dialog[open] #event-body').innerText(), /发现时的位置/);
   for (const page of pages) {
     assert.equal(await page.getByTestId('discovery-map-target').textContent(), `发现时的位置 · ${location}`);
   }
+  await observer.getByTestId('discovery-banner-locate').click();
+  await checkHistoryMap(observer);
+  await observer.keyboard.press('Escape');
+  assert.equal(await observer.locator('#setup-view').getAttribute('data-panel'), 'chat');
+  assert.equal(await observer.getByTestId('discovery-banner-locate').evaluate(button => document.activeElement === button), true);
+  assert.equal(await observer.getByTestId('chat-text').inputValue(), '消息草稿');
+
   await act(visitor, 'resolve_peek', { take: true, replacement: 'empty_box' });
   await phone.reload();
-  await phone.locator('#game-navigation [data-view="public"]').click();
-  await phone.getByTestId('discovery-map-target').click();
-  assert.equal(await phone.locator('#tile-board .selected-corner').getAttribute('data-corner-id'), 'hall_clock');
-  assert.equal(await phone.locator('#map-context-title').innerText(), location);
-  assert.match(await phone.getByTestId('map-context').innerText(), /曾在此发现密码/);
-  assert.equal(await phone.locator('#board-section').isVisible(), true);
+  await nav(phone, 'public');
+  const publicLink = phone.getByTestId('discovery-map-target');
+  await publicLink.scrollIntoViewIfNeeded();
+  const phoneScroll = await phone.locator('.setup-sidebar').evaluate(panel => panel.scrollTop);
+  await publicLink.tap();
+  await checkHistoryMap(phone);
+  await phone.getByRole('button', { name: '返回公开记录' }).tap();
+  assert.equal(await phone.locator('#public-pane').isVisible(), true);
+  assert.equal(await publicLink.evaluate(button => document.activeElement === button), true);
+  assert.equal(await phone.locator('.setup-sidebar').evaluate(panel => panel.scrollTop), phoneScroll);
+
+  await act(second, 'silent_reveal', { index: 1 });
+  await nav(observer, 'action');
+  await observer.getByTestId('action-categories').getByRole('link', { name: '讨伐' }).click();
+  const weapon = observer.getByTestId('weapon-select');
+  const weaponId = await weapon.locator('option').last().getAttribute('value');
+  await weapon.selectOption(weaponId);
+  const target = observer.getByTestId('weapon-corner-select');
+  await target.selectOption('dark_bed');
+  await observer.locator('#map-focus').click();
+  await observer.getByTestId('floor-2').click();
+  await nav(observer, 'inventory');
+  await observer.getByTestId('event-history-toggle').click();
+  const history = observer.getByTestId('event-history');
+  const historical = history.locator('li').filter({ hasText: /访问者小满公开了密码/ });
+  const historyLocate = historical.getByTestId('history-locate');
+  await historyLocate.scrollIntoViewIfNeeded();
+  const historyScroll = await history.evaluate(panel => panel.scrollTop);
+  const version = (await snapshot(second)).version;
+  const actions = [];
+  observer.on('request', req => {
+    if (req.method() === 'POST' && new URL(req.url()).pathname.endsWith('/actions')) actions.push(req.postDataJSON()?.type);
+  });
+  await historyLocate.click();
+  await checkHistoryMap(observer);
+  const guide = observer.getByTestId('corner-guide-toggle');
+  await guide.click();
+  const guideCorner = observer.locator('.corner-guide-entry[data-corner-id="study_desk"] button');
+  await guideCorner.focus();
+  await observer.keyboard.press('Enter');
+  assert.match(await observer.locator('#map-context-title').innerText(), /写字台下/);
+  assert.equal(await observer.getByTestId('map-confirm-action').count(), 0);
+  await act(visitor, 'chat_send', { text: '保留阅读位置', channelKind: 'room', roomId: 'study_room' });
+  await observer.waitForFunction(() => window.__secondPlaytest.chat.messages.some(message => message.text === '保留阅读位置'));
+  assert.equal(await observer.getByTestId('map-confirm-action').count(), 0);
+  await observer.getByRole('button', { name: '返回事件记录' }).click();
+  assert.equal(await observer.locator('#inventory-pane').isVisible(), true);
+  assert.equal(await history.isVisible(), true);
+  assert.equal(await historyLocate.evaluate(button => document.activeElement === button), true);
+  assert.equal(await history.evaluate(panel => panel.scrollTop), historyScroll);
+  await observer.removeLocatorHandler(observer.locator('#event-dialog[open]'));
+  const historyCard = historical.locator('.event-history-entry');
+  await historyCard.click();
+  const eventTitle = await observer.getByTestId('event-title').innerText();
+  await observer.getByTestId('event-locate').click();
+  await checkHistoryMap(observer);
+  await observer.keyboard.press('Escape');
+  assert.equal(await observer.locator('#event-dialog[open]').isVisible(), true);
+  assert.equal(await observer.getByTestId('event-title').innerText(), eventTitle);
+  assert.equal(await observer.getByTestId('event-locate').evaluate(button => document.activeElement === button), true);
+  await observer.keyboard.press('Escape');
+  assert.equal(await history.isVisible(), true);
+  assert.equal(await historyCard.evaluate(button => document.activeElement === button), true);
+  await observer.keyboard.press('Escape');
+  await observer.locator('#map-focus').click();
+  assert.equal(await observer.getByTestId('floor-2').getAttribute('aria-selected'), 'true');
+  await observer.getByTestId('floor-1').click();
+  assert.equal(await observer.locator('#tile-board .selected-corner').getAttribute('data-corner-id'), 'dark_bed');
+  assert.equal(await target.inputValue(), 'dark_bed');
+  assert.equal(await weapon.inputValue(), weaponId);
+  await guide.click();
+  await guideCorner.click();
+  assert.match(await observer.getByTestId('map-context').innerText(), /确认窥探此角落/);
+  assert.match(await observer.getByTestId('map-context').innerText(), /确认讨伐此角落/);
+  assert.equal((await snapshot(second)).version, version);
+  assert.deepEqual(actions, []);
 });
 
 test('death without a ring requires one living heir and hidden allies can locate one another', { timeout: 90000 }, async t => {
@@ -251,7 +451,7 @@ test('death without a ring requires one living heir and hidden allies can locate
   assert.equal((await snapshot(people[1])).round.inventory.items.some(item => item.id === 'relic_ring'), false);
   await act(people[1], 'silent_reveal', { index: 0 });
   await fp.locator('#game-navigation [data-view="map"]').click();
-  await fp.locator(`#map-positions [data-player-id="${people[1].playerId}"]`).click();
+  await locateSeat(fp, people[1].playerId);
   await fp.locator('.corner-location[data-corner-id="children_cabinet"]').click();
   assert.match(await fp.getByTestId('map-context').innerText(), /确认窥探此角落/);
   await fp.screenshot({ path: 'test-results/third-playtest-map-mobile.png', fullPage: true });
@@ -280,8 +480,8 @@ test('death without a ring requires one living heir and hidden allies can locate
   assert.equal(await fp.locator(`.map-position[data-player-id="${people[0].playerId}"]`).count(), 1);
   assert.equal(await sp.locator(`.map-position[data-player-id="${people[0].playerId}"]`).count(), 0);
   for (const page of [hp, fp, sp]) {
-    await page.locator('#game-navigation [data-view="map"]').click();
-    await page.locator(`#map-positions [data-player-id="${people[1].playerId}"]`).click();
+    await openGamePane(page, 'map');
+    await locateSeat(page, people[1].playerId);
     assert.equal(await page.locator(`.map-player-marker[data-player-id="${people[1].playerId}"]`).count(), 1, 'Death and allied positions never duplicate a player marker');
     assert.equal(await page.locator(`.map-player-marker[data-player-id="${people[1].playerId}"]`).getAttribute('data-corner-id'), 'children_cabinet');
     assert.match(await page.getByTestId('death-location-history').innerText(), /死亡位置记录/);
@@ -406,7 +606,7 @@ for (const use of [true, false]) test(`mobile overflow owner can ${use ? 'use' :
   assert.equal(await fp.getByTestId('extinguisher-response').count(), 1);
   for (const page of [hp, sp]) assert.equal(await page.getByTestId('extinguisher-response').count(), 0);
   assert.match(await fp.getByTestId('extinguisher-response').textContent(), /你翻出的无声数字使累计超过10/);
-  assert.equal(await hp.getByTestId('pass-noise-reaction').isDisabled(), true);
+  assert.equal(await hp.getByTestId('pass-noise-reaction').count(), 0, 'Hako cannot advance during the visitor’s response window');
   assert.equal(await fp.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await click(fp, 'extinguisher_response', () => fp.getByTestId(use ? 'extinguisher-use' : 'extinguisher-pass').tap());
   const state = await snapshot(people[1]);

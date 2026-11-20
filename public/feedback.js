@@ -97,10 +97,10 @@ export function createFeedbackTracker({ limit = 20, locationName = id => id } = 
       const before = previous;
       previous = structuredClone(next);
       const events = [];
-      const push = (title, body, tone = 'info', privateLabel = PUBLIC, highlight = false, symbol = 'event', view = 'action', requiresResponse = false, cornerId = null) => {
+      const push = (title, body, tone = 'info', privateLabel = PUBLIC, highlight = false, symbol = 'event', view = 'action', requiresResponse = false, cornerId = null, details = {}) => {
         events.push({ id: `${next.code}:${next.you}:${next.version}:${++sequence}`, version: next.version,
           title, body, tone, privateLabel, highlight, symbol, view, requiresResponse, dismissed: false,
-          ...(cornerId ? { cornerId } : {}) });
+          ...(cornerId ? { cornerId } : {}), ...details });
       };
       const finish = () => {
         history = [...events].reverse().concat(history).slice(0, limit);
@@ -154,10 +154,13 @@ export function createFeedbackTracker({ limit = 20, locationName = id => id } = 
         push(`手记${notebook.number ?? ''}已公开`, tokenDescription(notebook), 'info', PUBLIC, true, 'notebook');
       }
       for (const discovery of (round.publicDiscoveries || []).slice(oldRound.publicDiscoveries?.length || 0)) {
+        const author = playerName(next, discovery.playerId);
+        const token = tokenName(discovery.token);
+        const peer = discovery.playerId !== next.you;
         const location = discovery.cornerId ? `发现时的位置为 ${locationName(discovery.cornerId)}。` : '';
-        push(`${playerName(next, discovery.playerId)}公开了${tokenName(discovery.token)}`,
-          `${location}${tokenDescription(discovery.token)} 这是玩家主动公开的当时信息。`, 'info', PUBLIC, true,
-          tokenSymbol(discovery.token), 'public', false, discovery.cornerId);
+        push(`${author}公开了${token}`, `${location}${tokenDescription(discovery.token)} 这是玩家主动公开的当时信息。`,
+          'info', PUBLIC, !peer, tokenSymbol(discovery.token), 'public', false, discovery.cornerId,
+          { banner: peer, ...(discovery.cornerId ? { record: `${author}曾在此发现${token}（第${discovery.cycle}轮公开）` } : {}) });
       }
       if (round.powers?.announcement && changed(oldRound.powers?.announcement, round.powers.announcement)) {
         push(`哭喊指向${roomName(next, round.powers.announcement.roomId)}`, '地图已标记宣告房间，保留至下一次箱娃阶段开始。', 'attention', PUBLIC, true);
@@ -178,7 +181,8 @@ export function createFeedbackTracker({ limit = 20, locationName = id => id } = 
       const incoming = added(oldRound.exchangeOffers, round.exchangeOffers).filter(offer => offer.targetId === next.you);
       for (const offer of incoming) {
         const pieces = [...(offer.giveTokens || []).map(tokenName), ...(offer.giveItems || []).map(item => item.name)];
-        push(`${playerName(next, offer.fromId)}向你提出交换`, pieces.length ? `对方提出交出：${pieces.join('、')}。接受前请检查需要付出的物品。` : '查看交换内容，再决定接受或拒绝。', 'attention', PRIVATE, true, 'event', 'action', true);
+        const kind = offer.requestTokenIds?.length || offer.requestItemIds?.length ? '交换' : '赠送';
+        push(`${playerName(next, offer.fromId)}向你提出${kind}`, pieces.length ? `对方愿意交出${pieces.join('、')}。可前往行动页接受或拒绝。` : '可前往行动页查看物品并回应。', 'attention', PRIVATE, false, 'event', 'action');
       }
       if ((oldRound.exchangeOffers || []).some(offer => !round.exchangeOffers?.some(current => current.id === offer.id))) {
         push('交换请求已处理', '请查看当前随身物品，已完成的交换会立即更新库存。', 'info', PRIVATE);

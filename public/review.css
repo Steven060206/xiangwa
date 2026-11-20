@@ -1,0 +1,107 @@
+.game-result {
+  padding: 12px 0 16px;
+  margin: 0;
+  border-width: 0 0 1px;
+}
+.in-game .practice-panel .game-result h2 {
+  margin: 0 0 4px;
+  font-size: 26px;
+  line-height: 1.35;
+}
+.game-result .result-reason,
+.game-result .result-winners {
+  color: var(--ink);
+  font-size: 14px;
+}
+.result-restart {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.result-restart .button {
+  flex: none;
+  padding: 6px 12px;
+}
+.result-restart .small-note {
+  margin: 0;
+  color: var(--muted);
+}
+.game-review {
+  padding-top: 12px;
+  border: 0;
+  color: var(--ink);
+  min-width: 0;
+}
+.game-review > h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 4px;
+  font: 600 19px/1.5 var(--serif);
+}
+.game-review > h3 small {
+  color: var(--muted);
+  font: 400 13px/1.5 var(--sans);
+}
+.review-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--rule);
+}
+.review-tab {
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.review-tab:hover { color: var(--ink); background: var(--paper-light); }
+.review-tab[aria-selected=true] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
+.review-tab:focus-visible { outline-offset: -4px; }
+.review-panel {
+  padding: 16px 0 4px;
+  max-width: 65ch;
+  overflow-wrap: anywhere;
+}
+.review-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.review-board-filters {
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+}
+.game-review .review-field { display: grid; gap: 4px; margin: 0; font-size: 13px; color: var(--muted); }
+.review-field select { width: 100%; min-height: 44px; padding-inline: 8px; font-size: 15px; }
+.review-room-contents > .review-map-link { margin-top: 4px; }
+.game-review .review-map-link {
+  min-height: 44px;
+  padding: 6px 0;
+  white-space: normal;
+  text-align: left;
+}
+.review-corners, .review-facts, .review-log-list, .review-location-log, .review-deck { margin: 0; }
+.review-corners > div, .review-facts > div {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.review-corners dt, .review-facts dt { color: var(--muted); font-size: 13px; }
+.review-corners dd, .review-facts dd { margin: 0; overflow-wrap: anywhere; }
+.review-corners dd { padding-bottom: 4px; }
+.review-facts > div {
+  display: grid;
+  grid-template-columns: minmax(84px, 1fr) minmax(0, 2fr);
+  align-items: baseline;
+  gap: 10px;
+}
+.review-panel h4 { margin: 14px 0 5px; font-size: 15px; }
+.review-location-log, .review-deck, .review-log-list { padding-left: 1.8em; }
+.review-location-log li, .review-log-list li { padding: 6px 0; }
+.review-location-log .review-map-link, .review-log-list .review-map-link { display: block; }
+.review-deck { font-variant-numeric: tabular-nums; }
+.review-deck li { padding-block: 2px; }
+@media (max-width: 720px) {
+  .review-field select { font-size: 16px; }
+}

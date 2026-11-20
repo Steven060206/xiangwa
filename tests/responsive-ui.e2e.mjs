@@ -1,3 +1,4 @@
+import { openGamePane as nav } from './game-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -119,7 +120,6 @@ async function session(t, playerCount) {
   return { people, state, act, snapshot, click, open, prepare, finishOpening };
 }
 
-const nav = (page, view) => page.locator(`#game-navigation [data-view="${view}"]`).click();
 async function dismiss(page) {
   if (await page.locator('#event-dialog').evaluate(dialog => dialog.open)) await page.locator('#event-close').click();
 }
@@ -176,6 +176,47 @@ test('five-player random deals and responsive exploration keep actions and the m
     assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height,
       `${viewport.width}×${viewport.height} shows the current action categories on screen: ${JSON.stringify(geometry)}`);
   }
+});
+
+test('a five-seat waiting player can read the board and respond to a gift without losing their chat draft', { timeout: 90000 }, async t => {
+  const { people, prepare, open, act, click } = await session(t, 5);
+  await prepare();
+  const [hako, first, second] = people;
+  const page = await open(second);
+  assert.equal(await page.locator('#setup-view').getAttribute('data-layout'), 'waiting');
+  const waitingHeight = (await page.locator('#board-viewport').boundingBox()).height;
+  assert.ok(waitingHeight > 220, 'A waiting phone can see a whole board tile');
+  await page.locator('#seats-toggle').click();
+  assert.equal(await page.locator('#setup-seats > li').count(), 5);
+  assert.equal(await page.locator(`#table-seats .map-position[data-player-id="${hako.playerId}"]`).count(), 0);
+  await page.keyboard.press('Escape');
+
+  await nav(page, 'chat');
+  const draft = page.getByTestId('chat-text');
+  await draft.fill('等会儿告诉同伴');
+  await act(first, 'offer_exchange', { targetId: second.playerId, giveItemIds: ['night_vision'], giveTokenIds: [], requestItemIds: [], requestTokenIds: [] });
+  assert.match(await page.getByTestId('current-task').innerText(), /回应寻路者1的赠送/);
+  assert.match(await page.getByTestId('turn-owner').innerText(), /寻路者1的回合/);
+  assert.equal(await page.locator('#setup-view').getAttribute('data-panel'), 'chat');
+  assert.equal(await draft.inputValue(), '等会儿告诉同伴');
+  await page.getByTestId('focus-current-action').click();
+  const accept = page.getByTestId('exchange-accept');
+  const geometry = await accept.evaluate(button => {
+    const rect = button.getBoundingClientRect();
+    const pane = document.querySelector('.setup-sidebar').getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, paneTop: pane.top, paneBottom: pane.bottom };
+  });
+  assert.ok(geometry.top >= geometry.paneTop && geometry.bottom <= geometry.paneBottom, 'The gift can be answered on the first screen');
+  assert.ok((await page.locator('#board-viewport').boundingBox()).height < waitingHeight);
+  assert.equal(await page.getByTestId('inventory').isVisible(), false);
+  assert.equal(await page.locator('.public-progress').isVisible(), false);
+  const accepted = await click(page, 'respond_exchange', () => accept.click());
+  assert.equal(accepted.round.silent.turnPlayerId, first.playerId);
+  await dismiss(page);
+  await nav(page, 'inventory');
+  assert.equal(await page.locator('[data-testid="inventory-item"][data-item-id="night_vision"]').isVisible(), true);
+  await nav(page, 'chat');
+  assert.equal(await draft.inputValue(), '等会儿告诉同伴');
 });
 
 test('slow and truncated successful actions recover through read-only state checks and unchanged polls without replay', { timeout: 90000 }, async t => {
