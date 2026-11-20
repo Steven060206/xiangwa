@@ -226,7 +226,9 @@ test('global discoveries preserve action and inventory privacy while cry markers
   const publicFind = await g.act(first, 'publish_token', { tokenId: 'password_6' });
   assert.deepEqual(publicFind.round.silent, privateFind.round.silent);
   assert.deepEqual(publicFind.round.resolution, { ...privateFind.round.resolution, canPublish: false });
-  assert.equal((await g.snapshot(third)).round.publicDiscoveries.at(-1).token.id, 'password_6');
+  const record = (await g.snapshot(third, true)).round.publicDiscoveries.at(-1);
+  assert.equal(record.token.id, 'password_6');
+  assert.equal(record.cornerId, 'bathroom_washer');
   await g.act(first, 'resolve_peek', { take: false });
   let stage = await nextHakoStage(g);
   assert.equal(stage.round.totalRounds, 1);
@@ -235,6 +237,7 @@ test('global discoveries preserve action and inventory privacy while cry markers
   assert.deepEqual(announcement, { roomId: 'children_room', cycle: 1 });
   assert.equal(Object.hasOwn(announcement, 'cornerId'), false);
   await g.restart();
+  assert.deepEqual((await g.snapshot(third)).round.publicDiscoveries.at(-1), record);
   assert.deepEqual((await g.snapshot(third)).round.powers.announcement, announcement);
   assert.equal((await g.snapshot(hako)).round.totalRounds, 1);
   await g.act(hako, 'begin_hako_action');

@@ -616,12 +616,18 @@ function showPossession(play, id, action) {
   play.sharedTokens[action.targetId] = { kind: 'shown_possession', fromId: id,
     ...(action.tokenId ? { token: clone(piece) } : { item: clone(piece) }) };
 }
+function alreadyPublished(play, playerId, tokenId, cornerId) {
+  return (play.publicDiscoveries || []).some(entry => entry.playerId === playerId && entry.token.id === tokenId
+    && (!cornerId || entry.publishedCornerId === cornerId));
+}
 function publishToken(play, id, action) {
   assertAlive(play, id);
   let token;
+  let cornerId;
   const found = play.resolution;
   if (found?.playerId === id && found.token?.id === action.tokenId) {
     token = found.token;
+    cornerId = found.cornerId;
   } else {
     assertFree(play, id);
     token = inventory(play, id).tokens.find(piece => piece.id === action.tokenId);
@@ -629,8 +635,9 @@ function publishToken(play, id, action) {
   if (!token) throw new Error('只能公开自己持有或本次窥探发现的标志。');
   if (token.type === 'notebook') throw new Error('手记在发现时已自动公开，无需再次公开。');
   play.publicDiscoveries ??= [];
-  if (play.publicDiscoveries.some(entry => entry.playerId === id && entry.token.id === token.id)) throw new Error('这条发现已经公开。');
-  play.publicDiscoveries.push({ playerId: id, token: clone(token), cycle: play.round.silent.cycle });
+  if (alreadyPublished(play, id, token.id, cornerId)) throw new Error('这条发现已经公开。');
+  play.publicDiscoveries.push({ playerId: id, token: clone(token), cycle: play.round.silent.cycle,
+    ...(cornerId ? { publishedCornerId: cornerId } : {}) });
 }
 function dropToken(play, id, action) {
   assertFree(play, id);
@@ -808,8 +815,7 @@ function resolutionView(play, id) {
   const needsReplacement = resolution.kind === 'notebook' || TAKEABLE.has(token.type);
   return {
     kind: resolution.kind, playerId: id, cornerId: resolution.cornerId, token: tokenView(token),
-    canPublish: token.type !== 'notebook' && !(play.publicDiscoveries || [])
-      .some(entry => entry.playerId === id && entry.token.id === token.id),
+    canPublish: token.type !== 'notebook' && !alreadyPublished(play, id, token.id, resolution.cornerId),
     canTake: TAKEABLE.has(token.type), needsReplacement,
     replacementTokens: inventory(play, id).tokens.filter(token => !(play.noiseEffects?.mary?.playerId === id && token.type === 'doll')).map(tokenView),
     canUseEmptyBox: play.opening.emptyBoxTokens.length > 0,
@@ -917,9 +923,10 @@ export function getPlayView(play, playerId) {
     giveItems: clone(inventory(play, offer.fromId).items.filter(item => offer.giveItemIds.includes(item.id))),
   }));
   view.sharedTokens = play.sharedTokens[playerId] ? clone(play.sharedTokens[playerId]) : null;
-  // Legacy saved records may contain a discovery corner or source. Whitelist the
-  // shared content so publishing never identifies where the piece was found.
+  // Older saves can contain private cornerId metadata. Only expose a corner
+  // explicitly published with the finding.
   view.publicDiscoveries = (play.publicDiscoveries || []).map(entry => ({ playerId: entry.playerId,
+    ...(entry.publishedCornerId ? { cornerId: entry.publishedCornerId } : {}),
     token: tokenView({ id: entry.token.id, type: entry.token.type,
       ...(entry.token.number !== undefined ? { number: entry.token.number } : {}),
       ...(entry.token.tool !== undefined ? { tool: entry.token.tool } : {}) }), cycle: entry.cycle }));

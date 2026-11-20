@@ -828,9 +828,14 @@ function renderMapContext(open = false) {
     if (review.underToken) fragment.append(node('p', 'small-note', `被替换棋子：${mapTokenName(review.underToken)}`));
     fragment.append(node('p', 'section-meta', '终局盘面 · 全员可见'));
   } else if (resolution?.playerId === state.you && resolution.cornerId === selectedMapCorner && resolution.token) {
-    fragment.append(node('p', 'map-context-content', mapTokenName(resolution.token)), node('p', 'section-meta', '本次窥探结果 · 仅你可见'));
+    fragment.append(node('p', 'map-context-content', mapTokenName(resolution.token)), node('p', 'section-meta', '你的本次窥探结果'));
   } else if (publicCorner?.faceUp && publicCorner.token?.type === 'empty_box') {
     fragment.append(node('p', 'map-context-content', '空箱 · X面朝上'), node('p', 'small-note', '全员可见；仍可窥探。箱娃或箱人潜入后可以重新盖放。'));
+  }
+  for (const entry of round?.publicDiscoveries || []) {
+    if (entry.cornerId && entry.cornerId === selectedMapCorner) {
+      fragment.append(node('p', 'small-note', `曾在此发现${mapTokenName(entry.token)}（第${entry.cycle}轮公开）`));
+    }
   }
   for (const death of (round?.deathLocations || []).filter(value => value.cornerId === selectedMapCorner)) {
     fragment.append(node('p', 'small-note', `${state.players.find(player => player.id === death.userId)?.name || '玩家'}死亡于此，已转为箱人。这是死亡时位置，后续潜伏仍保密。`));
@@ -925,6 +930,7 @@ document.addEventListener('hako:locate-corner', event => {
   const tileId = getLogicalRooms().find(room => room.id === roomId)?.tileId;
   const placement = state.setup.placements.find(value => value.tileId === tileId);
   if (!placement) return;
+  if (!$('board-section').getClientRects().length) navigateGame('map');
   activeFloor = placement.floor;
   renderSetup();
   const target = document.querySelector(`#tile-board .corner-location[data-corner-id="${CSS.escape(event.detail.cornerId)}"]`);

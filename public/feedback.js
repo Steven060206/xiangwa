@@ -154,8 +154,10 @@ export function createFeedbackTracker({ limit = 20, locationName = id => id } = 
         push(`手记${notebook.number ?? ''}已公开`, tokenDescription(notebook), 'info', PUBLIC, true, 'notebook');
       }
       for (const discovery of (round.publicDiscoveries || []).slice(oldRound.publicDiscoveries?.length || 0)) {
+        const location = discovery.cornerId ? `发现时的位置为 ${locationName(discovery.cornerId)}。` : '';
         push(`${playerName(next, discovery.playerId)}公开了${tokenName(discovery.token)}`,
-          `${tokenDescription(discovery.token)} 这是玩家主动公开的当时信息。`, 'info', PUBLIC, true, tokenSymbol(discovery.token));
+          `${location}${tokenDescription(discovery.token)} 这是玩家主动公开的当时信息。`, 'info', PUBLIC, true,
+          tokenSymbol(discovery.token), 'public', false, discovery.cornerId);
       }
       if (round.powers?.announcement && changed(oldRound.powers?.announcement, round.powers.announcement)) {
         push(`哭喊指向${roomName(next, round.powers.announcement.roomId)}`, '地图已标记宣告房间，保留至下一次箱娃阶段开始。', 'attention', PUBLIC, true);

@@ -966,13 +966,14 @@ test('visitors can globally publish held markers without spending an action or d
   const silent = structuredClone(play.round.silent);
   rejects(play, second, { type: 'publish_token', tokenId: 'public-password' });
   rejects(play, hakoId, { type: 'publish_token', tokenId: 'public-password' });
-  play = act(play, first, { type: 'publish_token', tokenId: 'public-password' });
+  play = act(play, first, { type: 'publish_token', tokenId: 'public-password', cornerId: 'hall_clock' });
   assert.deepEqual(play.round.silent, silent);
   assert.equal(play.inventories[first].tokens.length, 2);
   for (const id of [hakoId, ...visitors]) {
     const view = getPlayView(play, id);
     assert.equal(view.publicDiscoveries[0].playerId, first);
     assert.equal(view.publicDiscoveries[0].token.id, 'public-password');
+    assert.equal(Object.hasOwn(view.publicDiscoveries[0], 'cornerId'), false);
     if (id !== first) assert.equal(JSON.stringify(view).includes('private-key'), false);
     view.publicDiscoveries[0].token.number = 99;
     assert.equal(getPlayView(play, id).publicDiscoveries[0].token.number, 2);
@@ -981,7 +982,7 @@ test('visitors can globally publish held markers without spending an action or d
   rejects(play, second, { type: 'publish_token', tokenId: 'public-password' });
 });
 
-test('a current private peek may be published before taking, while its historical record survives later replacement', () => {
+test('publishing a private peek reveals its original corner to every seat even after replacement', () => {
   let play = newPlay();
   play.tokens.hall_clock = token('peeked-password', 'password', { number: 4 });
   play = peek(reveal(play), 'hall_clock');
@@ -989,16 +990,34 @@ test('a current private peek may be published before taking, while its historica
   rejects(play, second, { type: 'publish_token', tokenId: 'peeked-password' });
   const silent = structuredClone(play.round.silent);
   const resolution = structuredClone(play.resolution);
-  play = act(play, first, { type: 'publish_token', tokenId: 'peeked-password' });
+  play = act(play, first, { type: 'publish_token', tokenId: 'peeked-password', cornerId: 'study_desk' });
   assert.deepEqual(play.round.silent, silent);
   assert.deepEqual(play.resolution, resolution);
-  assert.equal(Object.hasOwn(play.publicDiscoveries[0], 'cornerId'), false);
+  assert.equal(getPlayView(play, first).resolution.canPublish, false);
+  rejects(play, first, { type: 'publish_token', tokenId: 'peeked-password' }, /已经公开/);
   play = act(play, first, { type: 'resolve_peek', take: true, replacement: 'empty_box' });
   assert.equal(play.tokens.hall_clock.type, 'empty_box');
-  const publicRecord = getPlayView(play, third).publicDiscoveries[0];
-  assert.equal(publicRecord.token.id, 'peeked-password');
-  assert.equal(Object.hasOwn(publicRecord, 'cornerId'), false);
+  for (const id of [hakoId, ...visitors]) {
+    const [entry] = getPlayView(play, id).publicDiscoveries;
+    assert.equal(entry.token.id, 'peeked-password');
+    assert.equal(entry.cornerId, 'hall_clock');
+  }
   assert.equal(play.publicDiscoveries.length, 1);
+});
+
+test('an earlier publication of a marker does not preempt publishing a newly discovered corner', () => {
+  const piece = token('previously-public', 'password', { number: 4 });
+  let play = newPlay();
+  play.publicDiscoveries = [
+    { playerId: first, token: piece, cycle: 1 },
+    { playerId: first, token: piece, cycle: 1, publishedCornerId: 'study_desk' },
+  ];
+  play.tokens.hall_clock = piece;
+  play = peek(reveal(play), 'hall_clock');
+  assert.equal(getPlayView(play, first).resolution.canPublish, true);
+  play = act(play, first, { type: 'publish_token', tokenId: piece.id });
+  assert.deepEqual(getPlayView(play, second).publicDiscoveries.map(entry => entry.cornerId),
+    [undefined, 'study_desk', 'hall_clock']);
 });
 
 test('published discoveries strip historical corner, room and source fields from every player view', () => {

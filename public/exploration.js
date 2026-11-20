@@ -1,5 +1,5 @@
 import { getLogicalRooms } from '/shared/maps.mjs';
-import { cornerName } from './tile.js';
+import { cornerName, cornerNumber } from './tile.js';
 import { cardName, renderAbilities, renderActiveItems, renderCurrentEffects } from './abilities.js';
 import { draftScope } from './view-state.js';
 import { renderClueSummary } from './help.js';
@@ -193,8 +193,16 @@ function publicProgress(container, state) {
     const discoveries = node('div');
     discoveries.dataset.testid = 'public-discoveries';
     discoveries.append(node('h4', '', '玩家公开的发现'));
-    for (const entry of round.publicDiscoveries) discoveries.append(node('p', 'small-note',
-      `${playerName(state, entry.playerId)}：${tokenName(entry.token)}`));
+    for (const entry of round.publicDiscoveries) {
+      const record = node('p', 'small-note', `${playerName(state, entry.playerId)}：${tokenName(entry.token)}`);
+      if (entry.cornerId) {
+        const locate = button(`发现时的位置 · ${cornerName(entry.cornerId)}`, 'discovery-map-target', false,
+          () => document.dispatchEvent(new CustomEvent('hako:locate-corner', { detail: { cornerId: entry.cornerId } })), true);
+        locate.dataset.localControl = 'true';
+        record.append(' ', locate);
+      }
+      discoveries.append(record);
+    }
     section.append(discoveries);
   }
   if (round.deathEvents?.length) {
@@ -467,7 +475,11 @@ function resolutionControls(container, state, locked, action) {
   section.dataset.testid = 'private-resolution';
   section.dataset.kind = resolution.kind;
   section.append(node('h3', '', resolution.kind === 'inheritance' ? '选择遗物的接收人' : resolution.kind === 'safe' ? '你发现了保险箱' : resolution.kind === 'notebook' ? '你发现了一片手记' : '窥探结果'));
-  if (resolution.kind !== 'inheritance') section.append(node('p', 'section-meta', resolution.kind === 'notebook' ? '本次手记 · 已向全体公开' : '本次窥探 · 仅你可见'));
+  if (resolution.kind !== 'inheritance') {
+    const visibility = resolution.kind === 'notebook' ? '手记内容已公开 · 发现位置仅你可见'
+      : resolution.kind === 'peek' && resolution.canPublish === false ? '标志及发现位置已向全体公开' : '本次窥探 · 仅你可见';
+    section.append(node('p', 'section-meta', visibility));
+  }
   if (resolution.kind === 'inheritance') {
     const targets = (resolution.targets || state.round.visitors.filter(visitor => visitor.status === 'alive').map(visitor => visitor.id)).map(value => ({ id: typeof value === 'string' ? value : value.id, name: playerName(state, typeof value === 'string' ? value : value.id) }));
     section.append(node('p', 'small-note', '死亡时全部技能牌已消失。请选择一名存活访问者继承全部随身标志；你已成为箱人。'));
@@ -482,9 +494,8 @@ function resolutionControls(container, state, locked, action) {
     found.dataset.testid = 'peek-result';
     section.append(found);
     if (resolution.token?.power) section.append(node('p', 'small-note', `${cardName(resolution.token.power)}：${resolution.token.power.description}`));
-    if (resolution.kind !== 'notebook' && resolution.token?.type !== 'notebook' && resolution.token && !state.round.publicDiscoveries?.some(entry => entry.playerId === state.you
-        && entry.token.id === resolution.token.id)) {
-      const publish = button('向所有玩家公开这次发现', 'publish-peek-token', locked,
+    if (resolution.canPublish) {
+      const publish = button(`向所有玩家公开标志及${cornerNumber(resolution.cornerId)}号位置`, 'publish-peek-token', locked,
         () => action('publish_token', { tokenId: resolution.token.id }), true);
       publish.dataset.tokenId = resolution.token.id;
       section.append(publish);

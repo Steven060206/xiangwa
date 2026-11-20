@@ -215,6 +215,36 @@ test('second playtest shows owned items privately, preserves the safe landmark a
   assert.equal(await fp.locator('#map-context .map-context-content').innerText(), `密码${password.token.number}`, 'The terminal map result displays the actual single password digit');
 });
 
+test('publishing a peek shows the numbered discovery location in the event, history and map', { timeout: 90000 }, async t => {
+  const { people, pages, act, click } = await game(t, { fixture(play) {
+    const source = Object.keys(play.tokens).find(id => play.tokens[id]?.type === 'password');
+    [play.tokens.hall_clock, play.tokens[source]] = [play.tokens[source], play.tokens.hall_clock];
+  } });
+  const [hako, visitor] = people;
+  const [, phone, observer] = pages;
+  const location = '01 · 1楼大厅 · 老旧的大钟后';
+  await act(visitor, 'silent_reveal', { index: 0 });
+  await act(visitor, 'peek', { cornerId: 'hall_clock' });
+  await act(hako, 'resolve_visitor_action');
+  assert.equal(await observer.getByTestId('public-discoveries').count(), 0);
+  const publish = phone.getByTestId('publish-peek-token');
+  assert.match(await publish.innerText(), /01号位置/);
+  await click(phone, 'publish_token', () => publish.click());
+  assert.match(await observer.locator('#event-dialog[open] #event-body').innerText(), /01 · 1楼大厅 · 老旧的大钟后/);
+  assert.equal(await observer.getByTestId('event-locate').isVisible(), true);
+  for (const page of pages) {
+    assert.equal(await page.getByTestId('discovery-map-target').textContent(), `发现时的位置 · ${location}`);
+  }
+  await act(visitor, 'resolve_peek', { take: true, replacement: 'empty_box' });
+  await phone.reload();
+  await phone.locator('#game-navigation [data-view="public"]').click();
+  await phone.getByTestId('discovery-map-target').click();
+  assert.equal(await phone.locator('#tile-board .selected-corner').getAttribute('data-corner-id'), 'hall_clock');
+  assert.equal(await phone.locator('#map-context-title').innerText(), location);
+  assert.match(await phone.getByTestId('map-context').innerText(), /曾在此发现密码/);
+  assert.equal(await phone.locator('#board-section').isVisible(), true);
+});
+
 test('death without a ring requires one living heir and hidden allies can locate one another', { timeout: 90000 }, async t => {
   const { people, pages, act, snapshot, click } = await game(t, { death: true });
   const [hp, fp, sp] = pages;
