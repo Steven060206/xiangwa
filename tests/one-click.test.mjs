@@ -163,6 +163,18 @@ test('failed remote sharing keeps the local game running and still permits a cle
   assert.equal((await live.finished).code, 0, live.output);
 });
 
+test('source and Windows instructions identify the same release as the package and lockfile', async () => {
+  const [manifest, lockfile, readme, guide] = await Promise.all(
+    ['package.json', 'package-lock.json', 'README.md', '一键版说明.txt'].map(name => readFile(join(source, name), 'utf8'))
+  );
+  const { version } = JSON.parse(manifest);
+  const lock = JSON.parse(lockfile);
+  assert.equal(lock.version, version);
+  assert.equal(lock.packages[''].version, version);
+  assert.equal(/^当前版本[^`\r\n]*`([^`]+)`/m.exec(readme)?.[1], version);
+  assert.equal(/^版本：([^\s]+)/m.exec(guide)?.[1], version);
+});
+
 test('Windows package includes the launchers and runtime but excludes photos, saves, secrets and developer files',
   { ...options, skip: process.platform !== 'win32' }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'xiangwa-package-'));

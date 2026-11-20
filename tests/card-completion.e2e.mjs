@@ -144,7 +144,10 @@ async function game(t, fixtureOptions, items = ['smartphone', 'deduction', 'walk
   await sync((await snapshot()).version);
   async function restart() {
     const before = await Promise.all(people.map(snapshot));
-    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    const stopped = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    // A restart also disconnects Chromium sockets opened before their first request.
+    server.closeAllConnections();
+    await stopped;
     server = createGameServer(options);
     server.listen(port, '127.0.0.1');
     await once(server, 'listening');
