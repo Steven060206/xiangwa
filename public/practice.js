@@ -13,6 +13,7 @@ const node = (tag, className, text) => {
   return element;
 };
 let selectedCorner = '';
+let holdModeScope = '';
 let chosenPassword = [];
 let selectedWeakness = '';
 let selectedRoom = '';
@@ -122,6 +123,9 @@ function silentCards(state, locked, action) {
   const mine = round.phase === 'visitor_reveal' && silent.turnPlayerId === state.you;
   const zeroRevealed = silent.cards.some(card => card.status === 'up' && card.number === 0);
   const ghostCall = round.powers?.ghostCall?.active === true;
+  const canHold = mine && !zeroRevealed && !ghostCall && !(silent.revealsRemaining > 0);
+  const scope = draftScope(state) + ':' + silent.cards.map(card => card.status).join(',');
+  if (holdModeScope !== scope || !canHold) holdModeScope = '';
   const grid = node('div', 'silent-cards');
   for (const card of silent.cards) {
     const cell = node('div', `silent-card-cell ${card.status}`);
@@ -134,21 +138,43 @@ function silentCards(state, locked, action) {
     if (face.tagName === 'BUTTON') {
       face.type = 'button';
       face.disabled = locked;
-      face.addEventListener('click', () => action('silent_reveal', { index: card.index }));
+      face.addEventListener('click', () => action(holdModeScope === scope ? 'silent_skip' : 'silent_reveal', { index: card.index }));
     } else face.setAttribute('role', 'img');
     face.append(node('span', 'silent-card-value', revealed ? String(card.number) : held ? '持' : '无声'));
     face.append(node('span', 'silent-card-caption', held ? playerName(state, card.holderId) : revealed ? '已翻开' : `第 ${card.index + 1} 枚`));
     cell.append(face);
-    if (mine && !revealed && !held) {
-      const skip = button('持牌跳过', `skip-card-${card.index}`, locked || zeroRevealed || ghostCall, () => action('silent_skip', { index: card.index }), true);
-      skip.classList.add('silent-skip');
-      if (zeroRevealed) skip.title = '数字0已翻开，本轮不能跳过。';
-      if (ghostCall) skip.title = '移动受限，必须翻牌并沿最短路线前往客厅。';
-      cell.append(skip);
-    }
     grid.append(cell);
   }
   section.append(grid, node('p', 'small-note', ghostCall ? '移动受限，不能持牌跳过。照常翻牌；无路可走时自动结束本次行动，等待解封。' : zeroRevealed ? '数字0已翻开，本轮不能持牌跳过。累计恰好10时仍可行动。' : '盖放和持有的数字保持隐藏。累计大于10，或只余一枚盖放时，触发箱娃阶段。'));
+  if (mine) {
+    const toggle = button('持牌跳过', 'silent-hold-mode', locked || !canHold, () => {
+      holdModeScope = holdModeScope === scope ? '' : scope;
+      paintMode();
+    }, true);
+    const instruction = node('p', 'small-note', '选一枚盖牌，持牌并跳过本回合。');
+    instruction.setAttribute('role', 'status');
+    function paintMode() {
+      const holding = holdModeScope === scope;
+      toggle.textContent = holding ? '取消选牌' : '持牌跳过';
+      toggle.setAttribute('aria-pressed', String(holding));
+      instruction.hidden = !holding;
+      for (const face of grid.querySelectorAll('button')) {
+        const index = Number(face.dataset.testid.split('-').at(-1)) + 1;
+        face.setAttribute('aria-label', (holding ? '持有' : '翻开') + '第' + index + '枚无声标志');
+        face.querySelector('.silent-card-caption').textContent = (holding ? '持有第 ' : '第 ') + index + ' 枚';
+      }
+    }
+    section.append(toggle, instruction);
+    section.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && holdModeScope === scope) {
+        event.preventDefault();
+        holdModeScope = '';
+        paintMode();
+        toggle.focus();
+      }
+    });
+    paintMode();
+  }
   return section;
 }
 

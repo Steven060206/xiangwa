@@ -68,6 +68,11 @@ export function createRoomStore(filePath) {
                 || !Number.isInteger(player.seat) || player.seat < 0 || player.seat >= room.playerCount) {
               throw new Error('玩家数据无效');
             }
+            for (const receipt of [player.joinReceipt, player.recoveryReceipt]) {
+              if (receipt !== undefined && (!receipt || !/^[a-f0-9]{64}$/.test(receipt.digest)
+                  || !Number.isSafeInteger(receipt.expiresAt))) throw new Error('座位申请记录无效');
+            }
+            if (player.recoveryDigest !== undefined && !/^[a-f0-9]{64}$/.test(player.recoveryDigest)) throw new Error('座位恢复记录无效');
             player.connections = new Set();
           }
           rooms.set(room.code, room);

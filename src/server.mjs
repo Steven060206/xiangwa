@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createSetup, drawTile, placeTile, getSetupView } from './game.mjs';
 import {
@@ -20,6 +20,7 @@ const staticFiles = new Map([
   ['/index.html', ['../public/index.html', 'text/html; charset=utf-8']],
   ['/style.css', ['../public/style.css', 'text/css; charset=utf-8']],
   ['/app.js', ['../public/app.js', 'text/javascript; charset=utf-8']],
+  ['/seat-access.js', ['../public/seat-access.js', 'text/javascript; charset=utf-8']],
   ['/tile.js', ['../public/tile.js', 'text/javascript; charset=utf-8']],
   ['/practice.js', ['../public/practice.js', 'text/javascript; charset=utf-8']],
   ['/exploration.js', ['../public/exploration.js', 'text/javascript; charset=utf-8']],
@@ -99,6 +100,14 @@ function sameToken(candidate, token) {
   const supplied = Buffer.from(candidate);
   const expected = Buffer.from(token);
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
+const digest = value => createHash('sha256').update(value).digest('hex');
+const receiptLifetime = 30 * 60 * 1000;
+
+function receiptDigest(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) fail(400, '入席申请无效，请从入席页重试。');
+  return digest(value);
 }
 
 function completeLegacyDrafts(room, { deck, initialItemOrder }) {
@@ -337,11 +346,21 @@ export function createGameServer({ deck, silentNumbers, initialItemOrder, create
     return player;
   }
 
-  function addPlayer(room, name) {
+  function seated(room, player) {
+    return { roomCode: room.code, playerId: player.id, token: player.token, state: snapshot(room, player.id) };
+  }
+
+  function addPlayer(room, name, application) {
     clearUndo(room);
     const player = createPlayer(room, name);
+    if (application) player.joinReceipt = { digest: application, expiresAt: accessNow() + receiptLifetime };
     publish(room, `${name} 加入了房间。`);
-    return { roomCode: room.code, playerId: player.id, token: player.token, state: snapshot(room, player.id) };
+    return seated(room, player);
+  }
+
+  function findReceipt(room, field, application) {
+    return application && room?.players.find(player => !player.isBot && player[field]?.expiresAt > accessNow()
+      && sameToken(application, player[field].digest));
   }
 
   function newRoomCode() {
@@ -381,6 +400,9 @@ export function createGameServer({ deck, silentNumbers, initialItemOrder, create
       return snapshot(room, player.id);
     }
     if (['undo_request', 'undo_respond', 'undo_cancel', 'undo_resume'].includes(input.type)) {
+      if (input.type === 'undo_resume' && input.expectedVersion !== undefined && input.expectedVersion !== room.version) {
+        fail(409, '页面进度已更新，请查看最新进度后重新操作。');
+      }
       let message;
       try {
         const onlineIds = room.players.filter(candidate => candidate.connections.size || polling.has(candidate.id)).map(candidate => candidate.id);
@@ -704,22 +726,55 @@ export function createGameServer({ deck, silentNumbers, initialItemOrder, create
         sendJson(response, 201, addPlayer(room, name));
         return;
       }
-      const match = /^\/api\/rooms\/([a-z0-9]{6})(?:\/(join|actions|events))?$/i.exec(pathname);
+      const match = /^\/api\/rooms\/([a-z0-9]{6})(?:\/(join|actions|events|recovery-code|recover))?$/i.exec(pathname);
       if (match) {
         const [, code, endpoint] = match;
-        const expectedMethod = endpoint === 'join' || endpoint === 'actions' ? 'POST' : 'GET';
+        const expectedMethod = !endpoint || endpoint === 'events' ? 'GET' : 'POST';
         if (request.method !== expectedMethod) fail(405, `此接口仅支持 ${expectedMethod}。`);
         if (endpoint === 'join') {
-          access?.require(request);
           const input = await readJson(request);
+          const application = input.application === undefined ? null : receiptDigest(input.application);
+          const existingRoom = rooms.get(code.toUpperCase());
+          const existing = findReceipt(existingRoom, 'joinReceipt', application);
+          if (existing) return sendJson(response, 200, seated(existingRoom, existing));
+          if (input.lookupOnly === true) fail(404, '这次入席尚未确认。');
           access?.require(request);
           const room = roomFor(code);
           if (room.undoPending) fail(409, '正在等待撤销确认，请稍后加入。');
           const name = nickname(input.name);
           if (room.selectingHako || room.draft) fail(409, '游戏已开始，无法加入新玩家。');
           if (room.players.length >= room.playerCount) fail(409, `房间已满，最多${room.playerCount === 5 ? '五' : '四'}名玩家。`);
-          sendJson(response, 201, addPlayer(copyRoom(room), name));
+          sendJson(response, 201, addPlayer(copyRoom(room), name, application));
           return;
+        }
+        if (endpoint === 'recovery-code' || endpoint === 'recover') {
+          const input = await readJson(request);
+          const room = rooms.get(code.toUpperCase());
+          if (!room) fail(404, '无法恢复这个座位，请核对房间码和恢复码。');
+          if (endpoint === 'recovery-code') {
+            const owner = authorize(room, input);
+            const next = copyRoom(room);
+            const player = next.players.find(seat => seat.id === owner.id);
+            const recoveryCode = randomBytes(16).toString('hex').toUpperCase();
+            player.recoveryDigest = digest(recoveryCode);
+            delete player.recoveryReceipt;
+            publish(next, undefined, true, false);
+            return sendJson(response, 200, { recoveryCode: recoveryCode.match(/.{4}/g).join('-') });
+          }
+          const application = receiptDigest(input.application);
+          const redeemed = findReceipt(room, 'recoveryReceipt', application);
+          if (redeemed) return sendJson(response, 200, seated(room, redeemed));
+          if (input.lookupOnly === true) fail(404, '这次恢复尚未确认。');
+          const raw = typeof input.recoveryCode === 'string' ? input.recoveryCode.replace(/[\s-]/g, '').toUpperCase() : '';
+          const matchCode = /^[0-9A-F]{32}$/.test(raw) && digest(raw);
+          const owner = matchCode && room.players.find(seat => !seat.isBot && seat.recoveryDigest && sameToken(matchCode, seat.recoveryDigest));
+          if (!owner) fail(403, '恢复码无效或已使用，请核对。');
+          const next = copyRoom(room);
+          const player = next.players.find(seat => seat.id === owner.id);
+          delete player.recoveryDigest;
+          player.recoveryReceipt = { digest: application, expiresAt: accessNow() + receiptLifetime };
+          publish(next, undefined, true, false);
+          return sendJson(response, 200, seated(next, player));
         }
         if (endpoint === 'actions') {
           const input = await readJson(request);

@@ -264,7 +264,7 @@ test('NO8 browser waits until next turn, restores a pending second reveal and ke
   await g.click(fp, 'silent_reveal', () => fp.getByTestId('silent-card-3').click());
   assert.equal((await g.snapshot(first)).round.silent.revealsRemaining, 1);
   assert.match(await fp.locator('#turn-description').innerText(), /继续翻开/);
-  for (const skip of await fp.locator('.silent-skip').all()) assert.equal(await skip.isDisabled(), true);
+  assert.equal(await fp.getByTestId('silent-hold-mode').isDisabled(), true);
   await g.restart();
   assert.equal((await g.snapshot(first)).round.silent.revealsRemaining, 1);
   assert.equal((await g.snapshot(first)).round.noiseEffects.maryPlayerId, first.playerId);

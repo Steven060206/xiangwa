@@ -188,7 +188,7 @@ test('Windows package includes the launchers and runtime but excludes photos, sa
     const command = `[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead($env:XIANGWA_TEST_ZIP); try { ConvertTo-Json -Compress -InputObject @($z.Entries | ForEach-Object { $_.FullName }) } finally { $z.Dispose() }`;
     const files = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-Command', command],
       { encoding: 'utf8', env: { ...process.env, XIANGWA_TEST_ZIP: output } }));
-    for (const name of ['一键启动.cmd', '一键版说明.txt', 'server.mjs', 'scripts/one-click.ps1', 'scripts/one-click.mjs', 'src/server.mjs', 'public/index.html', 'LICENSE', 'NOTICE.md']) {
+    for (const name of ['一键启动.cmd', '一键版说明.txt', 'server.mjs', 'scripts/one-click.ps1', 'scripts/one-click.mjs', 'src/server.mjs', 'public/index.html', 'public/seat-access.js', 'CHANGELOG.md', 'LICENSE', 'NOTICE.md']) {
       assert.ok(files.includes(`xiangwa-windows/${name}`), name);
     }
     for (const file of files) assert.doesNotMatch(file, /\/(data|references|tests|node_modules|test-results|private|config|\.git)\/|\/\.env$|\.(key|pem|log)$/i, file);

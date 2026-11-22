@@ -405,3 +405,126 @@ for (const delayed of ['action', 'identity check']) test(`a delayed ${delayed} f
   assert.deepEqual(await visitor.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), fresh);
   assert.equal(await visitor.getByTestId('room-code-display').textContent(), fresh.roomCode);
 });
+
+test('lost join and recovery responses keep one small application, restore the same seat and work across origins', { timeout: 90000 }, async t => {
+  const { base, page, admin, advance } = await fixture(t);
+  const invite = await admin({ action: 'create' });
+  const host = await page({ permissions: ['clipboard-read', 'clipboard-write'] });
+  await host.goto(base + '/?sync=poll&extra=omit');
+  await redeem(host, invite.code);
+  const identity = await enter(host, '房主');
+  await host.locator('#copy-invite').click();
+  await host.locator('#copy-status').waitFor();
+  assert.match(await host.locator('#copy-status').innerText(), /有效邀请码另发/);
+  const link = await host.evaluate(() => navigator.clipboard.readText());
+  assert.equal(link, base + '/?room=' + identity.roomCode + '&sync=poll');
+  const other = await page();
+  await other.goto(link);
+  assert.equal(await other.locator('#invite-destination').innerText(), '即将加入房间 ' + identity.roomCode);
+  await redeem(other, invite.code);
+  await other.getByTestId('nickname').fill('同桌');
+  const keys = new Set(), ids = new Set();
+  await other.route('**/join', async route => {
+    keys.add(route.request().postDataJSON().application);
+    const response = await route.fetch();
+    assert.equal(response.status(), ids.size ? 200 : 201);
+    ids.add((await response.json()).playerId);
+    await route.abort('connectionreset');
+  });
+  const pendingKey = 'hako.pending-seat.v1';
+  for (let i = 0; i < 10; i++) {
+    const failed = other.waitForEvent('requestfailed', { predicate: req => req.url().endsWith('/join') });
+    await other.getByTestId('join-room').click();
+    await failed;
+    await other.waitForFunction(() => !document.getElementById('join-room').disabled);
+    const raw = await other.evaluate(key => localStorage.getItem(key), pendingKey);
+    assert.ok(raw && Buffer.byteLength(raw) < 1024);
+    assert.deepEqual(Object.keys(JSON.parse(raw)).sort(), ['endpoint', 'expiresAt', 'key', 'roomCode']);
+  }
+  assert.equal(keys.size, 1);
+  assert.equal(ids.size, 1);
+  await other.unroute('**/join');
+  await other.reload();
+  await connected(other);
+  const original = await other.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey);
+  assert.equal(original.playerId, [...ids][0]);
+  assert.equal(await other.evaluate(key => localStorage.getItem(key), pendingKey), null);
+  await other.getByTestId('room-menu-toggle').click();
+  const issued = other.waitForResponse(res => res.url().endsWith('/recovery-code'));
+  await other.locator('#issue-seat-code').click();
+  const { recoveryCode } = await (await issued).json();
+  assert.match(await other.locator('#seat-code-result').innerText(), new RegExp(recoveryCode));
+  advance(31 * 60000);
+  const fresh = await page();
+  await fresh.goto(link.replace('127.0.0.1', 'localhost'));
+  await fresh.getByTestId('access-form').waitFor();
+  await fresh.locator('#seat-recovery summary').click();
+  assert.equal(await fresh.locator('#recover-room').inputValue(), identity.roomCode);
+  await fresh.locator('#recover-code').fill(recoveryCode);
+  await fresh.route('**/recover', async route => {
+    assert.equal((await route.fetch()).status(), 200);
+    await route.abort('connectionreset');
+  }, { times: 1 });
+  await fresh.locator('#recover-seat').click();
+  await fresh.locator('#error-banner').waitFor();
+  await fresh.reload();
+  await connected(fresh);
+  assert.deepEqual(await fresh.evaluate(key => JSON.parse(sessionStorage.getItem(key)), sessionKey), original);
+  assert.equal(await fresh.evaluate(key => localStorage.getItem(key), pendingKey), null);
+  assert.equal(await fresh.locator('#lobby-count').innerText(), '2 / 4 人入席');
+  await fresh.getByTestId('ready-button').click();
+  await fresh.waitForFunction(() => document.getElementById('ready-button').textContent === '取消准备');
+});
+
+test('five simultaneous ready clicks show each seat’s result and promote start only when everyone is ready', { timeout: 90000 }, async t => {
+  const { base, page } = await fixture(t, false);
+  const host = await page();
+  await host.goto(base);
+  await host.locator('#player-count').selectOption('5');
+  const { roomCode } = await enter(host, '房主');
+  const pages = [host];
+  for (let i = 1; i <= 4; i++) {
+    const next = await page();
+    await next.goto(base + '/?room=' + roomCode);
+    await enter(next, '同桌' + i, roomCode);
+    pages.push(next);
+  }
+  for (const p of pages) {
+    await connected(p);
+    await p.waitForFunction(() => document.getElementById('lobby-count').textContent === '5 / 5 人入席');
+    assert.doesNotMatch(await p.locator('#lobby-seats').innerText(), /访问者|箱娃/);
+    assert.equal(await p.locator('#lobby-seats li .seat-meta').filter({ hasText: /号座/ }).count(), 5);
+  }
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  const versions = [];
+  for (const p of pages) await p.route('**/actions', async route => {
+    versions.push(route.request().postDataJSON().expectedVersion);
+    if (versions.length === 5) release();
+    await barrier;
+    await route.continue();
+  }, { times: 1 });
+  const responses = await Promise.all(pages.map(async p => {
+    const response = p.waitForResponse(r => r.url().endsWith('/actions'));
+    await p.getByTestId('ready-button').click();
+    return (await response).status();
+  }));
+  assert.equal(new Set(versions).size, 1);
+  assert.deepEqual([...responses].sort(), [200, 409, 409, 409, 409]);
+  for (const [i, p] of pages.entries()) {
+    if (responses[i] === 200) continue;
+    await p.locator('#ready-feedback').waitFor();
+    assert.match(await p.locator('#ready-feedback').innerText(), /准备还没生效/);
+    const response = p.waitForResponse(r => r.url().endsWith('/actions'));
+    await p.getByTestId('ready-button').click();
+    assert.equal((await response).status(), 200);
+    await host.waitForFunction(n => [...document.querySelectorAll('#lobby-seats li .seat-name')].some(e =>
+      e.textContent === n && e.closest('li').innerText.includes('已准备')), i ? '同桌' + i : '房主');
+  }
+  await host.waitForFunction(() => document.getElementById('start-setup').classList.contains('primary'));
+  assert.equal(await host.getByTestId('ready-button').evaluate(b => b.classList.contains('secondary')), true);
+  await host.getByTestId('start-setup').click();
+  await host.getByTestId('claim-hako').waitFor();
+  assert.doesNotMatch(await host.locator('#lobby-seats').innerText(), /访问者|箱娃/);
+});

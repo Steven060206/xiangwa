@@ -6,6 +6,7 @@ const make = (tag, value, className) => {
   if (className) element.className = className;
   return element;
 };
+const conversation = entry => entry.kind === 'room' ? 'room:' + entry.roomId : entry.kind;
 const channelTitle = kind => kind === 'hako' ? '箱娃与箱人频道' : kind === 'walkie' ? '对讲机私聊' : '同房访问者频道';
 
 export function createChatUI(send) {
@@ -51,10 +52,10 @@ export function createChatUI(send) {
   status.setAttribute('role', 'status');
   form.append(scope, label, input, button, status);
   panel.append(header, channelLabel, channelSelect, list, form);
-  let current, previousChannel, identityKey, sending, messagesKey = '', viewingChat = false, initialized = false, selectedKind = '';
+  let current, previousChannel, identityKey, sending, messagesKey = '', viewingChat = false, initialized = false, selectedKey = '', choosing = false;
   let composing = false, compositionEndedAt = -Infinity;
   const seenIds = new Set();
-  const unreadIds = new Set();
+  const unreadIds = new Map();
   function updateUnread() {
     const badge = document.getElementById('chat-unread');
     if (badge) {
@@ -64,36 +65,37 @@ export function createChatUI(send) {
     const navigation = document.querySelector('#game-navigation [data-view="chat"]');
     navigation?.setAttribute('aria-label', unreadIds.size ? `消息，${unreadIds.size}条未读` : '消息');
   }
-  function markRead() {
-    unreadIds.clear();
-    updateUnread();
-  }
   function reset() {
     current = undefined;
     previousChannel = identityKey = sending = undefined;
-    messagesKey = selectedKind = '';
+    messagesKey = selectedKey = '';
+    choosing = false;
     composing = false;
     compositionEndedAt = -Infinity;
     initialized = viewingChat = false;
     seenIds.clear();
-    markRead();
+    unreadIds.clear();
+    updateUnread();
     input.value = status.textContent = '';
     list.replaceChildren();
     panel.hidden = true;
   }
   document.addEventListener('game-view-change', event => {
+    const entering = !viewingChat && event.detail?.view === 'chat';
     viewingChat = event.detail?.view === 'chat';
-    if (viewingChat) {
-      markRead();
+    if (entering) {
+      const keys = [...new Set(unreadIds.values())];
+      choosing = keys.length > 1;
+      if (keys.length === 1) selectedKey = keys[0];
+      paint();
       list.scrollTop = list.scrollHeight;
     }
   });
-  panel.addEventListener('focusin', markRead);
-  const selectedChannel = () => current?.channels.find(channel => channel.kind === selectedKind) || current?.channels[0];
+  const selectedChannel = () => !choosing && current?.channels.find(channel => conversation(channel) === selectedKey);
   const updateScope = () => {
     const channel = selectedChannel();
     const state = current.state;
-    const key = channel ? `${channel.kind}:${channel.roomId}:${channel.participantIds.join(',')}` : '';
+    const key = channel ? `${selectedKey}:${channel.participantIds.join(',')}` : `history:${selectedKey}`;
     if (previousChannel !== undefined && previousChannel !== key) {
       input.value = '';
       status.textContent = '频道已改变，请确认当前接收范围后发送。';
@@ -102,14 +104,15 @@ export function createChatUI(send) {
     const names = (channel?.participantIds || []).filter(id => id !== state.you)
       .map(id => state.players.find(player => player.id === id)?.name || '玩家');
     const room = getLogicalRooms().find(room => room.id === channel?.roomId);
-    heading.textContent = channelTitle(channel?.kind);
-    scope.textContent = !channel ? '当前没有可用的交流对象。'
+    heading.textContent = choosing ? '未读消息' : channelTitle(channel?.kind || selectedKey.split(':')[0]);
+    scope.textContent = !channel ? choosing ? '选择要阅读的频道。' : '仅供回看，当前无法向此频道发送。'
       : `${channel.kind === 'hako' ? '箱娃阵营' : channel.kind === 'walkie' ? '固定对讲机同伴 · 不公开聊天内容' : room?.name || '当前房间'} · ${names.length ? `接收者：${names.join('、')}` : '目前只有你'}。`;
     input.disabled = !current.online || !channel;
-    channelSelect.disabled = sending || !current.online;
+    channelSelect.disabled = Boolean(sending);
+    button.textContent = channel?.kind === 'walkie' ? '发给搭档' : channel?.kind === 'room' ? '发给同房玩家' : channel?.kind === 'hako' ? '发给箱娃阵营' : '发送';
     button.disabled = sending || !current.online || !channel;
   };
-  channelSelect.addEventListener('change', () => { selectedKind = channelSelect.value; updateScope(); });
+  channelSelect.addEventListener('change', () => { if (channelSelect.value) { choosing = false; selectedKey = channelSelect.value; paint(); } });
   input.addEventListener('compositionstart', () => { composing = true; });
   input.addEventListener('compositionend', () => { composing = false; compositionEndedAt = performance.now(); });
   input.addEventListener('keydown', event => {
@@ -141,53 +144,74 @@ export function createChatUI(send) {
       }
     }
   });
+  function paint() {
+    if (!current) return;
+    const { messages, channels, state } = current;
+    const options = new Map(channels.map(channel => [conversation(channel), channel]));
+    for (const message of messages) {
+      const key = conversation(message);
+      if (!options.has(key)) options.set(key, message);
+    }
+    if (!choosing && !options.has(selectedKey)) selectedKey = channels[0] ? conversation(channels[0]) : options.keys().next().value || '';
+    if (viewingChat && !choosing) {
+      for (const [id, key] of unreadIds) if (key === selectedKey) unreadIds.delete(id);
+    }
+    updateUnread();
+    const counts = new Map();
+    for (const key of unreadIds.values()) counts.set(key, (counts.get(key) || 0) + 1);
+    channelSelect.replaceChildren();
+    if (choosing) channelSelect.add(new Option('选择要阅读的未读频道', ''));
+    for (const [key, entry] of options) {
+      const live = channels.some(c => conversation(c) === key);
+      const roomName = entry.kind === 'room' && getLogicalRooms().find(r => r.id === entry.roomId)?.name;
+      const title = (roomName || channelTitle(entry.kind)) + (live ? '' : ' · 历史') + (counts.has(key) ? ` · ${counts.get(key)} 条未读` : '');
+      channelSelect.add(new Option(title, key));
+    }
+    channelSelect.value = choosing ? '' : selectedKey;
+    channelLabel.hidden = channelSelect.hidden = options.size < 2 && !choosing;
+    updateScope();
+    const shown = choosing ? [] : messages.filter(message => conversation(message) === selectedKey);
+    const key = JSON.stringify([choosing, selectedKey, shown]);
+    if (messagesKey === key) return;
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 36;
+    messagesKey = key;
+    list.replaceChildren(...shown.map(message => {
+      const entry = make('li');
+      entry.append(make('strong', state.players.find(p => p.id === message.senderId)?.name || '玩家'),
+        make('span', channelTitle(message.kind), 'chat-message-scope'), make('p', message.text));
+      return entry;
+    }));
+    if (!shown.length) list.append(make('li', choosing ? '请选择一个频道查看消息。' : '本频道暂无消息。', 'chat-empty'));
+    if (nearBottom) list.scrollTop = list.scrollHeight;
+  }
   return {
-    markRead,
     reset,
-    render(state, online) {
+    render(state, online, view) {
       if (!panel.isConnected) document.getElementById('messages-pane').append(panel);
       document.getElementById('chat-before-round').hidden = Boolean(state.round);
       const nextIdentity = `${state.code}:${state.you}`;
       if (identityKey !== nextIdentity) { reset(); identityKey = nextIdentity; }
       const chat = state.chat;
       const channels = chat?.channels || (chat?.channel ? [chat.channel] : []);
-      current = { chat, online, state, channels };
-      panel.hidden = !state.round;
-      if (!state.round) { markRead(); return; }
-      if (!channels.some(channel => channel.kind === selectedKind)) selectedKind = channels[0]?.kind || '';
-      channelSelect.replaceChildren(...channels.map(channel => {
-        const option = make('option', channelTitle(channel.kind));
-        option.value = channel.kind;
-        return option;
-      }));
-      channelSelect.value = selectedKind;
-      channelLabel.hidden = channelSelect.hidden = channels.length < 2;
-      updateScope();
       const messages = chat?.messages || [];
-      const messageIds = new Set(messages.map(message => message.id));
-      for (const id of unreadIds) if (!messageIds.has(id)) unreadIds.delete(id);
+      const previousLive = current?.channels.find(c => conversation(c) === selectedKey);
+      if (previousLive && !channels.some(c => conversation(c) === selectedKey)) {
+        const replacement = channels.find(c => c.kind === previousLive.kind) || channels[0];
+        if (replacement) selectedKey = conversation(replacement);
+      }
+      current = { online, state, channels, messages };
+      if (view !== 'chat') viewingChat = false;
+      panel.hidden = !state.round;
+      if (!state.round) { reset(); return; }
+      const nextIds = new Set(messages.map(message => message.id));
+      for (const id of unreadIds.keys()) if (!nextIds.has(id)) unreadIds.delete(id);
+      for (const id of seenIds) if (!nextIds.has(id)) seenIds.delete(id);
       for (const message of messages) {
-        if (initialized && !seenIds.has(message.id) && message.senderId !== state.you && !viewingChat) unreadIds.add(message.id);
+        if (initialized && !seenIds.has(message.id) && message.senderId !== state.you) unreadIds.set(message.id, conversation(message));
         seenIds.add(message.id);
       }
       initialized = true;
-      if (viewingChat) markRead();
-      else updateUnread();
-      const nextKey = JSON.stringify(messages);
-      if (messagesKey !== nextKey) {
-        messagesKey = nextKey;
-        const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 36;
-        list.replaceChildren(...messages.map(message => {
-          const entry = make('li');
-          const sender = state.players.find(player => player.id === message.senderId)?.name || '玩家';
-          const roomName = getLogicalRooms().find(room => room.id === message.roomId)?.name;
-          entry.append(make('strong', sender), make('span', message.kind === 'hako' ? '箱娃阵营' : message.kind === 'walkie' ? '对讲机私聊' : roomName || '同房', 'chat-message-scope'),
-            make('p', message.text));
-          return entry;
-        }));
-        if (!messages.length) list.append(make('li', '还没有收到消息。消息只会送达上方列出的接收者。', 'chat-empty'));
-        if (nearBottom) list.scrollTop = list.scrollHeight;
-      }
+      paint();
     },
   };
 }

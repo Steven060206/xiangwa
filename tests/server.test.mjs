@@ -1422,6 +1422,8 @@ test('offline auto-ending preserves the original save on failure and retries the
   await preparePlay(request, people);
   const live = await stream(t, saved.base, people[0]);
   await live.state();
+  const { roomCode, playerId, token } = people[0];
+  const { body: { recoveryCode } } = await request(`/api/rooms/${roomCode}/recovery-code`, { playerId, token });
   const bytes = await readFile(saved.dataFile, 'utf8');
   const original = (await snapshot(request, people[0])).body;
   const errors = [];
@@ -1439,6 +1441,11 @@ test('offline auto-ending preserves the original save on failure and retries the
   const ended = await waitForSnapshot(request, people[0], state => state.phase === 'lobby', 5000);
   assert.equal(ended.version, original.version + 1);
   assert.match(ended.endNotice, /自动结束/);
+  const restored = await request(`/api/rooms/${roomCode}/recover`, { recoveryCode, application: 'a'.repeat(64) });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.playerId, playerId);
+  assert.equal(restored.body.state.phase, 'lobby');
+  assert.equal(restored.body.state.version, ended.version);
 });
 
 test('polling presence keeps a game alive until its lease expires, then starts the offline grace period', { timeout: 22000 }, async t => {

@@ -2,6 +2,7 @@ import { openGamePane } from './game-navigation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
@@ -225,6 +226,12 @@ test('room chat treats markup as text, changes audience on movement and remains 
   await first.locator('#game-navigation [data-view="chat"]').click();
   assert.match(await first.getByTestId('chat-scope').innerText(), /书房.*访问者阿照/);
   assert.equal(await first.getByTestId('chat-text').inputValue(), '', 'A change of audience clears the unsent draft');
+  const chatChannels = first.getByTestId('chat-channel');
+  const activeRoom = await chatChannels.inputValue();
+  await chatChannels.selectOption({ index: 1 });
+  assert.match(await first.getByTestId('chat-scope').innerText(), /仅供回看/);
+  assert.equal(await first.getByTestId('chat-send').isDisabled(), true);
+  await chatChannels.selectOption(activeRoom);
   const studyText = '书房的新线索只告诉此时同房的人';
   await third.getByTestId('chat-text').fill(studyText);
   await click(third, 'chat_send', () => third.getByTestId('chat-send').click());
@@ -250,6 +257,7 @@ test('fixed walkie partners accept, privately chat and confirm selected-token ex
   const fixtureTokens = [];
   const { people, open, click, act, snapshot } = await session(t, { exploring: true,
     arrangePlay(play, setup) {
+      play.round.visitors[2].roomId = play.round.visitors[0].roomId;
       for (const [corner, token] of Object.entries(play.tokens)) {
         if (!['password', 'weapon'].includes(token?.type) || fixtureTokens.length >= 5) continue;
         const playerId = setup.visitorIds[fixtureTokens.length < 3 ? 1 : 0];
@@ -274,8 +282,33 @@ test('fixed walkie partners accept, privately chat and confirm selected-token ex
   await owner.getByTestId('chat-channel').selectOption('walkie');
   await owner.getByTestId('chat-text').fill('固定同伴的私密线索');
   await click(owner, 'chat_send', () => owner.getByTestId('chat-text').press('Enter'));
-  await partner.getByTestId('chat-messages').getByText('固定同伴的私密线索', { exact: true }).waitFor();
-  assert.doesNotMatch(await outsider.getByTestId('chat-messages').innerText(), /固定同伴的私密线索/);
+  const partnerMessages = partner.getByTestId('chat-messages');
+  assert.doesNotMatch(await partnerMessages.innerText(), /固定同伴的私密线索/);
+  await partner.waitForFunction(() => document.getElementById('chat-unread').textContent === '1');
+  await partner.getByTestId('chat-channel').selectOption('walkie');
+  await partnerMessages.getByText('固定同伴的私密线索', { exact: true }).waitFor();
+  assert.equal(await partner.getByTestId('chat-send').innerText(), '发给搭档');
+  await openGamePane(partner, 'action');
+  const room = (await snapshot(people[2])).chat.channel;
+  await act(people[3], 'chat_send', { channelKind: room.kind, roomId: room.roomId, text: '房间里的问候' });
+  await delay(810); // The same sender can send again after the normal chat interval.
+  await act(people[2], 'chat_send', { channelKind: 'walkie', text: '搭档的第二条' });
+  await partner.waitForFunction(() => document.getElementById('chat-unread').textContent === '2');
+  await openGamePane(partner, 'chat');
+  assert.equal(await partner.getByTestId('chat-channel').inputValue(), '');
+  assert.equal(await partner.getByTestId('chat-send').isDisabled(), true);
+  assert.equal(await partner.getByTestId('chat-channel').locator('option').filter({ hasText: '1 条未读' }).count(), 2);
+  await partner.getByTestId('chat-channel').selectOption('room:' + room.roomId);
+  assert.match(await partnerMessages.innerText(), /房间里的问候/);
+  assert.doesNotMatch(await partnerMessages.innerText(), /搭档的第二条/);
+  assert.equal(await partner.locator('#chat-unread').innerText(), '1');
+  await openGamePane(partner, 'action');
+  await openGamePane(partner, 'chat');
+  assert.equal(await partner.getByTestId('chat-channel').inputValue(), 'walkie');
+  assert.equal(await partner.locator('#chat-unread').isVisible(), false);
+  assert.doesNotMatch(await partnerMessages.innerText(), /房间里的问候/);
+  assert.match(await outsider.getByTestId('chat-messages').innerText(), /房间里的问候/);
+  assert.doesNotMatch(await outsider.getByTestId('chat-messages').innerText(), /固定同伴的私密线索|搭档的第二条/);
   assert.equal((await snapshot(people[0])).chat.messages.length, 0);
   await openGamePane(owner, 'inventory');
   await partner.locator('#game-navigation [data-view="action"]').click();

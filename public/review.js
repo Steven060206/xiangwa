@@ -175,22 +175,100 @@ function powersPanel(panel, state) {
   panel.append(list, element('h4', '', '牌库 · 从顶到底'), deck.children.length ? deck : element('p', 'small-note', '牌库已空。'));
 }
 
+function milestones(state) {
+  const { round } = state;
+  const events = [];
+  for (const [index, entry] of (round.publicDiscoveries || []).entries()) {
+    events.push({ cycle: entry.cycle, key: `discovery-${index}`, cornerId: entry.cornerId,
+      text: `${playerName(state, entry.playerId)}公开了${mapTokenName(entry.token)}` });
+  }
+  for (const [index, event] of (round.deathEvents || []).entries()) {
+    events.push({ cycle: event.cycle, key: `death-${index}`, cornerId: event.cornerId,
+      text: `${playerName(state, event.userId)}在此死亡` });
+  }
+  events.sort((a, b) => (a.cycle ?? Infinity) - (b.cycle ?? Infinity));
+  return events;
+}
+
+const cycleText = event => Number.isInteger(event.cycle) ? `第${event.cycle}轮` : '轮次未记录';
+const openingDeals = state => (state.initialItems || []).map(deal => `${playerName(state, deal.playerId)}领取${deal.itemName}`).join('、');
+
+export function publicReport(state) {
+  const round = state.round;
+  if (!round?.result || !round.review) return '';
+  const { result, review } = round;
+  const lines = ['《箱娃》本局公开复盘', `${result.winner === 'hako' ? '箱娃方' : '访问者方'}获胜 · ${result.reason}`];
+  if (result.winners?.length) lines.push('获胜玩家 · ' + result.winners.map(id => playerName(state, id)).join('、'));
+  lines.push(`总回合 ${round.totalRounds ?? 0}`, '', '关键记录', `开局 · ${openingDeals(state) || '无发牌记录'}`);
+  for (const entry of milestones(state)) {
+    lines.push(`${cycleText(entry)} · ${entry.text}${entry.cornerId ? ' · ' + cornerName(entry.cornerId) : ''}`);
+  }
+  if (round.notebooks?.length) lines.push('公开手记 · ' + tokenNames(round.notebooks).join('、'));
+  lines.push('结局 · ' + result.reason, '', '终局盘面');
+  const rooms = getLogicalRooms();
+  for (const [floor, floorName] of floors) {
+    const placed = (state.setup?.placements || []).filter(tile => tile.floor === floor);
+    if (!placed.length) continue;
+    lines.push(floorName);
+    const roomIds = new Set(rooms.filter(room => placed.some(tile => tile.tileId === room.tileId)).map(room => room.id));
+    for (const corner of review.corners) {
+      if (!roomIds.has(getLogicalRoomId(corner.roomId))) continue;
+      const contents = (corner.actors || []).map(actor => `${playerName(state, actor.playerId)}（${actor.type === 'hako' ? '箱娃' : '箱人'}）`);
+      if (!contents.length) contents.push(mapTokenName(corner.token));
+      if (corner.underToken) contents.push('暂存 ' + mapTokenName(corner.underToken));
+      lines.push(`  ${cornerName(corner.id)} · ${contents.join('、')}`);
+    }
+  }
+  lines.push('', '玩家物品');
+  for (const player of [...state.players].sort((a, b) => a.seat - b.seat)) {
+    const inventory = review.inventories.find(entry => entry.playerId === player.id);
+    const possessions = [...itemNames(inventory?.items), ...tokenNames(inventory?.tokens)];
+    const visitor = round.visitors.find(seat => seat.id === player.id);
+    const room = rooms.find(room => room.id === visitor?.roomId);
+    lines.push(`${player.seat + 1}号 ${player.name}${room ? '（' + room.name + '）' : ''} · ${possessions.join('、') || '无随身物品'}`);
+    for (const entry of review.storedTokens || []) if (entry.playerId === player.id && entry.tokens.length) {
+      lines.push(`  ${cornerName(entry.cornerId)}暂存 · ${tokenNames(entry.tokens).join('、')}`);
+    }
+  }
+  const { powers, opening } = review;
+  const cards = group => (group || []).map(cardName).join('、') || '无';
+  lines.push('', '箱娃能力', `手牌 · ${cards(powers.hand)}`);
+  for (const [index, slot] of powers.slots.entries()) lines.push(`${index ? '右' : '左'}栏 · ${slot ? cardName(slot.card || slot) : '空栏'}`);
+  lines.push('牌库（从顶到底） · ' + cards(powers.deck), '已使用 · ' + cards(powers.used), '已移出 · ' + cards(powers.removed));
+  if (powers.stolen?.piece) lines.push('抢来的物品 · ' + (powers.stolen.kind === 'item' ? powers.stolen.piece.name : mapTokenName(powers.stolen.piece)));
+  if (opening?.initialPower) lines.push('初始能力 · ' + cardName(opening.initialPower));
+  if (opening?.password) lines.push('保险箱密码 · ' + opening.password.join('、'));
+  if (opening?.safeBoard) lines.push('保险箱内 · ' + (opening.safeBoard.key ? mapTokenName(opening.safeBoard.key) : '钥匙已被取出'));
+  if (opening?.weakness) lines.push('箱娃弱点 · ' + mapTokenName({ type: 'weapon', tool: opening.weakness }));
+  lines.push('', '最近 64 条房间行动', ...(state.log || []).slice(-64).filter(entry => typeof entry === 'string'));
+  return lines.join('\n');
+}
+
+export function downloadReport(text) {
+  if (!text) return;
+  const url = URL.createObjectURL(new Blob(['\uFEFF', text], { type: 'text/plain;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = '箱娃-本局公开复盘.txt';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function logPanel(panel, state) {
   const locations = element('ul', 'review-location-log');
-  const addLocation = (record, cornerId, index) => {
+  locations.append(element('li', '', '开局 · ' + (openingDeals(state) || '无发牌记录')));
+  for (const entry of milestones(state)) {
+    const record = cycleText(entry) + ' · ' + entry.text;
     const row = element('li', '', record);
-    row.append(mapLink(cornerName(cornerId), `review-location-${index}`, 'review-log-target',
-      { cornerId }, '返回行动记录', record));
+    if (entry.cornerId) row.append(mapLink(cornerName(entry.cornerId), 'review-location-' + entry.key, 'review-log-target',
+      { cornerId: entry.cornerId }, '返回行动记录', record));
     locations.append(row);
-  };
-  for (const [index, entry] of (state.round.publicDiscoveries || []).entries()) {
-    if (entry.cornerId) addLocation(`第${entry.cycle}轮 · ${playerName(state, entry.playerId)}公开了${mapTokenName(entry.token)}`,
-      entry.cornerId, `discovery-${index}`);
   }
-  for (const [index, death] of (state.round.deathEvents || []).entries()) {
-    addLocation(`第${death.cycle}轮 · ${playerName(state, death.userId)}在此死亡`, death.cornerId, `death-${index}`);
-  }
-  if (locations.children.length) panel.append(element('h4', '', '有位置的记录'), locations);
+  if (state.round.notebooks?.length) locations.append(element('li', '', '公开手记 · ' + tokenNames(state.round.notebooks).join('、')));
+  locations.append(element('li', '', '结局 · ' + state.round.result.reason));
+  panel.append(element('h4', '', '按回合的关键记录'), locations);
   const entries = element('ol', 'review-log-list');
   for (const [index, entry] of (state.log || []).entries()) {
     const record = typeof entry === 'string' ? entry : entry.message || entry.text || '房间状态已更新';
@@ -199,7 +277,7 @@ function logPanel(panel, state) {
       'review-log-target', entry.cornerId ? { cornerId: entry.cornerId } : { roomId: entry.roomId }, '返回行动记录', record));
     entries.append(row);
   }
-  if (locations.children.length) panel.append(element('h4', '', '房间行动记录'));
+  panel.append(element('h4', '', '最近 64 条房间行动'));
   panel.append(entries.children.length ? entries : element('p', 'small-note', '暂无可回看的行动记录。'));
 }
 
@@ -215,6 +293,12 @@ export function gameReview(container, state) {
   section.id = 'game-review';
   const heading = element('h3', '', '本局复盘');
   heading.append(element('small', '', '全员可见'));
+  const save = element('button', 'text-button', '保存本局公开复盘');
+  save.type = 'button';
+  save.dataset.testid = 'save-review';
+  save.dataset.localControl = 'true';
+  save.onclick = () => downloadReport(publicReport(state));
+  heading.append(' ', save);
   heading.id = 'review-heading';
   section.setAttribute('aria-labelledby', heading.id);
   const nav = element('div', 'review-tabs');

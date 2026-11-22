@@ -6,7 +6,9 @@ import { createTileSvg, cornerNumber, cornerName, cornerRoomId, mapTokenName, ma
 import { renderGamePanels, roundDescription, roundSeatStatus, preparationDescription } from './practice.js';
 import { freeActionWindow } from './exploration.js';
 import { captureView, restoreView, stepKey, resetDrafts } from './view-state.js';
+import { publicReport, downloadReport } from './review.js';
 import { createHelpUI } from './help.js';
+import { beginApplication, discardApplication, pendingApplication } from './seat-access.js';
 
 const $ = id => document.getElementById(id);
 const feedback = createFeedbackUI();
@@ -57,7 +59,10 @@ let actionMessage = '';
 let actionTone = 'info';
 let submittedStep = '';
 let pendingLabel = '';
-let uncertainAction = false;
+let uncertainAction = null;
+let readyFeedback = null;
+let accessRequired;
+let lastReview = '';
 let entryMode = 'create';
 let hadConnection = false;
 
@@ -81,6 +86,21 @@ function renderActionFeedback() {
   panel.hidden = !actionMessage && !pendingLabel;
   panel.dataset.tone = actionTone;
   panel.textContent = pendingLabel || actionMessage;
+  if (uncertainAction) {
+    const entry = uncertainAction;
+    if (entry.checked) panel.textContent = '当前仍是提交前的进度，可以重新核对或重试相同选择。';
+    const check = node('button', 'text-button', '重新核对');
+    check.type = 'button';
+    check.disabled = entry.checking;
+    check.onclick = () => checkAction(entry);
+    panel.append(' ', check);
+    if (entry.checked && online && !entry.checking) {
+      const repeat = node('button', 'text-button', '重试刚才的选择');
+      repeat.type = 'button';
+      repeat.onclick = () => action(entry.request.type, {}, entry);
+      panel.append(' ', repeat);
+    }
+  }
 }
 
 function setConnection(connected) {
@@ -142,6 +162,7 @@ async function checkEntryAccess() {
   $('entry-retry').hidden = true;
   try {
     const access = await api('/api/access');
+    accessRequired = access.required;
     showEntryPanel(access.required && !access.authorized ? 'access-form' : 'entry-form');
   } catch (error) {
     showEntryRetry(`${error.message} 请重试。`, checkEntryAccess);
@@ -214,6 +235,11 @@ function disconnect() {
 }
 
 async function returnToEntry(message = '') {
+  lastReview = '';
+  $('game-review')?.remove();
+  readyFeedback = null;
+  $('seat-code-result').textContent = '';
+  $('seat-code-result').hidden = true;
   help.clear();
   resetDrafts();
   feedback.clear();
@@ -230,7 +256,7 @@ async function returnToEntry(message = '') {
   renderedStep = '';
   actionMessage = '';
   pendingLabel = '';
-  uncertainAction = false;
+  uncertainAction = null;
   hadConnection = false;
   disconnect();
   state = null;
@@ -341,13 +367,15 @@ function receiveState(next) {
     mapContext?.hidePopover();
     selectedMapCorner = selectedMapRoom = '';
   }
-  if (uncertainAction) {
-    uncertainAction = false;
+  if (uncertainAction && next.version > uncertainAction.request.expectedVersion) {
+    uncertainAction = null;
     actionMessage = '已取得最新进度，请检查当前任务和物品后继续。';
     actionTone = 'info';
   }
+  if (next.phase !== 'lobby') readyFeedback = null;
   if (state && state.phase !== 'lobby' && next.phase === 'lobby') {
     feedback.clear();
+    $('game-review')?.remove();
     activeFloor = 1;
     selectedMapCorner = '';
     selectedMapRoom = '';
@@ -363,6 +391,11 @@ function receiveState(next) {
       next.setup.preview = state.setup.preview;
     }
   }
+  if (state && (state.code !== next.code || state.you !== next.you)) lastReview = '';
+  if (next.round?.result && (!state?.round?.result || next.version !== state.version || !lastReview)) lastReview = publicReport(next);
+  else if (!next.round?.result && (next.phase !== 'lobby' || state?.round?.result &&
+    state.players.every(oldSeat => next.players.some(seat => seat.id === oldSeat.id)))) lastReview = '';
+  $('save-last-review').hidden = next.phase !== 'lobby' || !lastReview;
   const enteredRound = !state?.round && next.round;
   const changedStep = state && stepKey(state) !== stepKey(next);
   const gameEnded = !state?.round?.result && next.round?.result;
@@ -409,23 +442,19 @@ async function enterRoom(join) {
   const name = $('nickname').value.trim();
   if (!name) { showError('请先填写昵称。'); $('nickname').focus(); return; }
   const code = $('room-code').value.trim().toUpperCase();
-  if (join && !code) { showError('请填写朋友发来的房间码。'); $('room-code').focus(); return; }
+  if (join && !/^[A-Z2-9]{6}$/.test(code)) { showError('请填写朋友发来的六位房间码。'); $('room-code').focus(); return; }
   const existing = join && storedSession(code);
   if (existing) { await resume(existing); return; }
+  const application = join ? beginApplication(code, 'join') : null;
   pending = true;
   $('create-room').disabled = true;
   $('join-room').disabled = true;
   $('error-banner').hidden = true;
   try {
     const result = await api(join ? `/api/rooms/${encodeURIComponent(code)}/join` : '/api/rooms', {
-      name, ...(!join ? { playerCount: Number($('player-count').value) } : {}),
-    });
-    saveSession({ roomCode: result.roomCode, playerId: result.playerId, token: result.token });
-    receiveState(result.state);
-    const url = new URL(location.href);
-    url.searchParams.set('room', result.roomCode);
-    history.replaceState(null, '', url);
-    connect();
+      name, ...(application ? { application: application.key } : { playerCount: Number($('player-count').value) }),
+    }, AbortSignal.timeout(10000));
+    acceptSeat(result, application);
   } catch (error) {
     if (error.status === 401) showEntryPanel('access-form');
     showError(error);
@@ -438,43 +467,115 @@ async function enterRoom(join) {
   }
 }
 
-async function action(type, payload = {}) {
-  if (pending || !online || !identity || uncertainAction) return;
+function acceptSeat(result, application) {
+  saveSession({ roomCode: result.roomCode, playerId: result.playerId, token: result.token });
+  discardApplication(application);
+  receiveState(result.state);
+  const url = new URL(location.href);
+  url.searchParams.set('room', result.roomCode);
+  history.replaceState(null, '', url);
+  connect();
+}
+
+async function recoverSeat(event) {
+  event.preventDefault();
+  if (pending) return;
+  const room = $('recover-room').value.trim().toUpperCase();
+  if (!/^[A-Z2-9]{6}$/.test(room)) return showError('请填写六位房间码。');
+  const application = beginApplication(room, 'recover');
+  pending = true;
+  $('recover-seat').disabled = true;
+  try {
+    const result = await api(`/api/rooms/${room}/recover`, {
+      application: application.key, recoveryCode: $('recover-code').value.trim(),
+    }, AbortSignal.timeout(10000));
+    $('recover-code').value = '';
+    $('seat-recovery').open = false;
+    acceptSeat(result, application);
+  } catch (error) { showError(error); }
+  finally { pending = false; $('recover-seat').disabled = false; if (state) render(); }
+}
+
+$('save-last-review').onclick = () => downloadReport(lastReview);
+$('recover-seat-form').addEventListener('submit', recoverSeat);
+$('issue-seat-code').addEventListener('click', async () => {
   const session = identity;
-  const request = structuredClone({ playerId: session.playerId, token: session.token,
+  if (!session || !online) return;
+  const button = $('issue-seat-code');
+  const result = $('seat-code-result');
+  button.disabled = true;
+  result.hidden = false;
+  result.textContent = '正在领取…';
+  try {
+    const value = await api(`/api/rooms/${session.roomCode}/recovery-code`, {
+      playerId: session.playerId, token: session.token,
+    }, AbortSignal.timeout(10000));
+    if (identity === session) result.textContent = `房间 ${session.roomCode} · 恢复码 ${value.recoveryCode}。请私下保存；重新领取会替换前码。`;
+  } catch (error) { if (identity === session) result.textContent = error.message; }
+  finally { button.disabled = false; }
+});
+
+async function checkAction(entry) {
+  if (identity !== entry.session || uncertainAction !== entry || entry.checking) return;
+  entry.checking = true;
+  renderActionFeedback();
+  try {
+    const latest = await api(`/api/rooms/${entry.session.roomCode}?${sessionQuery()}`, undefined, AbortSignal.timeout(10000));
+    if (identity !== entry.session || uncertainAction !== entry) return;
+    entry.checked = true;
+    // The stream may already have delivered a newer snapshot while this GET was in flight.
+    receiveState(state && state.version > latest.version ? state : latest);
+    setConnection(true);
+  } catch (error) {
+    if (identity !== entry.session || uncertainAction !== entry) return;
+    if (error.status === 403 || error.status === 404) {
+      await returnToEntry(entry.request.type === 'leave' ? '' : '当前座位已失效，请重新加入房间。');
+    } else if (uncertainAction === entry) setConnection(false);
+  } finally {
+    entry.checking = false;
+    if (uncertainAction === entry) renderActionFeedback();
+  }
+}
+
+async function action(type, payload = {}, retry = null) {
+  if (pending || !online || !identity || uncertainAction && retry !== uncertainAction) return;
+  const session = identity;
+  const request = retry?.request || structuredClone({ playerId: session.playerId, token: session.token,
     type, ...payload, expectedVersion: state.version });
+  if (retry && (session !== retry.session || request.expectedVersion !== state.version)) return;
   $('room-menu').hidePopover();
   if (type === 'leave') leavingIdentity = session;
   pending = true;
   submittedStep = stepKey(state);
-  pendingLabel = `${document.activeElement?.textContent?.trim().slice(0, 35) || '操作'}：正在提交…`;
+  pendingLabel = '正在提交…';
   actionMessage = '';
-  uncertainAction = false;
+  readyFeedback = null;
+  uncertainAction = null;
   $('error-banner').hidden = true;
   render();
   try {
-    const next = await api(`/api/rooms/${session.roomCode}/actions`, request);
+    const next = await api(`/api/rooms/${session.roomCode}/actions`, request, AbortSignal.timeout(10000));
     if (identity !== session) return;
     if (type === 'leave') await returnToEntry();
     else receiveState(next.state || next);
   } catch (error) {
     if (identity !== session) return;
     if ((type === 'leave' || error.status === 403 || error.status === 404) && await verifyIdentity(session)) return;
-    if (identity === session && error.network) {
-      uncertainAction = true;
-      actionMessage = '正在确认最新进度，请勿重复提交刚才的操作。';
+    if (identity !== session) return;
+    if (error.network) {
+      const entry = { request, session, checked: false, checking: false };
+      uncertainAction = entry;
+      pendingLabel = '';
+      actionMessage = '正在核对刚才的操作，请勿重复提交。';
       actionTone = 'attention';
-      setConnection(false);
+      await checkAction(entry);
+    } else if (type === 'ready' && error.status === 409 && error.message.includes('进度已更新')) {
+      readyFeedback = { desired: request.ready };
       try {
-        const latest = await api(`/api/rooms/${session.roomCode}?${sessionQuery()}`);
-        if (identity === session) {
-          receiveState(latest.state || latest);
-          uncertainAction = false;
-          actionMessage = '已取得最新进度，请检查当前任务和物品后继续。';
-          setConnection(true);
-        }
-      } catch { /* The normal stream/poll recovery will retrieve the latest state. */ }
-    } else if (identity === session) showError(error);
+        const latest = await api(`/api/rooms/${session.roomCode}?${sessionQuery()}`, undefined, AbortSignal.timeout(10000));
+        if (identity === session) receiveState(latest);
+      } catch { if (identity === session) showError('正在等待房间同步，请核对自己的准备状态。'); }
+    } else showError(error);
   } finally {
     if (leavingIdentity === session) leavingIdentity = null;
     if (identity === session) { pending = false; pendingLabel = ''; submittedStep = ''; if (state) render(); }
@@ -494,7 +595,7 @@ function renderSeats(container, compact = false) {
     const roundActive = state.round && !state.round.result && (state.round.silent?.turnPlayerId === player?.id && !isGhost && !isBanished || ['initial_hiding', 'visitor_reaction', 'hako_reaction', 'hako_phase'].includes(state.round.phase) && state.round.hako.playerId === player?.id && !state.round.hako.finished || state.round.phase === 'hako_phase' && player?.id === state.you && isGhost && !state.round.ghost?.finished);
     const active = player && (state.round ? roundActive : state.draft ? state.draft.turnPlayerId === player.id : state.opening ? state.opening.hakoId === player.id : state.setup?.turnPlayerId === player.id);
     const item = node('li', `seat${!player ? ' empty' : player.role === 'hako' || isGhost ? ' hako' : ''}${isBanished ? ' banished' : ''}${active ? ' active' : ''}`);
-    const mark = node('span', 'seat-mark', compact ? String(seat + 1) : !player ? '候' : player.role === 'hako' || isGhost ? '箱' : isBanished ? '离' : '访');
+    const mark = node('span', 'seat-mark', String(seat + 1));
     mark.setAttribute('aria-hidden', 'true');
     if (compact) item.classList.add(`seat-color-${seat}`);
     item.append(mark);
@@ -502,7 +603,7 @@ function renderSeats(container, compact = false) {
     info.append(node('span', 'seat-name', player ? player.name : '静候来客'));
     const meta = node('div', 'seat-meta');
     if (player) {
-      meta.append(node('span', '', player.role === 'hako' ? '箱娃' : isGhost ? '箱人' : isBanished ? '已被消灭' : '访问者'));
+      meta.append(node('span', '', !compact ? `${seat + 1} 号座` : player.role === 'hako' ? '箱娃' : isGhost ? '箱人' : isBanished ? '已被消灭' : '访问者'));
       if (player.isBot) {
         const label = node('span', 'bot-tag', '人机');
         label.dataset.testid = 'bot-label';
@@ -532,7 +633,7 @@ function renderSeats(container, compact = false) {
         remove.dataset.testid = player.isBot ? 'remove-bot-player' : 'remove-offline-player';
         remove.dataset.playerId = player.id;
         remove.setAttribute('aria-label', `移除${player.isBot ? '人机' : '暂离玩家'} ${player.name}`);
-        remove.disabled = pending || !online;
+        remove.disabled = pending || !!uncertainAction || !online;
         remove.addEventListener('click', () => action('remove_player', { targetId: player.id }));
         item.append(remove);
       }
@@ -550,7 +651,7 @@ function renderLobby() {
   const selecting = state.phase === 'hako_selection';
   const host = state.hostId === state.you;
   const hasBots = state.players.some(player => player.isBot);
-  const locked = pending || !online;
+  const locked = pending || !!uncertainAction || !online;
   renderSeats($('lobby-seats'));
   $('lobby-title').textContent = selecting ? '谁来扮演箱娃？' : '人齐，便可进宅。';
   $('game-end-notice').textContent = state.endNotice || '';
@@ -563,6 +664,14 @@ function renderLobby() {
   $('ready-button').hidden = selecting;
   $('start-setup').hidden = !host || selecting;
   $('start-setup').disabled = locked || state.players.length !== playerCount || !state.players.every(p => p.ready && p.connected);
+  const startPrimary = !selecting && host && !$('start-setup').disabled;
+  $('start-setup').className = 'button ' + (startPrimary ? 'primary' : 'secondary');
+  $('ready-button').className = 'button ' + (you?.ready ? 'secondary' : 'primary');
+  const notice = $('ready-feedback');
+  notice.hidden = !readyFeedback || selecting;
+  if (!notice.hidden) notice.textContent = readyFeedback.desired === you?.ready
+    ? (you.ready ? '你已准备。' : '你已取消准备。')
+    : (readyFeedback.desired ? '你的准备还没生效，请再点一次。' : '你的取消准备还没生效，请再点一次。');
   $('add-bots').hidden = !host || selecting || state.players.length === playerCount;
   $('add-bots').disabled = locked || !host || selecting || state.players.length === playerCount;
   $('start-hint').hidden = selecting;
@@ -577,7 +686,7 @@ function renderLobby() {
 }
 
 function canPlace() {
-  return online && !pending && !state.undo?.pending && state.phase === 'map_setup' && state.setup.turnPlayerId === state.you;
+  return online && !pending && !uncertainAction && !state.undo?.pending && state.phase === 'map_setup' && state.setup.turnPlayerId === state.you;
 }
 
 function queueMapPreview() {
@@ -639,7 +748,13 @@ function renderCornerGuide(placements, extraCorners) {
     toggle.type = 'button';
     toggle.setAttribute('aria-controls', 'corner-guide-body');
     toggle.addEventListener('click', () => { guideExpanded = !guideExpanded; updateCornerGuide(); });
-    heading.append(toggle);
+    heading.textContent = '角落位置对照';
+    document.querySelector('.map-toolbar-actions').append(toggle);
+    const close = node('button', 'text-button', '收起');
+    close.type = 'button';
+    close.dataset.uiControl = '';
+    close.onclick = () => { guideExpanded = false; updateCornerGuide(); toggle.focus(); };
+    heading.append(' ', close);
     const body = node('div');
     body.id = 'corner-guide-body';
     const list = node('div', 'corner-guide-rooms');
@@ -648,7 +763,7 @@ function renderCornerGuide(placements, extraCorners) {
     guide.append(heading, body);
     $('board-section').append(guide);
   }
-  guide.hidden = !placements.length;
+  $('corner-guide-toggle').hidden = !placements.length;
   updateCornerGuide();
   const fragment = document.createDocumentFragment();
   for (const placement of placements) {
@@ -686,6 +801,7 @@ function renderCornerGuide(placements, extraCorners) {
 
 function updateCornerGuide() {
   if (!$('corner-guide')) return;
+  $('corner-guide').hidden = !guideExpanded || $('corner-guide-toggle').hidden;
   $('corner-guide').classList.toggle('expanded', guideExpanded);
   $('corner-guide-toggle').textContent = `${guideExpanded ? '收起' : '展开'}角落位置对照`;
   $('corner-guide-toggle').setAttribute('aria-expanded', String(guideExpanded));
@@ -908,7 +1024,7 @@ function renderMapContext(open = false) {
     fragment.append(node('p', 'small-note', `${state.players.find(player => player.id === death.userId)?.name || '玩家'}死亡于此，已转为箱人。这是死亡时位置，后续潜伏仍保密。`));
   }
   const controls = node('div', 'map-context-actions');
-  const locked = pending || !online || Boolean(state.undo?.pending || round?.result);
+  const locked = pending || !!uncertainAction || !online || Boolean(state.undo?.pending || round?.result);
   const find = testid => document.querySelector(`[data-testid="${testid}"]`);
   const options = [];
   const add = (label, testid, selections = {}, extras = []) => {
@@ -955,7 +1071,7 @@ function renderMapContext(open = false) {
     confirm.dataset.testid = 'map-confirm-action';
     confirm.disabled = locked || option.target.disabled;
     confirm.addEventListener('click', () => {
-      if (pending || !online || state.undo?.pending || state.round?.result) return;
+      if (pending || uncertainAction || !online || state.undo?.pending || state.round?.result) return;
       for (const [id, value] of Object.entries(option.selections)) {
         const select = $(id);
         if (!select || ![...select.options].some(option => option.value === value)) return;
@@ -1192,7 +1308,7 @@ function renderSetup() {
   $('drawn-title').closest('.turn-panel').hidden = complete;
   $('map-complete').hidden = !complete || Boolean(round || state.opening);
   $('prepare-opening').hidden = state.hostId !== state.you;
-  $('prepare-opening').disabled = pending || !online;
+  $('prepare-opening').disabled = pending || !!uncertainAction || !online;
   $('opening-start-hint').textContent = state.hostId === state.you ? '准备好后，配置角落标志并由箱娃选择开局秘密。' : '等待房主开始开局配置。';
   $('board-help').textContent = round ? round.result ? '本局结束 · 可查看完整盘面复盘' : '圆标为玩家座位号 · 潜伏位置仅箱娃方可见' : state.opening ? '访问者在正门待入场 · 标志保持盖放' : complete ? '访问者在正门等待入场' : mine && drawn ? '虚线位置可摆放 · 点击切换预览' : '在地图区域内滚动查看';
   renderMapFloor();
@@ -1217,12 +1333,12 @@ function currentTask() {
   const round = state.round;
   const name = id => id === state.you ? '你' : state.players.find(player => player.id === id)?.name || '玩家';
   const task = (title, description, actor, target) => ({ title, description, actor, target, mine: actor === state.you });
+  if (!online) return task('正在恢复连接', '连接恢复后即可继续，你的座位与游戏进度已保留。', null, null);
   if (state.undo?.pending) {
     const request = state.undo.pending;
     const mine = request.requiredIds.includes(state.you) && !request.approvedIds.includes(state.you);
     return { ...task(mine ? '请决定是否撤销' : '等待撤销决定', '当前进度已暂停。查看撤销请求，再继续游戏。', mine ? state.you : request.requestedBy, '#undo-panel'), mine };
   }
-  if (!online) return task('正在恢复连接', '连接恢复后即可继续；你的座位与游戏进度已保留。', null, null);
   if (round) {
     const description = roundDescription(state);
     if (round.result) return task('今夜已有结局', description, null, '.game-result');
@@ -1272,7 +1388,11 @@ function currentTask() {
 function renderGameStatus() {
   const task = currentTask();
   const round = state.round;
-  $('setup-title').textContent = task.title;
+  const waitingFor = state.players.find(player => player.id === task.actor && !player.connected && !player.isBot);
+  const offlineTask = online && !task.mine && !state.undo?.pending && !round?.result && waitingFor;
+  $('setup-title').textContent = offlineTask
+    ? `等待 ${waitingFor.seat + 1} 号（${waitingFor.name}）重新连接，回来后${round?.phase === 'visitor_reveal' && round.silent.turnPlayerId === waitingFor.id ? '由他翻牌' : '继续当前步骤'}`
+    : task.title;
   $('turn-description').textContent = task.description;
   $('turn-description').hidden = !task.mine || !task.description || Boolean(round?.result);
   const visitorTurn = round && ['visitor_action', 'visitor_reveal'].includes(round.phase) ? round.silent?.turnPlayerId : null;
@@ -1284,7 +1404,8 @@ function renderGameStatus() {
   $('noise-count').hidden = !round?.silent || Boolean(round.result);
   if (round?.silent) $('noise-count').textContent = `无声累计 ${round.silent.total} / 10`;
   $('game-status').classList.toggle('needs-attention', Boolean(task.mine && online));
-  $('focus-current-action').hidden = !task.target || currentView === 'action';
+  $('focus-current-action').hidden = !task.target || (currentView === 'action' && !task.mine && !round?.result);
+  $('focus-current-action').classList.toggle('keyboard-shortcut', currentView === 'action');
   $('focus-current-action').textContent = round?.result ? '查看复盘' : task.mine ? '前往处理' : '返回对局';
   $('seats-toggle').textContent = `座次 · ${state.playerCount || 4}`;
   const you = state.players.find(player => player.id === state.you);
@@ -1331,16 +1452,22 @@ function showPane() {
   if (!map) $('map-focus').textContent = '专看地图';
 }
 
-function focusGameSection(selector) {
+function focusGameSection(selector, firstControl = false) {
   const target = [...document.querySelectorAll(selector)].find(element => !element.closest('[hidden]'));
   if (!target) return;
   for (let parent = target.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
-  target.tabIndex = -1;
-  target.focus({ preventScroll: true });
+  let destination = target;
+  const controls = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)';
+  if (firstControl && !target.matches(controls)) {
+    const buttons = [...target.querySelectorAll(controls)].filter(el => el.getClientRects().length);
+    destination = buttons.find(el => el.classList.contains('silent-card-face')) || buttons[0] || target;
+  }
+  if (!destination.matches(controls)) destination.tabIndex = -1;
+  destination.focus({ preventScroll: true });
   target.scrollIntoView({ block: 'start', inline: 'nearest' });
 }
 
-function navigateGame(view, target) {
+function navigateGame(view, target, firstControl = false) {
   if (!state || !(Object.hasOwn(paneIds, view) || ['map', 'review'].includes(view))) return;
   if (view !== 'map') leaveMapVisit();
   const sidebar = document.querySelector('.setup-sidebar');
@@ -1353,7 +1480,7 @@ function navigateGame(view, target) {
   document.dispatchEvent(new CustomEvent('game-view-change', { detail: { view: currentView } }));
   if (currentView === 'map') return;
   if (view === 'review') target ||= '.game-result';
-  if (target) focusGameSection(target);
+  if (target) focusGameSection(target, firstControl);
   else sidebar.scrollTop = viewScroll.get(currentView) || 0;
 }
 
@@ -1390,14 +1517,14 @@ function render() {
     renderLobby();
   }
   else {
-    renderGamePanels({ state, pending, online, action });
+    renderGamePanels({ state, pending: pending || !!uncertainAction, online, action });
     renderSetup();
     renderSeats($('setup-seats'), true);
     $('activity-log').replaceChildren(...state.log.slice(-8).map(message => node('li', '', typeof message === 'string' ? message : message.message || message.text || '房间状态已更新')));
   }
-  renderUndo({ state, pending, online, action });
+  renderUndo({ state, pending: pending || !!uncertainAction, online, action });
   if (!lobby) renderGameStatus();
-  chat.render(state, online);
+  chat.render(state, online, currentView);
   $('game-navigation').hidden = lobby;
   showPane();
   restoringView = true;
@@ -1418,7 +1545,7 @@ function render() {
   if (state.undo?.pending) $('room-menu').hidePopover();
 }
 
-$('focus-current-action').addEventListener('click', () => navigateGame(state.round?.result ? 'review' : 'action', currentTask().target));
+$('focus-current-action').addEventListener('click', () => navigateGame(state.round?.result ? 'review' : 'action', currentTask().target, true));
 $('focus-inventory').addEventListener('click', () => navigateGame('inventory'));
 $('open-table-log').addEventListener('click', () => {
   $('table-log').open = true;
@@ -1506,8 +1633,9 @@ $('floor-tabs').addEventListener('keydown', event => {
   tabs[index].focus();
 });
 $('copy-invite').addEventListener('click', async () => {
-  const url = new URL(location.href);
+  const url = new URL('/', location.origin);
   url.searchParams.set('room', state.code);
+  if (new URLSearchParams(location.search).get('sync') === 'poll') url.searchParams.set('sync', 'poll');
   try {
     if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url.href);
     else {
@@ -1522,13 +1650,23 @@ $('copy-invite').addEventListener('click', async () => {
       if (!copied) throw new Error('请复制地址栏中的邀请链接。');
     }
     $('copy-invite').textContent = '已复制';
-    $('copy-status').textContent = '邀请链接已复制';
-    setTimeout(() => { $('copy-invite').textContent = '复制邀请'; }, 2000);
+    if (accessRequired === undefined) {
+      try { accessRequired = (await api('/api/access', undefined, AbortSignal.timeout(3000))).required; } catch { /* Show generic copy feedback. */ }
+    }
+    $('copy-status').textContent = '房间链接已复制' + (accessRequired ? '，请把有效邀请码另发给朋友。' : '。');
+    $('copy-status').showPopover();
+    setTimeout(() => { $('copy-invite').textContent = '复制房间链接'; $('copy-status').hidePopover(); }, 4000);
   } catch { showError('未能复制邀请链接，请复制浏览器地址栏中的完整地址。'); }
 });
 
 for (const tab of $('floor-tabs').querySelectorAll('button')) tab.dataset.testid = Number(tab.dataset.floor) === -1 ? 'floor-basement' : `floor-${tab.dataset.floor}`;
-const requestedRoom = new URL(location.href).searchParams.get('room');
+const suppliedRoom = new URL(location.href).searchParams.get('room')?.trim().toUpperCase();
+const requestedRoom = /^[A-Z2-9]{6}$/.test(suppliedRoom || '') ? suppliedRoom : '';
+if (requestedRoom) {
+  $('invite-destination').textContent = `即将加入房间 ${requestedRoom}`;
+  $('invite-destination').hidden = false;
+  $('recover-room').value = requestedRoom;
+}
 if (requestedRoom) $('room-code').value = requestedRoom.toUpperCase();
 setEntryMode(requestedRoom ? 'join' : 'create');
 
@@ -1562,7 +1700,21 @@ window.visualViewport?.addEventListener('resize', updateKeyboardViewport);
 window.addEventListener('resize', updateKeyboardViewport);
 updateKeyboardViewport();
 
-async function resume(stored = storedSession(requestedRoom?.toUpperCase())) {
+async function resume(stored = storedSession(requestedRoom || undefined)) {
+  if (!stored) {
+    const application = pendingApplication(requestedRoom);
+    if (application) {
+      try {
+        const result = await api(`/api/rooms/${application.roomCode}/${application.endpoint}`, {
+          application: application.key, lookupOnly: true,
+        }, AbortSignal.timeout(10000));
+        acceptSeat(result, application);
+        return;
+      } catch (error) {
+        if (error.status !== 404) return showEntryRetry('暂时无法确认上次入席，请重试。', () => resume());
+      }
+    }
+  }
   if (!stored?.roomCode || !stored.playerId || !stored.token) { await checkEntryAccess(); return; }
   showEntryPanel('entry-status');
   $('entry-status-text').textContent = '请稍候，正在恢复已保存的座位。';

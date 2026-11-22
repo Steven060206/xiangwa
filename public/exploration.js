@@ -659,12 +659,7 @@ function noiseControls(container, state, locked, action, silentCards) {
     useBell = checkbox(choice, 'silent-use-bell', '额外翻一张，随后可用标准行动摇铃', locked);
     section.insertBefore(choice, section.querySelector('.silent-cards'));
   }
-  if (silent.revealsRemaining > 0) {
-    for (const skip of section.querySelectorAll('.silent-skip')) {
-      skip.disabled = true;
-      skip.title = '连续翻牌尚未完成，不能持牌跳过。';
-    }
-  }
+  if (silent.revealsRemaining > 0) section.append(node('p', 'small-note', '连续翻牌尚未完成，不能持牌跳过。'));
   if (mine && effects.maryPlayerId === state.you) section.append(node('p', 'small-note', '你的行动前需翻两张无声标志，保留最后一枚盖牌。'));
   container.append(section);
 }

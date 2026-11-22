@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { createGameServer } from '../src/server.mjs';
 import { createPlay } from '../src/play.mjs';
@@ -46,7 +46,7 @@ async function session(t, playerCount) {
   }
   const people = [await request('/api/rooms', { name: '守夜箱娃', playerCount })];
   for (let index = 1; index < playerCount; index++) people.push(await request(`/api/rooms/${people[0].roomCode}/join`, { name: `寻路者${index}` }));
-  const sync = version => Promise.all(pages.map(page => page.waitForFunction(expected => window.__responsiveState?.version >= expected, version)));
+  const sync = version => Promise.all(pages.filter(page => !page.isClosed()).map(page => page.waitForFunction(expected => window.__responsiveState?.version >= expected, version)));
   async function act(person, type, payload = {}) {
     const result = await request(`/api/rooms/${person.roomCode}/actions`, { playerId: person.playerId, token: person.token, type, ...payload });
     await sync(result.version);
@@ -350,4 +350,253 @@ test('four-player notebook feedback, chat drafts and undo navigation preserve pr
   assert.equal((await snapshot(first)).undo.pending, null);
   await nav(mine, 'chat');
   assert.equal(await mine.getByTestId('chat-text').inputValue(), '尚未发送的同房草稿');
+});
+
+for (const mode of ['sse', 'poll']) test('late committed flip unlocks the next action after the ten-second check over ' + mode, { timeout: 60000 }, async t => {
+  const { people, open, prepare, snapshot } = await session(t, 4);
+  await prepare();
+  const mine = await open(people[1], undefined, mode);
+  let sent = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  await mine.route('**/actions', async route => {
+    sent++;
+    assert.equal(route.request().postDataJSON().index, 2);
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    await gate;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  const checked = mine.waitForResponse(r => r.request().method() === 'GET'
+    && new URL(r.url()).pathname.endsWith('/' + people[1].roomCode) && !new URL(r.url()).searchParams.has('poll'));
+  const start = Date.now();
+  await mine.getByTestId('silent-card-2').click();
+  await checked;
+  await mine.waitForFunction(() => !document.querySelector('[data-testid="move-target"]')?.disabled
+    && document.getElementById('action-feedback').textContent.includes('最新进度'));
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, start + 12100 - Date.now())));
+  assert.equal(await mine.getByTestId('move-target').first().isEnabled(), true);
+  assert.equal((await snapshot(people[1])).round.silent.cards[2].status, 'up');
+  assert.equal(sent, 1);
+  release();
+});
+
+test('unreceived flip waits for an explicit identical retry across chat-only updates', { timeout: 60000 }, async t => {
+  const { people, open, prepare, act, snapshot, click } = await session(t, 4);
+  await prepare();
+  const first = people[1];
+  const mine = await open(first);
+  const requests = [];
+  mine.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/actions')) requests.push(r.postDataJSON()); });
+  await mine.route('**/actions', route => route.abort('connectionreset'), { times: 1 });
+  await mine.getByTestId('silent-card-2').click();
+  const retry = mine.getByRole('button', { name: '重试刚才的选择' });
+  await retry.waitFor();
+  const version = (await snapshot(first)).version;
+  await act(people[2], 'chat_send', { text: '还在这一步', channelKind: 'room', roomId: 'bathroom_room' });
+  await mine.locator('#chat-unread').waitFor();
+  assert.equal(await mine.getByTestId('silent-card-0').isDisabled(), true);
+  assert.equal(await retry.isVisible(), true);
+  const check = mine.waitForResponse(r => r.request().method() === 'GET' && new URL(r.url()).pathname.endsWith(first.roomCode));
+  await mine.getByRole('button', { name: '重新核对' }).click();
+  await check;
+  assert.equal(requests.length, 1);
+  const accepted = await click(mine, 'silent_reveal', () => retry.click());
+  assert.equal(accepted.version, version + 1);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.equal(requests[0].index, 2);
+  assert.equal(accepted.round.silent.cards[2].status, 'up');
+  assert.equal(await retry.isVisible(), false);
+});
+
+test('phone touch reaches map corners and keyboard reaches the live card without submitting; a held third card keeps its index', { timeout: 90000 }, async t => {
+  const { people, open, prepare, act, click } = await session(t, 4);
+  await prepare();
+  const mine = await open(people[1]);
+  const requests = [];
+  mine.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/actions')) requests.push(r.postDataJSON()); });
+  await nav(mine, 'map');
+  await mine.getByTestId('floor-1').click();
+  const guide = mine.locator('#corner-guide-toggle');
+  for (const [width, height] of [[375, 667], [667, 375]]) {
+    await mine.setViewportSize({ width, height });
+    for (const id of ['dining_fireplace', 'study_desk']) {
+      const corner = mine.locator('#tile-board .corner-location[data-corner-id="' + id + '"]');
+      await corner.scrollIntoViewIfNeeded();
+      const box = await corner.boundingBox();
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      assert.equal(await mine.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('.corner-location')?.dataset.cornerId, point), id);
+      await mine.touchscreen.tap(point.x, point.y);
+      assert.equal(await mine.locator('#tile-board .selected-corner').getAttribute('data-corner-id'), id);
+      assert.equal(await guide.getAttribute('aria-expanded'), 'false');
+      await mine.keyboard.press('Escape');
+    }
+    await guide.click();
+    const close = mine.locator('#corner-guide').getByRole('button', { name: '收起', exact: true });
+    await close.click();
+    assert.equal(await guide.evaluate(b => b === document.activeElement), true);
+  }
+  await mine.setViewportSize({ width: 1366, height: 768 });
+  await nav(mine, 'action');
+  await mine.locator('#seats-toggle').focus();
+  await mine.keyboard.press('Tab');
+  assert.equal(await mine.locator('#focus-current-action').evaluate(b => b === document.activeElement && b.matches(':focus-visible')), true);
+  await mine.keyboard.press('Enter');
+  assert.equal(await mine.getByTestId('silent-card-0').evaluate(b => b === document.activeElement), true);
+  const hold = mine.getByTestId('silent-hold-mode');
+  await hold.click();
+  await mine.keyboard.press('Escape');
+  assert.equal(await hold.getAttribute('aria-pressed'), 'false');
+  await hold.click();
+  await act(people[2], 'chat_send', { channelKind: 'room', roomId: 'bathroom_room', text: '选牌中' });
+  await mine.locator('#chat-unread').waitFor();
+  assert.equal(await hold.getAttribute('aria-pressed'), 'true');
+  assert.equal(requests.length, 0);
+  const result = await click(mine, 'silent_skip', () => mine.getByTestId('silent-card-2').click());
+  assert.equal(requests[0].index, 2);
+  assert.equal(result.round.silent.cards[2].holderId, people[1].playerId);
+});
+
+test('a named offline actor retains the turn and the last tab controls the reconnect hint', async t => {
+  const { people, prepare, open, snapshot } = await session(t, 4);
+  await prepare();
+  const host = await open(people[0]);
+  const first = await open(people[1]);
+  const mirror = await open(people[1]);
+  await first.close();
+  assert.equal((await snapshot(people[0])).players[1].connected, true);
+  assert.doesNotMatch(await host.getByTestId('current-task').innerText(), /重新连接/);
+  await mirror.close();
+  await host.waitForFunction(() => /等待 2 号.*重新连接.*翻牌/.test(document.getElementById('setup-title').textContent));
+  const back = await open(people[1]);
+  await host.waitForFunction(() => !document.getElementById('setup-title').textContent.includes('重新连接'));
+  assert.equal(await back.getByTestId('silent-card-0').isEnabled(), true);
+  assert.equal((await snapshot(people[0])).round.silent.turnPlayerId, people[1].playerId);
+});
+
+test('after 72 exploration actions every seat can download the same public milestones and retain the final report in the lobby', { timeout: 120000 }, async t => {
+  const { people, prepare, open, act, snapshot } = await session(t, 4);
+  await prepare();
+  const [hako, first, second] = people;
+  const privateMessage = '这是不会进入复盘的同房私聊';
+  await act(second, 'chat_send', { channelKind: 'room', roomId: 'bathroom_room', text: privateMessage });
+  await act(first, 'silent_reveal', { index: 0 });
+  await act(first, 'peek', { cornerId: 'bathroom_washer' });
+  await act(hako, 'resolve_visitor_action');
+  await act(first, 'publish_token', { tokenId: 'password_5' });
+  await act(first, 'resolve_peek', { take: false });
+  let count = 0;
+  for (;;) {
+    const { round: r } = await snapshot(hako);
+    if (count >= 72 && r.phase === 'visitor_reveal') break;
+    assert.ok(count++ < 94, 'A new playable round boundary is reached');
+    const turn = people.find(p => p.playerId === r.silent.turnPlayerId);
+    if (r.pendingAction) await act(hako, 'resolve_visitor_action');
+    else if (r.phase === 'visitor_reveal') await act(turn, 'silent_reveal', { index: r.silent.cards.find(c => c.status === 'down').index });
+    else if (r.phase === 'visitor_action') await act(turn, 'move', { roomId: (await snapshot(turn)).round.moveTargets[0] });
+    else if (r.phase === 'hako_reaction') await act(hako, 'pass_noise_reaction');
+    else if (r.powers?.canBegin) await act(hako, 'begin_hako_action');
+    else if (r.hako.hidingTargets?.length) await act(hako, 'hako_hide', { cornerId: r.hako.hidingTargets[0] });
+    else if (r.hako.hidingRooms?.length) await act(hako, 'inspect_hiding_room', { roomId: r.hako.hidingRooms[0].id });
+    else assert.fail('Unexpected exploration phase ' + r.phase);
+  }
+  const viewers = [];
+  for (const p of people) viewers.push(await open(p));
+  for (const p of people.slice(1)) await act(p, 'surrender', { agree: true });
+  const ended = await snapshot(first);
+  assert.equal(ended.phase, 'game_over');
+  assert.equal(ended.log.length, 64);
+  assert.ok(ended.log.every(line => !line.includes('公开了一条发现')));
+  async function download(page, button) {
+    await dismiss(page);
+    assert.equal(await button.isEnabled(), true);
+    const [file] = await Promise.all([page.waitForEvent('download'), button.click()]);
+    return readFile(await file.path(), 'utf8');
+  }
+  const reports = [];
+  for (const page of viewers) reports.push(await download(page, page.getByTestId('save-review')));
+  assert.equal(new Set(reports).size, 1);
+  assert.match(reports[0], /第1轮.*公开了密码5.*洗衣机/);
+  for (const text of ['一楼', '二楼', '地下室', '获胜玩家', '玩家物品', '箱娃能力', '保险箱内', '最近 64 条房间行动']) assert.ok(reports[0].includes(text));
+  for (const sensitive of [privateMessage, first.token, hako.token, first.roomCode, 'privateClues', 'undoHistory', 'recoveryDigest']) assert.ok(!reports[0].includes(sensitive));
+  const undo = await act(first, 'undo_request', { version: ended.version });
+  for (const id of undo.undo.pending.requiredIds.filter(id => id !== first.playerId)) {
+    await act(people.find(p => p.playerId === id), 'undo_respond', { requestId: undo.undo.pending.id, accept: true });
+  }
+  assert.equal(await viewers[0].getByTestId('save-review').count(), 0);
+  assert.equal(await viewers[0].locator('#save-last-review').isVisible(), false);
+  await act(people.at(-1), 'surrender', { agree: true });
+  assert.equal((await snapshot(hako)).phase, 'game_over');
+  const latestReport = await download(viewers[0], viewers[0].getByTestId('save-review'));
+  await viewers.at(-1).close();
+  await act(people.at(-1), 'leave', { endGame: true });
+  assert.equal(await download(viewers[0], viewers[0].locator('#save-last-review')), latestReport);
+  await viewers[1].reload();
+  await viewers[1].getByTestId('ready-button').waitFor();
+  assert.equal(await viewers[1].locator('#save-last-review').isVisible(), false);
+  await act(hako, 'add_bots');
+  for (const person of people.slice(0, -1)) await act(person, 'ready', { ready: true });
+  await act(hako, 'start');
+  assert.equal(await viewers[0].locator('#save-last-review').isVisible(), false);
+});
+
+test('a new origin restores the same visitor, their inventory and their pending gift response', { timeout: 60000 }, async t => {
+  const { people, prepare, open, act, snapshot } = await session(t, 5);
+  await prepare();
+  const [, first, second] = people;
+  const original = await open(second);
+  await act(first, 'offer_exchange', { targetId: second.playerId, giveItemIds: ['night_vision'], giveTokenIds: [], requestItemIds: [], requestTokenIds: [] });
+  const waiting = await snapshot(second);
+  await original.getByTestId('room-menu-toggle').click();
+  const issued = original.waitForResponse(r => r.url().endsWith('/recovery-code'));
+  await original.locator('#issue-seat-code').click();
+  const { recoveryCode } = await (await issued).json();
+  const context = await original.context().browser().newContext();
+  t.after(() => context.close());
+  const fresh = await context.newPage();
+  await fresh.goto(original.url().replace('127.0.0.1', 'localhost'));
+  await fresh.locator('#seat-recovery summary').click();
+  await fresh.locator('#recover-code').fill(recoveryCode);
+  const exchanged = fresh.waitForResponse(r => r.url().endsWith('/recover'));
+  await fresh.locator('#recover-seat').click();
+  const { state } = await (await exchanged).json();
+  assert.equal(state.you, second.playerId);
+  assert.equal(state.version, waiting.version);
+  assert.equal(state.hostId, waiting.hostId);
+  assert.deepEqual(state.round.inventory, waiting.round.inventory);
+  assert.deepEqual(state.round.exchangeOffers, waiting.round.exchangeOffers);
+  assert.match(await fresh.getByTestId('current-task').innerText(), /回应.*赠送/);
+  await fresh.waitForFunction(() => document.getElementById('connection-state').textContent === '已连接');
+  const accepted = fresh.waitForResponse(r => r.url().endsWith('/actions'));
+  await fresh.getByTestId('exchange-accept').click();
+  assert.equal((await accepted).status(), 200);
+  assert.ok((await snapshot(second)).round.inventory.items.some(item => item.id === 'night_vision'));
+});
+
+test('a delayed accepted action cannot replace the newer board after undo', { timeout: 60000 }, async t => {
+  const { people, prepare, open, act, snapshot } = await session(t, 4);
+  await prepare();
+  const first = people[1];
+  const mine = await open(first);
+  let release, announce;
+  const gate = new Promise(resolve => { release = resolve; });
+  const committed = new Promise(resolve => { announce = resolve; });
+  t.after(release);
+  await mine.route('**/actions', async route => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    announce(await response.json());
+    await gate;
+    await route.fulfill({ response });
+  }, { times: 1 });
+  await mine.getByTestId('silent-card-2').click();
+  const state = await committed;
+  const restored = await act(first, 'undo_request', { version: state.version });
+  assert.equal(restored.round.phase, 'visitor_reveal');
+  const returned = mine.waitForResponse(r => r.url().endsWith('/actions'));
+  release();
+  await returned;
+  await mine.waitForFunction(() => document.querySelector('[data-testid="silent-card-2"]')?.disabled === false);
+  assert.equal((await snapshot(first)).version, restored.version);
+  assert.equal((await snapshot(first)).round.silent.cards[2].status, 'down');
 });

@@ -404,7 +404,7 @@ input,select{caret-color:var(--accent)}
   .in-game .map-focused .game-layout,.in-game .has-draft .game-layout{grid-template-rows:minmax(0,1fr)}
   .in-game .current-task-copy p{max-height:36px;overflow:auto}
   .personal-status{padding-top:2px}
-  .in-game .board-caption:has(.selected-corner-name){display:flex;position:absolute;inset:auto 0 34px;z-index:4;padding:6px 10px}
+  .in-game .board-caption:has(.selected-corner-name){display:flex;position:absolute;inset:auto 0 34px;z-index:4;padding:6px 10px;pointer-events:none}
   .in-game .board-caption:has(.selected-corner-name)>:not(.selected-corner-name){display:none}
 }
 @media(max-height:600px){

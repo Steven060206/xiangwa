@@ -35,7 +35,7 @@
 .in-game #setup-view { min-height: 0; flex: 1; }
 .in-game .game-layout, .in-game .has-round .game-layout { flex: 1; min-height: 0; grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); grid-template-rows: minmax(0, 1fr); gap: 18px; }
 .in-game .board-section { min-height: 0; height: 100%; }
-.in-game .board-toolbar { min-height: 48px; padding: 0 12px; gap: 8px; flex-wrap: wrap; }
+.in-game .board-toolbar { min-height: 48px; height: auto; padding: 0 12px; gap: 8px; flex-wrap: wrap; }
 .in-game .floor-tabs { gap: 12px; flex: none; }
 .in-game .floor-tab { min-height: 44px; padding: 8px 4px; }
 .map-toolbar-actions { display: flex; gap: 10px; align-items: center; }
@@ -49,6 +49,17 @@
 .board-caption .selected-corner-name { font-size: 14px; color: var(--ink); font-weight: 600; }
 .in-game .corner-guide { padding: 0 10px; max-height: none; flex: none; }
 .corner-guide-toggle { min-height: 36px; padding: 5px 0; }
+.in-game .map-toolbar-actions { flex-wrap: wrap; }
+.map-toolbar-actions .corner-guide-toggle { flex: none; color: var(--accent); }
+.seat-recovery { margin: 12px 0 20px auto; width: min(100%, 440px); }
+.seat-recovery summary { cursor: pointer; color: var(--accent); padding: 8px 0; }
+.seat-recovery .entry-form { margin: 0; }
+.copy-status { inset: auto 12px 18px; margin: auto; max-width: min(90vw, 400px); padding: 10px 14px; background: var(--paper-light); color: var(--ink); border: 1px solid var(--rule); }
+#focus-current-action.keyboard-shortcut { position: absolute; inset-inline-end: 6em; z-index: 2; background: var(--paper); padding-inline: 8px; }
+#focus-current-action.keyboard-shortcut:not(:focus-visible) { width: 1px; height: 1px; min-height: 0; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+#seat-code-result { user-select: all; overflow-wrap: anywhere; }
+#ready-feedback { color: var(--accent); }
+.silent-section [data-testid=silent-hold-mode][aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
 .in-game .corner-guide.expanded { position: absolute; bottom: 0; left: 0; width: 100%; z-index: 6; max-height: min(65%, calc(100% - 48px)); overflow: auto; padding: 10px 14px; background: var(--paper-light); border-top: 1px solid var(--rule); }
 .in-game .corner-guide-rooms { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .in-game .setup-sidebar { min-height: 0; height: 100%; overflow: auto; padding: 0 4px 12px 0; gap: 16px; scroll-padding: 8px; }
@@ -153,7 +164,7 @@
   #personal-role { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
   #round-context { margin-left: auto; }
   .in-game .game-layout, .in-game .has-round .game-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(145px, 31%) minmax(240px, 1fr); gap: 8px; }
-  .in-game .board-toolbar { min-height: 44px; flex-wrap: nowrap; padding: 0 6px; gap: 5px; }
+  .in-game .board-toolbar { min-height: 44px; padding: 0 6px; gap: 5px; }
   .in-game .floor-tabs { gap: 5px; }
   .in-game .floor-tab { min-height: 44px; font-size: 12px; padding: 5px 2px; }
   .floor-tab > span { display: none; }
@@ -161,7 +172,6 @@
   .map-toolbar-actions .text-button { font-size: 12px; min-height: 44px; padding: 5px 0; }
   #fit-map { display: none; }
   .in-game .map-focused #fit-map { display: inline-flex; }
-  .in-game .map-focused .board-toolbar { flex-wrap: wrap; }
   .in-game .map-positions { display: none; }
   .in-game .map-focused .map-positions { display: flex; }
   .in-game .board-viewport { padding: 8px; min-height: 0; }
@@ -175,7 +185,6 @@
   .in-game .practice-panel p { font-size: 14px; }
   .in-game .practice-controls .button { min-height: 44px; }
   .in-game .silent-card-face { min-height: 56px; }
-  .in-game .silent-skip { min-height: 40px; }
   .game-navigation { padding: 3px 0 calc(3px + env(safe-area-inset-bottom)); }
   .game-navigation button { padding-inline: 2px; font-size: 13px; min-width: 0; }
   .item-list { grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -224,7 +233,7 @@
 #noise-count, .game-status .map-progress { white-space: nowrap; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .game-status .map-progress { display: inline-flex; align-items: baseline; gap: 4px; }
 .game-status .map-progress strong, .game-status .map-progress strong span { font: inherit; color: var(--ink); }
-.table-context { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
+.table-context { position: relative; grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
 .table-context .personal-status { display: flex; padding: 0; align-items: center; flex-wrap: wrap; gap: 2px 12px; overflow: visible; flex: 1; }
 .table-context #personal-role { max-width: none; }
 .table-context #round-context { margin: 0; }

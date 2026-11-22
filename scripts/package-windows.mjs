@@ -15,6 +15,6 @@ const tree = execFileSync('git', ['rev-parse', '--verify', `${revision}^{tree}`]
 mkdirSync(dirname(output), { recursive: true });
 // Only committed program files enter the package, even when local saves or credentials exist.
 execFileSync('git', ['archive', '--format=zip', '--prefix=xiangwa-windows/', '--output', output, tree,
-  'server.mjs', 'package.json', '.env.example', 'LICENSE', 'NOTICE.md', '一键启动.cmd', '一键版说明.txt',
+  'server.mjs', 'package.json', '.env.example', 'LICENSE', 'NOTICE.md', 'CHANGELOG.md', '一键启动.cmd', '一键版说明.txt',
   'src', 'public', 'scripts/one-click.ps1', 'scripts/one-click.mjs', 'scripts/share-online.mjs', 'scripts/share-online.ps1'], { cwd: root });
 console.log(`Windows 一键版已生成：${output}`);

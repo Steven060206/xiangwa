@@ -73,7 +73,7 @@ export function renderUndo({ state, pending, online, action }) {
     const you = state.players.find(player => player.id === state.you);
     if (you && !you.isBot) {
       addButton(menuControls, '退出房间', 'leave-current-room', 'leave', { endGame: true }, false,
-        '退出将释放你的座位，并结束当前对局，其他玩家返回大厅；确定退出？');
+        state.round?.result ? '其他玩家也会返回大厅，退出前可先保存复盘。确定退出房间？' : '退出将释放你的座位，并结束当前对局，其他玩家返回大厅；确定退出？');
     }
   }
   panel.hidden = !undo?.pending && !undo?.paused;

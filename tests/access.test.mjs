@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { mkdtemp, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
@@ -409,4 +410,136 @@ test('local CLI creates, lists and revokes through its private key without chang
   assert.equal((await run(['--revoke', invite.id])).ok, true);
   assert.equal((await f.redeem(invite.code)).status, 401);
   await assert.rejects(readFile(f.dataFile), { code: 'ENOENT' });
+});
+
+const applicationKey = () => randomBytes(32).toString('hex');
+const credentials = person => ({ playerId: person.playerId, token: person.token });
+
+test('admission receipts survive a full room, the start, invitation expiry and restart without duplicating seats', async t => {
+  const f = await fixture(t);
+  const invite = await f.issue();
+  const { cookie } = await f.redeem(invite.code);
+  const host = (await f.request('/api/rooms', { name: '房主' }, cookie)).body;
+  const path = '/api/rooms/' + host.roomCode;
+  const people = [host];
+  const applications = [];
+  f.advance(29 * 60000);
+  for (let i = 0; i < 3; i++) {
+    const application = applicationKey();
+    applications.push(application);
+    const joined = await f.request(path + '/join', { application, name: '同名' }, cookie);
+    assert.equal(joined.status, 201);
+    people.push(joined.body);
+    const retry = await f.request(path + '/join', { application, lookupOnly: true });
+    assert.deepEqual(credentials(retry.body), credentials(joined.body));
+    assert.equal(retry.body.state.version, joined.body.state.version);
+  }
+  assert.equal(new Set(people.map(p => p.playerId)).size, 4);
+  for (const p of people) assert.equal((await f.request(path + '/actions', { ...credentials(p), type: 'ready', ready: true })).status, 200);
+  assert.equal((await f.request(path + '/actions', { ...credentials(host), type: 'start' })).status, 200);
+  f.advance(2 * 60000);
+  await f.restart();
+  const last = await f.request(path + '/join', { application: applications[2], name: '同名' });
+  assert.equal(last.status, 200);
+  assert.deepEqual(credentials(last.body), credentials(people[3]));
+  assert.equal(last.body.state.players.length, 4);
+  assert.equal(last.body.state.phase, 'hako_selection');
+  const saved = await readFile(f.dataFile, 'utf8');
+  for (const key of applications) {
+    assert.ok(!saved.includes(key));
+    assert.ok(!JSON.stringify(last.body.state).includes(key));
+  }
+  assert.doesNotMatch(JSON.stringify(last.body.state), /joinReceipt|recoveryDigest|recoveryReceipt/);
+  assert.equal((await f.request(path + '/join', { name: '全新入席', application: applicationKey() }, cookie)).status, 401);
+  f.advance(30 * 60000);
+  assert.equal((await f.request(path + '/join', { application: applications[2], lookupOnly: true })).status, 404);
+});
+
+test('seat recovery is private, single-use, atomic and can replay only the successful redemption', async t => {
+  const f = await fixture(t);
+  const { cookie } = await f.redeem((await f.issue()).code);
+  const host = (await f.request('/api/rooms', { name: '房主' }, cookie)).body;
+  const path = '/api/rooms/' + host.roomCode;
+  const application = applicationKey();
+  const admission = { name: '同伴', application };
+  const issue = who => f.request(path + '/recovery-code', credentials(who));
+  const exchange = (recoveryCode, application) => f.request(path + '/recover', { recoveryCode, application });
+  const lookup = (endpoint, key) => f.request(path + '/' + endpoint, { lookupOnly: true, application: key });
+  const badSave = f.dataFile + '.tmp';
+  t.mock.method(console, 'error', () => {});
+  await mkdir(badSave);
+  assert.equal((await f.request(path + '/join', admission, cookie)).status, 503);
+  assert.equal((await lookup('join', application)).status, 404);
+  await rm(badSave, { recursive: true });
+  const guest = (await f.request(path + '/join', admission, cookie)).body;
+  assert.equal(guest.state.players.length, 2);
+  const ready = (await f.request(path + '/actions', { ...credentials(guest), type: 'ready', ready: true })).body;
+  const oldCode = (await issue(guest)).body.recoveryCode;
+  assert.match(oldCode, /^(?:[A-F0-9]{4}-){7}[A-F0-9]{4}$/);
+  await mkdir(badSave);
+  assert.equal((await issue(guest)).status, 503);
+  assert.equal((await exchange(oldCode, applicationKey())).status, 503);
+  await rm(badSave, { recursive: true });
+  const fresh = (await issue(guest)).body.recoveryCode;
+  assert.equal((await exchange(oldCode, applicationKey())).status, 403);
+  const stored = await readFile(f.dataFile, 'utf8');
+  assert.ok(!stored.includes(fresh.replaceAll('-', '')));
+  assert.ok(!JSON.stringify(ready.undo).includes('recovery'));
+  await f.restart();
+  f.advance(31 * 60000);
+  const keys = [applicationKey(), applicationKey()];
+  const trials = await Promise.all(keys.map(key => exchange(fresh, key)));
+  assert.deepEqual(trials.map(r => r.status).sort(), [200, 403]);
+  const won = trials.findIndex(r => r.status === 200);
+  const body = trials[won].body;
+  assert.deepEqual(credentials(body), credentials(guest));
+  assert.equal(body.state.version, ready.version);
+  assert.deepEqual(body.state.undo, ready.undo);
+  assert.equal(body.state.hostId, host.playerId);
+  assert.equal(body.state.players.find(p => p.id === guest.playerId).ready, true);
+  assert.doesNotMatch(JSON.stringify(body.state), /recoveryCode|recoveryDigest|recoveryReceipt|joinReceipt/);
+  await f.restart();
+  assert.deepEqual(credentials((await lookup('recover', keys[won])).body), credentials(guest));
+  assert.equal((await lookup('recover', keys[1 - won])).status, 404);
+  assert.equal((await f.admin({ action: 'list' })).body.invites[0].uses, 1);
+  const remaining = (await issue(guest)).body.recoveryCode;
+  assert.equal((await f.request(path + '/actions', { ...credentials(host), type: 'remove_player', targetId: guest.playerId })).status, 200);
+  assert.equal((await exchange(remaining, applicationKey())).status, 403);
+  assert.equal((await lookup('join', application)).status, 404);
+  assert.equal((await lookup('recover', keys[won])).status, 404);
+  const hostCode = (await issue(host)).body.recoveryCode;
+  assert.equal((await f.request(path + '/actions', { ...credentials(host), type: 'leave' })).status, 200);
+  assert.equal((await exchange(hostCode, applicationKey())).status, 404);
+});
+
+test('browser receipts expire, survive storage refusing writes and ignore late cleanup from another application', async t => {
+  const saved = new Map();
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  let rejectWrites = false;
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: key => saved.get(key) ?? null,
+    setItem(key, value) { if (rejectWrites) throw new Error('quota'); saved.set(key, value); },
+    removeItem: key => saved.delete(key),
+  } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
+    else delete globalThis.localStorage;
+  });
+  const { beginApplication, discardApplication, pendingApplication } = await import('../public/seat-access.js');
+  const first = beginApplication('ABCDEF', 'join');
+  const second = beginApplication('BCDEFG', 'join');
+  discardApplication(first);
+  assert.deepEqual(pendingApplication('BCDEFG'), second);
+  rejectWrites = true;
+  const recovery = beginApplication('CDEFGH', 'recover');
+  assert.deepEqual(beginApplication('CDEFGH', 'recover'), recovery);
+  assert.deepEqual(pendingApplication('CDEFGH'), recovery);
+  discardApplication(recovery);
+  assert.equal(pendingApplication('CDEFGH'), null);
+  rejectWrites = false;
+  const fresh = beginApplication('CDEFGH', 'join');
+  const [key] = saved.keys();
+  saved.set(key, JSON.stringify({ ...fresh, expiresAt: Date.now() - 1 }));
+  assert.equal(pendingApplication(), null);
+  assert.equal(saved.size, 0);
 });
